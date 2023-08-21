@@ -48,11 +48,11 @@ def expand(node: Node,
         index = -1
 
     tokens = state.tokens_p[index:] if node.root_player == 1 else state.tokens_o[index:]
-    tokens = jnp.array(tokens, dtype=jnp.uint8).reshape(-1, 1, game.TOKEN_SIZE)
-    tokens = jax.device_put(tokens)
+    tokens = jnp.array(tokens, dtype=jnp.uint8)
 
     for i in range(tokens.shape[0]):
-        pi, v, _, cv, ck = predict(train_state, train_state.params, tokens[i], cv, ck)
+        token = tokens[i].reshape(1, 1, -1)
+        pi, v, _, cv, ck = predict(train_state, train_state.params, token, cv, ck)
 
     next_node.p = nn.softmax(jax.device_get(pi)[0, 0])
     next_node.cache_v = cv
