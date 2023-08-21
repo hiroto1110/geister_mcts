@@ -144,6 +144,36 @@ def create_root_node(state: game.State, train_state: TrainState, model: Transfor
     return node
 
 
+def play_test_game(train_state, model):
+    state = game.get_initial_state()
+
+    player = 1
+
+    node1 = create_root_node(state, train_state, model, 1)
+    node2 = create_root_node(state, train_state, model, -1)
+
+    for i in range(200):
+        start = time.perf_counter()
+        node1, node2 = step(node1, node2, state, player, train_state, num_sim=25)
+        print(f"step: {i}, {time.perf_counter() - start}")
+
+        board = np.zeros(36, dtype=np.int8)
+
+        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
+        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
+        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
+        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
+
+        print(str(board.reshape((6, 6))).replace('0', ' '))
+
+        if game.is_done(state, player):
+            break
+
+        player = -player
+
+    print(state.is_done, state.winner)
+
+
 def test():
     data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
@@ -165,36 +195,8 @@ def test():
 
     train_state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=train_state)
 
-    # init_jit(train_state, model_with_cache, data)
-
-    state = game.get_initial_state()
-
-    player = 1
-
-    node1 = create_root_node(state, train_state, model_with_cache, 1)
-    node2 = create_root_node(state, train_state, model_with_cache, -1)
-
-    for i in range(200):
-        start = time.perf_counter()
-        node1, node2 = step(node1, node2, state, player, train_state, num_sim=25)
-        print(f"step: {i}, {time.perf_counter() - start}")
-
-        board = np.zeros(36, dtype=np.int8)
-
-        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
-        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
-        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
-        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
-
-        print(str(board.reshape((6, 6))).replace('0', ' '))
-
-        if game.is_done(state, player):
-            break
-
-        player = -player
-
-    state.update_is_done(-player)
-    print(state.is_done, state.winner)
+    for i in range(2):
+        play_test_game(train_state, model_with_cache)
 
 
 if __name__ == "__main__":

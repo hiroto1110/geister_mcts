@@ -1,4 +1,3 @@
-import time
 from pathlib import Path
 import shutil
 import warnings
@@ -27,12 +26,12 @@ def selfplay(train_state: TrainState, model, params, num_mcts_simulations: int, 
     node1 = mcts.create_root_node(state, train_state, model, 1)
     node2 = mcts.create_root_node(state, train_state, model, -1)
 
-    policies = np.zeros((200, 144))
+    policies = np.zeros((201, 144))
 
     for i in range(200):
         policy, node1, node2 = mcts.step(node1, node2, state, player, train_state, num_mcts_simulations)
 
-        policies[i + 7] = policy
+        policies[i] = policy
 
         if game.is_done(state, player):
             break
@@ -45,33 +44,39 @@ def selfplay(train_state: TrainState, model, params, num_mcts_simulations: int, 
     tokens = game.get_tokens(state, record_player, 200)
     color = state.color_o if record_player == 1 else state.color_p
 
+    policies = policies[tokens[:, 4]]
+
     return Sample(tokens, policies, record_player, reward, color)
 
 
 @ray.remote(num_cpus=1, num_gpus=0)
-def testplay(train_state, params, num_mcts_simulations, dirichlet_alpha=None, n_testplay=24):
-    states = [game.get_initial_state() for _ in range(n_testplay)]
-    undone_states = list(states)
+def testplay(train_state, model, num_mcts_simulations, dirichlet_alpha=None, n_testplay=10):
+    result = 0
 
-    alphazero = np.random.choice([1, -1])
-    player = 1
+    for _ in range(n_testplay):
+        alphazero = np.random.choice([1, -1])
+        player = 1
 
-    for i in range(200):
-        if player == alphazero:
-            step_batch(train_state, params, undone_states, player, num_sim=num_mcts_simulations)
-        else:
-            for state in undone_states:
-                game.greedy_action(state, player, epsilon=1)
+        state = game.get_initial_state()
 
-        undone_states = [state for state in undone_states if not state.is_done]
-        player = -player
+        node1 = mcts.create_root_node(state, train_state, model, 1)
+        node2 = mcts.create_root_node(state, train_state, model, -1)
 
-        if len(undone_states) == 0:
-            break
-    reward = [game.get_result(state, player) for state in states]
-    reward = np.mean(reward)
+        for i in range(200):
+            if player == alphazero:
+                policy, node1, node2 = mcts.step(node1, node2, state, player, train_state, num_mcts_simulations)
+            else:
+                action = game.greedy_action(state, player, epsilon=1)
+                state.step(action, player)
 
-    return reward
+            if game.is_done(state, player):
+                break
+
+            player = -player
+
+        result += state.winner
+
+    return result / n_testplay
 
 
 def main(num_cpus, n_episodes=20000, buffer_size=100000,

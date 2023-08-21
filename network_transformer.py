@@ -606,8 +606,8 @@ def main():
         dropout_rng=key2,
         epoch=0)
 
-    ckpt_dir = './checkpoints/'
-    prefix = 'geister_'
+    # ckpt_dir = './checkpoints/'
+    # prefix = 'geister_'
 
     # print(variables['params'].keys())
 
