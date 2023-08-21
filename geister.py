@@ -17,7 +17,7 @@ ESCAPE_POS_O = 0, 5
 
 CAPTURED = -1
 
-TOKEN_SIZE = 7
+TOKEN_SIZE = 5
 
 
 class State:
@@ -61,9 +61,12 @@ class State:
 
         pieces_p[p_id] = pos
 
-        if self.tokens_p[-1][5] != 16:
-            p_cap_id = tokens_o[-1][5]
+        if self.tokens_p[-1][4] != self.tokens_p[-2][4]:
+            p_cap_id = tokens_o[-1][1]
             pieces_o[p_cap_id] = pos_next
+
+            del self.tokens_p[-1]
+            del self.tokens_o[-1]
 
         del self.tokens_p[-1]
         del self.tokens_o[-1]
@@ -104,7 +107,6 @@ class State:
             p_id,
             pos_next % 6,
             pos_next // 6,
-            5, 16,
             self.n_ply])
 
         tokens_o.append([
@@ -112,18 +114,21 @@ class State:
             p_id + 8,
             pos_next % 6,
             pos_next // 6,
-            5, 16,
             self.n_ply])
 
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
             pieces_o[p_cap_id] = CAPTURED
 
-            tokens_p[-1][4] = color_o[p_cap_id] + 2
-            tokens_p[-1][5] = p_cap_id + 8
+            tokens_p.append([
+                color_o[p_cap_id] + 2,
+                p_cap_id + 8,
+                6, 6, self.n_ply])
 
-            tokens_o[-1][4] = color_o[p_cap_id]
-            tokens_o[-1][5] = p_cap_id
+            tokens_o.append([
+                color_o[p_cap_id],
+                p_cap_id,
+                6, 6, self.n_ply])
 
         pieces_p[p_id] = pos_next
 
@@ -156,17 +161,20 @@ class State:
             return
 
         if player == -1:
-            blue_pieces = self.pieces_p[self.color_p == BLUE]
+            pieces = self.pieces_p
+            color = self.color_p
             escape_pos = ESCAPE_POS_P
         else:
-            blue_pieces = self.pieces_o[self.color_o == BLUE]
+            pieces = self.pieces_o
+            color = self.color_o
             escape_pos = ESCAPE_POS_O
 
-        for p in blue_pieces:
-            if p in escape_pos:
-                self.is_done = True
-                self.winner = -player
-                return
+        escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
+
+        if np.any(escaped):
+            self.is_done = True
+            self.winner = -player
+            return
 
         self.is_done = False
         self.winner = 0

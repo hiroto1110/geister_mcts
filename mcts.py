@@ -40,13 +40,19 @@ def expand(node: Node,
     next_node = Node(node.root_player)
     node.children[action] = next_node
 
-    token = state.tokens_p[-1] if node.root_player == 1 else state.tokens_o[-1]
-    token = jnp.array(token, dtype=jnp.uint8).reshape(1, 1, -1)
-    token = jax.device_put(token)
-
     cv, ck = jax.device_put(node.cache_v), jax.device_put(node.cache_k)
 
-    pi, v, _, cv, ck = predict(train_state, train_state.params, token, cv, ck)
+    if state.tokens_p[-1][4] == state.tokens_p[-2][4]:
+        index = -2
+    else:
+        index = -1
+
+    tokens = state.tokens_p[index:] if node.root_player == 1 else state.tokens_o[index:]
+    tokens = jnp.array(tokens, dtype=jnp.uint8).reshape(-1, 1, game.TOKEN_SIZE)
+    tokens = jax.device_put(tokens)
+
+    for i in range(tokens.shape[0]):
+        pi, v, _, cv, ck = predict(train_state, train_state.params, tokens[i], cv, ck)
 
     next_node.p = nn.softmax(jax.device_get(pi)[0, 0])
     next_node.cache_v = cv
