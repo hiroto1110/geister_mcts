@@ -24,7 +24,7 @@ class Embeddings(nn.Module):
         id_embed = nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
         x_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
         y_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
-        t_embed = nn.Embed(self.max_n_ply, self.embed_dim)(tokens[..., 6])
+        t_embed = nn.Embed(self.max_n_ply, self.embed_dim)(tokens[..., 4])
 
         embeddings = type_embed + id_embed + x_embed + y_embed + t_embed
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
@@ -239,14 +239,16 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color, _ = state.apply_fn({'params': params}, x, eval=eval,
                                      rngs={'dropout': dropout_rng})
 
-    # [Batch, SeqLen]
-    y_pi = y_pi.reshape((-1, x.shape[1]))
+    # [Batch, SeqLen, 144]
+    y_pi = y_pi.reshape((-1, x.shape[1], 144))
+    # y_pi = y_pi.reshape((-1, x.shape[1]))
     # [Batch, 1] <- [Batch, SeqLen, 1]
     y_v = jnp.tile(y_v, x.shape[1]).reshape((-1, x.shape[1], 1))
     # [Batch, 8] <- [Batch, SeqLen, 8]
     y_color = jnp.tile(y_color, x.shape[1]).reshape((-1, x.shape[1], 8))
 
-    loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean()
+    # loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean()
+    loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean()
     loss_v = optax.squared_error(v, y_v).mean()
     loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean()
 

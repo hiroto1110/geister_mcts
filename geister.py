@@ -61,7 +61,7 @@ class State:
 
         pieces_p[p_id] = pos
 
-        if self.tokens_p[-1][4] != self.tokens_p[-2][4]:
+        if self.tokens_p[-1][4] == self.tokens_p[-2][4]:
             p_cap_id = tokens_o[-1][1]
             pieces_o[p_cap_id] = pos_next
 
@@ -186,7 +186,9 @@ def get_tokens(state: State, player: int, max_length: int):
     else:
         tokens = state.tokens_o
 
-    return np.array(tokens[:max_length], dtype=np.int16)
+    tokens = np.array(tokens[:max_length], dtype=np.int16)
+    tokens = np.resize(tokens, (max_length, TOKEN_SIZE))
+    return tokens
 
 
 def get_initial_state():

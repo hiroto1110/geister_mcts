@@ -1,35 +1,65 @@
-from pathlib import Path
-import shutil
-import warnings
+import multiprocessing as mp
 
-import tensorflow as tf
-import jax
 import optax
 from flax.training import checkpoints
-
+import jax
 import numpy as np
-import ray
-from tqdm import tqdm
 
-from network_transformer import TrainState, TransformerDecoder, train_step
+from tqdm import tqdm
+import wandb
+
 from buffer import ReplayBuffer, Sample
+import network_transformer as network
 import geister as game
 import mcts
 
 
-@ray.remote(num_cpus=1, num_gpus=0)
-def selfplay(train_state: TrainState, model, params, num_mcts_simulations: int, dirichlet_alpha):
+def start_selfplay_process(queue: mp.Queue, n_updates,
+                           num_mcts_simulations: int, dirichlet_alpha):
+    with jax.default_device(jax.devices("cpu")[0]):
+        # print(f"device: {jax.devices()}")
+
+        model = create_model()
+
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
+        pred_state = mcts.PredictState(model.apply, ckpt['params'])
+
+        last_n_updates = n_updates.value
+
+        while True:
+            # start = time.perf_counter()
+            sample = selfplay(pred_state, model, num_mcts_simulations, dirichlet_alpha)
+            # end = time.perf_counter()
+            # print(f"game is done: {end - start}")
+
+            queue.put(sample)
+
+            if last_n_updates != n_updates.value:
+                ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
+                pred_state = mcts.PredictState(model.apply, ckpt['params'])
+
+                last_n_updates = n_updates.value
+
+
+def selfplay(pred_state: mcts.PredictState,
+             model: network.TransformerDecoderWithCache,
+             num_mcts_simulations: int, dirichlet_alpha):
+
     state = game.get_initial_state()
 
     player = 1
 
-    node1 = mcts.create_root_node(state, train_state, model, 1)
-    node2 = mcts.create_root_node(state, train_state, model, -1)
+    node1 = mcts.create_root_node(state, pred_state, model, 1)
+    node2 = mcts.create_root_node(state, pred_state, model, -1)
 
     policies = np.zeros((201, 144))
 
     for i in range(200):
-        policy, node1, node2 = mcts.step(node1, node2, state, player, train_state, num_mcts_simulations)
+        policy, node1, node2 = mcts.step(node1, node2,
+                                         state, player,
+                                         pred_state,
+                                         num_mcts_simulations,
+                                         dirichlet_alpha)
 
         policies[i] = policy
 
@@ -49,7 +79,6 @@ def selfplay(train_state: TrainState, model, params, num_mcts_simulations: int, 
     return Sample(tokens, policies, record_player, reward, color)
 
 
-@ray.remote(num_cpus=1, num_gpus=0)
 def testplay(train_state, model, num_mcts_simulations, dirichlet_alpha=None, n_testplay=10):
     result = 0
 
@@ -79,99 +108,71 @@ def testplay(train_state, model, num_mcts_simulations, dirichlet_alpha=None, n_t
     return result / n_testplay
 
 
-def main(num_cpus, n_episodes=20000, buffer_size=100000,
-         batch_size=256, epochs_per_update=4,
+CKPT_DIR = './checkpoints/'
+PREFIX = 'geister_'
+
+
+def create_model():
+    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
+
+
+def main(num_cpus, n_episodes=20000, buffer_size=40000,
+         batch_size=32, epochs_per_update=4,
          num_mcts_simulations=25,
-         update_period=25, test_period=100,
+         update_period=200, test_period=100,
          n_testplay=5,
-         save_period=25,
-         dirichlet_alpha=0.35):
+         dirichlet_alpha=0.2):
 
-    ray.init(num_cpus=num_cpus, num_gpus=1, local_mode=False)
-    warnings.filterwarnings('ignore')
+    wandb.init(project="geister-zero",
+               config={"dirichlet_alpha": 0.2})
 
-    logdir = Path(__file__).parent / "log"
-    if logdir.exists():
-        shutil.rmtree(logdir)
-    summary_writer = tf.summary.create_file_writer(str(logdir))
+    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
-
-    key, key1, key2 = jax.random.split(jax.random.PRNGKey(0), 3)
-
-    dummy_tokens = game.get_tokens(game.get_initial_state(), 1, 200)
-
-    variables = model.init(key1, dummy_tokens[np.newaxis, ...])
-    state = TrainState.create(
+    ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
+    state = network.TrainState.create(
         apply_fn=model.apply,
-        params=variables['params'],
+        params=ckpt['params'],
         tx=optax.adam(learning_rate=0.00005),
-        dropout_rng=key2,
-        epoch=0)
+        dropout_rng=ckpt['dropout_rng'],
+        epoch=ckpt['epoch'])
 
-    ckpt_dir = './checkpoints/'
-    prefix = 'geister_'
-
-    state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=state)
-
-    current_weights = ray.put(state.params)
-
-    checkpoints.save_checkpoint(
-        ckpt_dir=ckpt_dir, prefix=prefix,
-        target=state, step=state.epoch, overwrite=True)
-
+    sample_queue = mp.Queue()
+    n_updates = mp.Value('i', 0)
     replay = ReplayBuffer(buffer_size=buffer_size)
 
-    work_in_progresses = [
-        selfplay.remote(state, current_weights, 32, num_mcts_simulations, dirichlet_alpha)
-        for _ in range(num_cpus - 4)]
+    def create_process(q, n):
+        args = q, n, num_mcts_simulations, dirichlet_alpha
+        return mp.Process(target=start_selfplay_process, args=args)
 
-    test_in_progress = testplay.remote(state, current_weights, num_mcts_simulations, n_testplay=n_testplay)
+    processes = [create_process(sample_queue, n_updates) for _ in range(16)]
+    for process in processes:
+        process.start()
 
-    n_updates = 0
-    n = 0
-    while n <= n_episodes:
-        for _ in tqdm(range(update_period)):
-            #: selfplayが終わったプロセスを一つ取得
-            finished, work_in_progresses = ray.wait(work_in_progresses, num_returns=1)
-            replay.add_record(ray.get(finished[0]))
-            work_in_progresses.extend([
-                selfplay.remote(state, current_weights, 32, num_mcts_simulations, dirichlet_alpha)
-            ])
-            n += 1
+    while True:
+        for i in tqdm(range(update_period)):
+            while sample_queue.empty():
+                pass
+            sample = sample_queue.get()
+            replay.add_record([sample])
 
         num_iters = epochs_per_update * (len(replay) // batch_size)
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
 
-            state, loss, info = train_step(state, *batch, eval=False)
+            state, loss, info = network.train_step(state, *batch, eval=False)
 
-            n_updates += 1
+        wandb.log({"loss": loss,
+                   "loss policy": info[0],
+                   "loss reward": info[1],
+                   "loss pieces": info[2],
+                   "acc pieces": info[3]
+                   })
 
-            if i % 100 == 0:
-                with summary_writer.as_default():
-                    tf.summary.scalar("loss", loss, step=n_updates)
-                    tf.summary.scalar("loss policy", info[0], step=n_updates)
-                    tf.summary.scalar("loss reward", info[1], step=n_updates)
-                    tf.summary.scalar("loss pieces", info[2], step=n_updates)
-                    tf.summary.scalar("acc pieces", info[3], step=n_updates)
+        checkpoints.save_checkpoint(
+            ckpt_dir=CKPT_DIR, prefix=PREFIX,
+            target=state, step=n_updates.value, overwrite=True, keep=5)
 
-        current_weights = ray.put(state.params)
-
-        if n % test_period == 0:
-            print(f"{n - test_period}: TEST")
-            win_ratio = ray.get(test_in_progress)
-            print(f"SCORE: {win_ratio}")
-            test_in_progress = testplay.remote(state, current_weights, num_mcts_simulations, n_testplay=n_testplay)
-
-            with summary_writer.as_default():
-                tf.summary.scalar("win_ratio", win_ratio, step=n-test_period)
-                tf.summary.scalar("buffer_size", len(replay), step=n)
-
-        if n % save_period == 0:
-            checkpoints.save_checkpoint(
-                ckpt_dir=ckpt_dir, prefix=prefix,
-                target=state, step=n//save_period, overwrite=True, keep=5)
+        n_updates.value += 1
 
 
 if __name__ == "__main__":
@@ -180,5 +181,5 @@ if __name__ == "__main__":
 
     except Exception:
         import traceback
-        with open('error.log', 'a') as f:
+        with open('error.log', 'w') as f:
             traceback.print_exc(file=f)
