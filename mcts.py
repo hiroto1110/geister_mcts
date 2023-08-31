@@ -106,16 +106,14 @@ def simulate(node: Node,
     return v
 
 
-EPS = 0.25
-
-
 def step(node1: Node,
          node2: Node,
          state: game.State,
          player: int,
          pred_state: PredictState,
          num_sim: int,
-         alpha: float = None):
+         alpha: float = None,
+         eps: float = 0.25):
     node = node1 if player == 1 else node2
 
     if alpha is not None:
@@ -123,7 +121,7 @@ def step(node1: Node,
         dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(valid_actions))
 
         for a, noise in zip(valid_actions, dirichlet_noise):
-            node.p[a] = (1 - EPS) * node.p[a] + EPS * noise
+            node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
     for i in range(num_sim):
         # start = time.perf_counter()
@@ -141,7 +139,7 @@ def step(node1: Node,
     if node2.children[action] is None:
         expand(node2, state, action, pred_state)
 
-    return policy, node1.children[action], node2.children[action]
+    return action, node1.children[action], node2.children[action]
 
 
 def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
@@ -178,7 +176,7 @@ def play_test_game(pred_state, model):
 
     for i in range(200):
         # start = time.perf_counter()
-        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=25)
+        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=25, alpha=0.3)
         # print(f"step: {i}, {time.perf_counter() - start}")
 
         board = np.zeros(36, dtype=np.int8)
@@ -199,7 +197,7 @@ def play_test_game(pred_state, model):
 
 
 def test():
-    data = [jnp.load(f"data_{i}.npy") for i in range(4)]
+    # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
     model_with_cache = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
@@ -210,7 +208,7 @@ def test():
     pred_state = PredictState(apply_fn=model_with_cache.apply,
                               params=ckpt['params'])
 
-    init_jit(pred_state, model_with_cache, data)
+    # init_jit(pred_state, model_with_cache, data)
 
     for i in range(2):
         start = time.perf_counter()

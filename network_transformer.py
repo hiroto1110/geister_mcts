@@ -4,9 +4,9 @@ from functools import partial
 
 import jax
 from jax import random, numpy as jnp
-import optax
 from flax import linen as nn
 from flax.training import train_state, checkpoints
+import optax
 
 import matplotlib.pyplot as plt
 
@@ -240,23 +240,23 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
                                      rngs={'dropout': dropout_rng})
 
     # [Batch, SeqLen, 144]
-    y_pi = y_pi.reshape((-1, x.shape[1], 144))
-    # y_pi = y_pi.reshape((-1, x.shape[1]))
-    # [Batch, 1] <- [Batch, SeqLen, 1]
-    y_v = jnp.tile(y_v, x.shape[1]).reshape((-1, x.shape[1], 1))
-    # [Batch, 8] <- [Batch, SeqLen, 8]
-    y_color = jnp.tile(y_color, x.shape[1]).reshape((-1, x.shape[1], 8))
+    y_pi = y_pi.reshape((-1, x.shape[1]))
+    # y_pi = y_pi.reshape((-1, x.shape[1], 144))
+    y_v = y_v.reshape((-1, 1, 1))
+    y_color = y_color.reshape((-1, 1, 8))
 
-    # loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean()
-    loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean()
-    loss_v = optax.squared_error(v, y_v).mean()
-    loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean()
+    loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean(axis=0)
+    # loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean(axis=0)
+    loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
+    loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=(0, 2))
 
-    loss = loss_pi + loss_v + loss_color
+    loss = jnp.mean(loss_pi + loss_v + loss_color)
 
-    acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2)).max()
+    acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2))
 
-    return loss, (loss_pi, loss_v, loss_color, acc_piece)
+    info = jnp.stack([loss_pi, loss_v, loss_color, acc_piece], axis=0)
+
+    return loss, info
 
 
 @partial(jax.jit, static_argnames=['eval'])
@@ -281,7 +281,7 @@ def train_epoch(state, data_batched, eval):
         state, loss, info = train_step(state, x, y_pi, y_v, y_color, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
-    return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
+    return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=(0, 2))
 
 
 def create_batches(data, batch_size):
