@@ -35,5 +35,4 @@ class ReplayBuffer:
         return tokens, mcts_policy, rewards, pieces
 
     def add_record(self, record):
-        for sample in record:
-            self.buffer.append(sample)
+        self.buffer.append(record)

@@ -106,6 +106,58 @@ def simulate(node: Node,
     return v
 
 
+def manhattan_distance(p1, p2):
+    x1 = p1 % 6
+    y1 = p1 // 6
+    x2 = p2 % 6
+    y2 = p2 // 6
+
+    return abs(x1 - x2) + abs(y1 - y2)
+
+
+def pos_diff(p1, p2):
+    x1 = p1 % 6
+    y1 = p1 // 6
+    x2 = p2 % 6
+    y2 = p2 // 6
+
+    return (x1 - x2), (y1 - y2)
+
+
+def search_checkmate(state: game.State, player: int):
+    if player == 1:
+        escape_pos = game.ESCAPE_POS_P
+        pieces_p = state.pieces_p[state.color_p == game.BLUE]
+        pieces_o = state.pieces_o
+    else:
+        escape_pos = game.ESCAPE_POS_O
+        pieces_p = state.pieces_o[state.color_o == game.BLUE]
+        pieces_o = state.pieces_p
+
+    pieces_p = pieces_p[pieces_p >= 0]
+    pieces_o = pieces_o[pieces_o >= 0]
+
+    for pos in escape_pos:
+        d_p = manhattan_distance(pos, pieces_p)
+        d_o = manhattan_distance(pos, pieces_o)
+
+        if d_p.min() >= d_o.min():
+            continue
+
+        p_pos = pieces_p[np.argmin(d_p)]
+
+        x_diff, y_diff = pos_diff(p_pos, pos)
+        if y_diff != 0:
+            action_d = 0 if y_diff > 0 else 3
+        else:
+            action_d = 1 if x_diff > 0 else 2
+
+        action = p_pos * 4 + action_d
+        return True, action
+
+    return False, -1
+
+
 def step(node1: Node,
          node2: Node,
          state: game.State,
@@ -114,22 +166,28 @@ def step(node1: Node,
          num_sim: int,
          alpha: float = None,
          eps: float = 0.25):
-    node = node1 if player == 1 else node2
+    is_checkmate, action = search_checkmate(state, player)
 
-    if alpha is not None:
-        valid_actions = game.get_valid_actions(state, player)
-        dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(valid_actions))
+    if not is_checkmate:
+        node = node1 if player == 1 else node2
 
-        for a, noise in zip(valid_actions, dirichlet_noise):
-            node.p[a] = (1 - eps) * node.p[a] + eps * noise
+        if alpha is not None:
+            valid_actions = game.get_valid_actions(state, player)
+            dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(valid_actions))
 
-    for i in range(num_sim):
-        # start = time.perf_counter()
-        simulate(node, state, player, pred_state)
-        # print(f"sim: {i}, {time.perf_counter() - start}")
+            for a, noise in zip(valid_actions, dirichlet_noise):
+                node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
-    policy = node.get_policy()
-    action = np.argmax(policy)
+        for i in range(num_sim):
+            # start = time.perf_counter()
+            simulate(node, state, player, pred_state)
+            # print(f"sim: {i}, {time.perf_counter() - start}")
+
+        policy = node.get_policy()
+        action = np.argmax(policy)
+    else:
+        # print("find checkmate!")
+        pass
 
     state.step(action, player)
 
@@ -174,9 +232,9 @@ def play_test_game(pred_state, model):
     node1 = create_root_node(state, pred_state, model, 1)
     node2 = create_root_node(state, pred_state, model, -1)
 
-    for i in range(200):
+    for i in range(300):
         # start = time.perf_counter()
-        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=25, alpha=0.3)
+        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=50, alpha=0.3)
         # print(f"step: {i}, {time.perf_counter() - start}")
 
         board = np.zeros(36, dtype=np.int8)
@@ -187,6 +245,7 @@ def play_test_game(pred_state, model):
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
 
         print(str(board.reshape((6, 6))).replace('0', ' '))
+        print(i)
 
         if game.is_done(state, player):
             break
@@ -210,7 +269,7 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    for i in range(2):
+    for i in range(1):
         start = time.perf_counter()
         play_test_game(pred_state, model_with_cache)
         print(f"time: {time.perf_counter() - start} s")

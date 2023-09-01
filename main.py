@@ -18,8 +18,6 @@ import mcts
 def start_selfplay_process(sender, n_updates,
                            num_mcts_simulations: int, dirichlet_alpha):
     with jax.default_device(jax.devices("cpu")[0]):
-        # print(f"device: {jax.devices()}")
-
         model = create_model()
 
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
@@ -28,12 +26,8 @@ def start_selfplay_process(sender, n_updates,
         last_n_updates = n_updates.value
 
         while True:
-            # start = time.perf_counter()
             sample = selfplay(pred_state, model, num_mcts_simulations, dirichlet_alpha)
-            # end = time.perf_counter()
-            # print(f"game is done: {end - start}")
 
-            # queue.put(sample)
             sender.send(sample)
 
             if last_n_updates != n_updates.value:
@@ -72,7 +66,7 @@ def selfplay(pred_state: mcts.PredictState,
 
     record_player = np.random.choice([1, -1])
 
-    reward = game.get_result(state, record_player)
+    reward = state.winner * state.win_type.value * record_player
     tokens = game.get_tokens(state, record_player, 200)
     color = state.color_o if record_player == 1 else state.color_p
 
@@ -141,7 +135,6 @@ def main(n_clients=24,
 
     pipe = MultiSenderPipe(n_clients)
     n_updates = mp.Value('i', 0)
-    replay = ReplayBuffer(buffer_size=buffer_size)
 
     for i in range(n_clients):
         sender = pipe.get_sender(i)
@@ -149,13 +142,15 @@ def main(n_clients=24,
         process = mp.Process(target=start_selfplay_process, args=args)
         process.start()
 
+    replay = ReplayBuffer(buffer_size=buffer_size)
+
     while True:
         for i in tqdm(range(update_period)):
             while not pipe.poll():
                 pass
 
             sample = pipe.recv()
-            replay.add_record([sample])
+            replay.add_record(sample)
 
         num_iters = epochs_per_update * (len(replay) // batch_size)
         info = np.zeros((num_iters, 4, 200))
@@ -187,7 +182,7 @@ def main(n_clients=24,
 
         checkpoints.save_checkpoint(
             ckpt_dir=CKPT_DIR, prefix=PREFIX,
-            target=state, step=n_updates.value, overwrite=True, keep=5)
+            target=state, step=n_updates.value, overwrite=True, keep=50)
 
         n_updates.value += 1
 

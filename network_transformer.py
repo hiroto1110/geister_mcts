@@ -242,7 +242,7 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
     # [Batch, SeqLen, 144]
     y_pi = y_pi.reshape((-1, x.shape[1]))
     # y_pi = y_pi.reshape((-1, x.shape[1], 144))
-    y_v = y_v.reshape((-1, 1, 1))
+    y_v = jnp.clip(y_v.reshape((-1, 1, 1)), -1, 1)
     y_color = y_color.reshape((-1, 1, 8))
 
     loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean(axis=0)

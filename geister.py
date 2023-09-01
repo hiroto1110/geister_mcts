@@ -1,5 +1,6 @@
 import random
 import time
+from enum import Enum
 
 import numpy as np
 
@@ -18,6 +19,13 @@ ESCAPE_POS_O = 0, 5
 CAPTURED = -1
 
 TOKEN_SIZE = 5
+
+
+class WinType(Enum):
+    DRAW = 0
+    ESCAPE = 1
+    BLUE_4 = 2
+    RED_4 = 3
 
 
 class State:
@@ -40,6 +48,7 @@ class State:
 
         self.is_done = False
         self.winner = 0
+        self.win_type = WinType.DRAW
         self.n_ply = 0
 
     def undo_step(self, action: int, player: int):
@@ -142,21 +151,25 @@ class State:
 
         if np.all(self.pieces_p[self.color_p == BLUE] == CAPTURED):
             self.is_done = True
+            self.win_type = WinType.BLUE_4
             self.winner = -1
             return
 
         if np.all(self.pieces_p[self.color_p == RED] == CAPTURED):
             self.is_done = True
+            self.win_type = WinType.RED_4
             self.winner = 1
             return
 
         if np.all(self.pieces_o[self.color_o == BLUE] == CAPTURED):
             self.is_done = True
+            self.win_type = WinType.BLUE_4
             self.winner = 1
             return
 
         if np.all(self.pieces_o[self.color_o == RED] == CAPTURED):
             self.is_done = True
+            self.win_type = WinType.RED_4
             self.winner = -1
             return
 
@@ -173,10 +186,12 @@ class State:
 
         if np.any(escaped):
             self.is_done = True
+            self.win_type = WinType.ESCAPE
             self.winner = -player
             return
 
         self.is_done = False
+        self.win_type = WinType.DRAW
         self.winner = 0
 
 
