@@ -2,6 +2,7 @@ from typing import Any
 import time
 from functools import partial
 
+import numpy as np
 import jax
 from jax import random, numpy as jnp
 from flax import linen as nn
@@ -9,6 +10,8 @@ from flax.training import train_state, checkpoints
 import optax
 
 import matplotlib.pyplot as plt
+
+import geister
 
 
 class Embeddings(nn.Module):
@@ -49,8 +52,6 @@ class MultiHeadAttention(nn.Module):
         v = v.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
         q = q.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
         k = k.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
-
-        # print(v[0, -1, 0])
 
         # [Batch, Head, SeqLen, SeqLen]
         attention = (jnp.einsum('...qhd,...khd->...hqk', q, k) / jnp.sqrt(head_dim))
@@ -341,6 +342,34 @@ def line_to_tokens(line, max_length):
 
     init_pieces_p = tokens[0]
     init_pieces_o = tokens[1]
+
+    init_pieces_p = np.array([int(c) for c in init_pieces_p])
+    init_pieces_o = np.array([int(c) for c in init_pieces_o])
+
+    winner = int(tokens[2])
+    # win_type = int(tokens[3])
+    moves = tokens[4:]
+
+    state = geister.State(init_pieces_p, init_pieces_o)
+    player = 1
+
+    for token in moves:
+        pos, d_i = token.split('-')
+        action = int(pos) * 4 + int(d_i)
+        state.step(action, player)
+        player = -player
+
+    tokens = geister.get_tokens(state, 1, max_length)
+    tokens = jnp.array(tokens, dtype=jnp.uint8)
+
+    actions = np.random.randint(0, 144, size=tokens.shape[0])
+    actions = jnp.array(actions)
+
+    return tokens, actions, [winner], init_pieces_o
+    tokens = line.split()
+
+    init_pieces_p = tokens[0]
+    init_pieces_o = tokens[1]
     winner = int(tokens[2])
     # win_type = int(tokens[3])
     moves = tokens[4:]
@@ -596,7 +625,7 @@ def main():
 
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=3)
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 

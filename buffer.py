@@ -1,38 +1,67 @@
-import collections
-from typing import List
 from dataclasses import dataclass
 import numpy as np
+import geister as game
 
 
 @dataclass
 class Sample:
     tokens: np.ndarray
-    mcts_policy: np.ndarray
+    policy: np.ndarray
     player: int
     reward: int
-    pieces: List[int]
+    pieces: np.ndarray
 
 
 class ReplayBuffer:
-    buffer: List[Sample]
+    buffer_size: int
+    index: int
+    n_samples: int
 
-    def __init__(self, buffer_size):
-        self.buffer = collections.deque(maxlen=buffer_size)
+    tokens_buffer: np.ndarray
+    policy_buffer: np.ndarray
+    reward_buffer: np.ndarray
+    pieces_buffer: np.ndarray
+
+    def __init__(self, buffer_size, seq_length):
+        self.buffer_size = buffer_size
+        self.index = 0
+        self.n_samples = 0
+
+        self.tokens_buffer = np.zeros((buffer_size, seq_length, game.TOKEN_SIZE), dtype=np.uint8)
+        self.policy_buffer = np.zeros((buffer_size, seq_length), dtype=np.uint8)
+        self.reward_buffer = np.zeros((buffer_size, 1), dtype=np.int8)
+        self.pieces_buffer = np.zeros((buffer_size, 8), dtype=np.uint8)
 
     def __len__(self):
-        return len(self.buffer)
+        return self.n_samples
 
     def get_minibatch(self, batch_size):
-        indices = np.random.choice(range(len(self.buffer)), size=batch_size)
+        indices = np.random.choice(range(self.n_samples), size=batch_size)
 
-        samples = [self.buffer[idx] for idx in indices]
+        tokens = self.tokens_buffer[indices]
+        policy = self.policy_buffer[indices]
+        reward = self.reward_buffer[indices]
+        pieces = self.pieces_buffer[indices]
 
-        tokens = np.array([s.tokens for s in samples], dtype=np.uint8)
-        mcts_policy = np.array([s.mcts_policy for s in samples], dtype=np.uint8)
-        rewards = np.array([s.reward for s in samples], dtype=np.int8)
-        pieces = np.array([s.pieces for s in samples], dtype=np.uint8)
+        return tokens, policy, reward, pieces
 
-        return tokens, mcts_policy, rewards, pieces
+    def add_sample(self, sample: Sample):
+        self.tokens_buffer[self.index] = sample.tokens
+        self.policy_buffer[self.index] = sample.policy
+        self.reward_buffer[self.index] = sample.reward
+        self.pieces_buffer[self.index] = sample.pieces
 
-    def add_record(self, record):
-        self.buffer.append(record)
+        self.n_samples = max(self.n_samples, self.index + 1)
+        self.index = (self.index + 1) % self.buffer_size
+
+    def save(self, save_dir):
+        np.save(save_dir + '/tokens.npy', self.tokens_buffer)
+        np.save(save_dir + '/policy.npy', self.policy_buffer)
+        np.save(save_dir + '/reward.npy', self.reward_buffer)
+        np.save(save_dir + '/pieces.npy', self.pieces_buffer)
+
+    def load(self, save_dir):
+        self.tokens_buffer = np.load(save_dir + '/tokens.npy')
+        self.policy_buffer = np.load(save_dir + '/policy.npy')
+        self.reward_buffer = np.load(save_dir + '/reward.npy')
+        self.pieces_buffer = np.load(save_dir + '/pieces.npy')

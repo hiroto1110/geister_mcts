@@ -11,6 +11,7 @@ import jax
 from flax.training import checkpoints
 
 import geister as game
+import geister_minimax
 from network_transformer import TransformerDecoderWithCache
 
 
@@ -91,7 +92,7 @@ def simulate(node: Node,
 
     action = np.argmax(scores)
 
-    state.step(action, player)
+    state.step(action, player, is_sim=True)
 
     if node.children[action] is None:
         v = -expand(node, state, action, pred_state)
@@ -107,12 +108,8 @@ def simulate(node: Node,
 
 
 def manhattan_distance(p1, p2):
-    x1 = p1 % 6
-    y1 = p1 // 6
-    x2 = p2 % 6
-    y2 = p2 // 6
-
-    return abs(x1 - x2) + abs(y1 - y2)
+    x_diff, y_diff = pos_diff(p1, p2)
+    return abs(x_diff) + abs(y_diff)
 
 
 def pos_diff(p1, p2):
@@ -166,9 +163,11 @@ def step(node1: Node,
          num_sim: int,
          alpha: float = None,
          eps: float = 0.25):
-    is_checkmate, action = search_checkmate(state, player)
 
-    if not is_checkmate:
+    # is_checkmate, action = search_checkmate(state, player)
+    action = geister_minimax.solve_root(state, player, depth=5)
+
+    if action == -1:
         node = node1 if player == 1 else node2
 
         if alpha is not None:
@@ -178,24 +177,19 @@ def step(node1: Node,
             for a, noise in zip(valid_actions, dirichlet_noise):
                 node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
-        for i in range(num_sim):
-            # start = time.perf_counter()
+        for _ in range(num_sim):
             simulate(node, state, player, pred_state)
-            # print(f"sim: {i}, {time.perf_counter() - start}")
 
         policy = node.get_policy()
         action = np.argmax(policy)
     else:
-        # print("find checkmate!")
+        print("find checkmate!")
         pass
 
-    state.step(action, player)
+    state.step(action, player, is_sim=False)
 
-    if node1.children[action] is None:
-        expand(node1, state, action, pred_state)
-
-    if node2.children[action] is None:
-        expand(node2, state, action, pred_state)
+    expand(node1, state, action, pred_state)
+    expand(node2, state, action, pred_state)
 
     return action, node1.children[action], node2.children[action]
 
@@ -232,9 +226,9 @@ def play_test_game(pred_state, model):
     node1 = create_root_node(state, pred_state, model, 1)
     node2 = create_root_node(state, pred_state, model, -1)
 
-    for i in range(300):
+    for i in range(200):
         # start = time.perf_counter()
-        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=50, alpha=0.3)
+        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=10, alpha=0.3)
         # print(f"step: {i}, {time.perf_counter() - start}")
 
         board = np.zeros(36, dtype=np.int8)
@@ -269,7 +263,7 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    for i in range(1):
+    for i in range(2):
         start = time.perf_counter()
         play_test_game(pred_state, model_with_cache)
         print(f"time: {time.perf_counter() - start} s")

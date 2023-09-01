@@ -88,7 +88,7 @@ class State:
         if self.is_done:
             self.update_is_done(player)
 
-    def step(self, action: int, player: int):
+    def step(self, action: int, player: int, is_sim: bool = False):
         self.n_ply += 1
 
         pieces_p = self.pieces_p
@@ -130,7 +130,7 @@ class State:
             pieces_o[p_cap_id] = CAPTURED
 
             tokens_p.append([
-                color_o[p_cap_id] + 2,
+                4 if is_sim else (color_o[p_cap_id] + 2),
                 p_cap_id + 8,
                 6, 6, self.n_ply])
 

@@ -10,120 +10,76 @@ import geister as game
 
 
 def create(player, depth):
-    return SearchParam(player, depth, -100000, 100000)
+    return SearchParam(player, player, depth, depth, -100000, 100000)
 
 
 @dataclass
 class SearchParam:
+    root_player: int
     player: int
+    root_depth: int
     depth: int
     alpha: float
     beta: float
 
     def deepen(self):
-        return SearchParam(-self.player, self.depth - 1, -self.beta, -self.alpha)
+        return SearchParam(self.root_player, -self.player,
+                           self.root_depth, self.depth - 1,
+                           -self.beta, -self.alpha)
 
     def null_window(self):
-        return SearchParam(-self.player, self.depth - 1, -self.alpha - 1, -self.alpha)
+        return SearchParam(self.root_player, -self.player,
+                           self.root_depth, self.depth - 1,
+                           -self.alpha - 1, -self.alpha)
 
 
-def step_as_purple(state: game.State, action: int, player: int):
-    next_state = copy.deepcopy(state)
-    next_state.n_ply += 1
+def solve_root(state: game.State, player: int, depth: int):
+    p = create(player, depth)
 
-    pos = game.action_to_pos(action)
-    d = game.action_to_direction(action)
-    pos_next = pos + d
+    actions = game.get_valid_actions(state, p.player)
 
-    piece = next_state.board[pos]
-    piece_next = next_state.board[pos_next]
+    max_e = 0
+    max_a = -1
 
-    assert piece * player > 0
-    assert piece_next * player <= 0
+    for action in actions:
+        state.step(action, p.player)
+        e = -solve(state, p.deepen())
+        state.undo_step(action, p.player)
 
-    if piece_next != 0:
-        if player == 1:
-            next_state.captured_p[1] += 1
-        else:
-            next_state.captured_o[piece_next - 1] += 1
+        if max_e < e:
+            max_e = e
+            max_a = action
 
-    next_state.board[pos_next] = piece
-    next_state.board[pos] = 0
+        p.alpha = max(p.alpha, e)
 
-    flag = next_state.board == -1
-    next_state.board[flag] = -2
-
-    next_state.update_is_done(player)
-
-    next_state.board[flag] = -1
-
-    return next_state, next_state.is_done
-
-
-def eval_state(state: game.State, player):
-    e_cap = 0
-    e_cap += state.captured_p[0] - state.captured_p[1]
-    e_cap -= state.captured_o[0] - state.captured_o[1]
-
-    e_win = state.winner * 100
-
-    pos1 = np.where(state.board == 1)[0]
-    x = (pos1 % 6)
-    y = pos1 / 6
-    d1 = np.abs(x - 2.5) + y
-
-    pos2 = np.where(state.board < 0)[0]
-    x = (pos2 % 6)
-    y = pos2 / 6
-    d2 = np.abs(x - 2.5) + 6 - y
-
-    if d1.shape[0] == 0:
-        d1 = 0
-
-    if d2.shape[0] == 0:
-        d2 = 0
-
-    e_esc = np.mean(d1) - np.mean(d2)
-    e_esc *= 4
-
-    return (e_cap + e_esc + e_win) * player
+    return max_a
 
 
 def solve(state: game.State, p: SearchParam):
     if p.depth <= 0:
-        return eval_state(state, p.player), -1
+        return 0
+
+    state.update_is_done(p.player)
+
+    if state.is_done:
+        return state.winner * p.player * (p.depth + 1)
 
     actions = game.get_valid_actions(state, p.player)
 
-    next_state, done = step_as_purple(state, actions[0], p.player)
-    max_e, _ = solve(next_state, p.deepen())
-    max_e *= -1
-    max_a = actions[0]
+    max_e = -100
 
-    for action in actions[1:]:
-        next_state, done = step_as_purple(state, action, p.player)
-        e, _ = solve(next_state, p.null_window())
-        e *= -1
+    for action in actions:
+        state.step(action, p.player)
+        e = -solve(state, p.deepen())
+        state.undo_step(action, p.player)
 
-        if p.beta <= e:
-            return e, -1
+        max_e = max(max_e, e)
+        p.alpha = max(p.alpha, e)
 
-        if p.alpha < e:
-            p.alpha = e
-            e, _ = solve(next_state, p.deepen())
-            e *= -1
+        if p.beta <= p.alpha:
+            return max_e
 
-            if p.beta <= e:
-                return e, -1
-
-            if p.alpha < e:
-                max_a = action
-                p.alpha = e
-
-        if max_e < e:
-            max_e = e
-
-    return max_e, max_a
+    return max_e
 
 
 def as_relative(state, player):
