@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 build/
 cython/
+checkpoints/
 log/
 data_*.npy
 log.txt
