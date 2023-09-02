@@ -19,6 +19,7 @@ ESCAPE_POS_O = 0, 5
 CAPTURED = -1
 
 TOKEN_SIZE = 5
+MAX_TOKEN_LENGTH = 200
 
 
 class WinType(Enum):
@@ -26,6 +27,202 @@ class WinType(Enum):
     ESCAPE = 1
     BLUE_4 = 2
     RED_4 = 3
+
+
+class StateNdarray:
+    def __init__(self, color_p, color_o):
+        self.pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
+        self.pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
+
+        self.color_p = color_p
+        self.color_o = color_o
+
+        self.tokens_p = np.zeros((MAX_TOKEN_LENGTH, TOKEN_SIZE), dtype=np.uint8)
+        self.tokens_o = np.zeros((MAX_TOKEN_LENGTH, TOKEN_SIZE), dtype=np.uint8)
+        self.n_tokens = 8
+
+        for p_id in range(8):
+            pos = self.pieces_p[p_id]
+            self.tokens_p[p_id] = (self.color_p[p_id], p_id, pos % 6, pos // 6, 0)
+
+            pos = self.pieces_o[p_id]
+            self.tokens_o[p_id] = (self.color_o[p_id], p_id, pos % 6, pos // 6, 0)
+
+        self.is_done = False
+        self.winner = 0
+        self.win_type = WinType.DRAW
+        self.n_ply = 0
+
+    def undo_step(self, action: int, player: int):
+        pieces_p = self.pieces_p
+        pieces_o = self.pieces_o
+        tokens_p = self.tokens_p
+        tokens_o = self.tokens_o
+
+        if player == -1:
+            pieces_p, pieces_o = pieces_o, pieces_p
+            tokens_p, tokens_o = tokens_o, tokens_p
+
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(pieces_p == pos_next)[0][0]
+
+        pieces_p[p_id] = pos
+
+        self.n_tokens -= 1
+
+        if self.n_tokens > 0 and self.tokens_p[self.n_tokens, 4] == self.tokens_p[self.n_tokens - 1, 4]:
+            p_cap_id = tokens_o[self.n_tokens, 1]
+            pieces_o[p_cap_id] = pos_next
+
+            self.n_tokens -= 1
+
+        self.n_ply -= 1
+
+        self.is_done = False
+        self.winner = 0
+
+        if self.is_done:
+            self.update_is_done(player)
+
+    def step(self, action: int, player: int, is_sim: bool = False):
+        self.n_ply += 1
+
+        pieces_p = self.pieces_p
+        pieces_o = self.pieces_o
+        color_p = self.color_p
+        color_o = self.color_o
+        tokens_p = self.tokens_p
+        tokens_o = self.tokens_o
+
+        if player == -1:
+            pieces_p, pieces_o = pieces_o, pieces_p
+            color_p, color_o = color_o, color_p
+            tokens_p, tokens_o = tokens_o, tokens_p
+
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(pieces_p == pos)[0][0]
+        p_cap_id = np.where(pieces_o == pos_next)[0]
+
+        tokens_p[self.n_tokens] = (
+            color_p[p_id],
+            p_id,
+            pos_next % 6,
+            pos_next // 6,
+            self.n_ply)
+
+        tokens_o[self.n_tokens] = (
+            4,
+            p_id + 8,
+            pos_next % 6,
+            pos_next // 6,
+            self.n_ply)
+
+        self.n_tokens += 1
+
+        if len(p_cap_id) > 0:
+            p_cap_id = p_cap_id[0]
+            pieces_o[p_cap_id] = CAPTURED
+
+            tokens_p[self.n_tokens] = (
+                4 if is_sim else (color_o[p_cap_id] + 2),
+                p_cap_id + 8,
+                6, 6, self.n_ply)
+
+            tokens_o[self.n_tokens] = (
+                color_o[p_cap_id],
+                p_cap_id,
+                6, 6, self.n_ply)
+
+            self.n_tokens += 1
+
+        pieces_p[p_id] = pos_next
+
+        self.update_is_done(player)
+
+    def update_is_done(self, player, is_purple_sim: bool = False):
+        if self.n_ply > 200:
+            self.is_done = True
+            self.winner = 0
+            return
+
+        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.BLUE_4
+            self.winner = -1
+            return
+
+        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.RED_4
+            self.winner = 1
+            return
+
+        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.BLUE_4
+            self.winner = 1
+            return
+
+        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.RED_4
+            self.winner = -1
+            return
+
+        if player == -1:
+            pieces = self.pieces_p
+            color = self.color_p
+            escape_pos = ESCAPE_POS_P
+        else:
+            pieces = self.pieces_o
+            color = self.color_o
+            escape_pos = ESCAPE_POS_O
+
+        if is_purple_sim:
+            color = BLUE
+
+        escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
+
+        if np.any(escaped):
+            self.is_done = True
+            self.win_type = WinType.ESCAPE
+            self.winner = -player
+            return
+
+        self.is_done = False
+        self.win_type = WinType.DRAW
+        self.winner = 0
+
+    def get_tokens(self, player: int):
+        if player == 1:
+            tokens = self.tokens_p
+        else:
+            tokens = self.tokens_o
+
+        if self.n_tokens < MAX_TOKEN_LENGTH:
+            tokens[self.n_tokens:] = 0
+
+        return tokens
+
+    def get_last_tokens(self, player: int):
+        if player == 1:
+            tokens = self.tokens_p
+        else:
+            tokens = self.tokens_o
+
+        i = self.n_tokens
+        if tokens[i-2, 4] == tokens[i-1, 4]:
+            return tokens[i-2:i]
+        else:
+            return tokens[i-1:i]
 
 
 class State:
@@ -197,16 +394,26 @@ class State:
         self.win_type = WinType.DRAW
         self.winner = 0
 
+    def get_tokens(self, player: int):
+        if player == 1:
+            tokens = self.tokens_p
+        else:
+            tokens = self.tokens_o
 
-def get_tokens(state: State, player: int, max_length: int):
-    if player == 1:
-        tokens = state.tokens_p
-    else:
-        tokens = state.tokens_o
+        tokens = np.array(tokens[:MAX_TOKEN_LENGTH], dtype=np.uint8)
+        tokens = np.resize(tokens, (MAX_TOKEN_LENGTH, TOKEN_SIZE))
+        return tokens
 
-    tokens = np.array(tokens[:max_length], dtype=np.int16)
-    tokens = np.resize(tokens, (max_length, TOKEN_SIZE))
-    return tokens
+    def get_last_tokens(self, player: int):
+        if player == 1:
+            tokens = self.tokens_p
+        else:
+            tokens = self.tokens_o
+
+        if tokens[-1][4] == tokens[-2][4]:
+            return tokens[-2:]
+        else:
+            return tokens[-1:]
 
 
 def get_initial_state():
@@ -323,20 +530,20 @@ def test_moves():
     while not done:
         moves = get_valid_actions(state, player)
 
-        move = random.choice(moves)
+        move = np.random.choice(moves)
         move_history.append(move)
 
         state.step(move, player)
         done = state.is_done
 
-        board = np.zeros(36, dtype=np.int8)
+        """board = np.zeros(36, dtype=np.int8)
 
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
 
-        print(str(board.reshape((6, 6))).replace('0', ' '))
+        print(str(board.reshape((6, 6))).replace('0', ' '))"""
         print(state.n_ply)
 
         player = -player
@@ -347,23 +554,29 @@ def test_moves():
         player = -player
         state.undo_step(move, player)
 
-        board = np.zeros(36, dtype=np.int8)
+        """board = np.zeros(36, dtype=np.int8)
 
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
 
-        print(str(board.reshape((6, 6))).replace('0', ' '))
+        print(str(board.reshape((6, 6))).replace('0', ' '))"""
         print(state.n_ply)
 
-    tokens = get_tokens(state, 1, 200)
+    tokens = state.get_tokens(1)
     print(tokens)
 
 
 if __name__ == "__main__":
-    test_performance()
-    test_performance()
+    np.random.seed(12)
+
+    start = time.perf_counter()
+    for i in range(10):
+        test_moves()
+    end = time.perf_counter()
+
+    print(f"time: {end - start}")
 
 
 def evaluate_greedy(state: State, player: int):

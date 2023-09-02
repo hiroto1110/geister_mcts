@@ -7,7 +7,6 @@ import geister as game
 class Sample:
     tokens: np.ndarray
     policy: np.ndarray
-    player: int
     reward: int
     pieces: np.ndarray
 

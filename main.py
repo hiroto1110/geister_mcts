@@ -61,20 +61,19 @@ def selfplay(pred_state: mcts.PredictState,
 
         actions[i] = action
 
-        if game.is_done(state, player):
+        if state.is_done:
             break
 
         player = -player
 
     record_player = np.random.choice([1, -1])
 
+    tokens = state.get_tokens(record_player)
+    actions = actions[tokens[:, 4]]
     reward = int(state.winner * state.win_type.value * record_player)
-    tokens = game.get_tokens(state, record_player, 200)
     color = state.color_o if record_player == 1 else state.color_p
 
-    actions = actions[tokens[:, 4]]
-
-    return Sample(tokens, actions, record_player, reward, color)
+    return Sample(tokens, actions, reward, color)
 
 
 def testplay(train_state, model, num_mcts_simulations, dirichlet_alpha=None, n_testplay=10):
@@ -116,9 +115,9 @@ def create_model():
 
 def main(n_clients=24,
          buffer_size=10000,
-         batch_size=256, epochs_per_update=1,
+         batch_size=128, epochs_per_update=1,
          num_mcts_simulations=50,
-         update_period=400, test_period=100,
+         update_period=200, test_period=100,
          n_testplay=5,
          dirichlet_alpha=0.3):
 
@@ -144,7 +143,7 @@ def main(n_clients=24,
         process = mp.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    replay = ReplayBuffer(buffer_size=buffer_size, seq_length=200)
+    replay = ReplayBuffer(buffer_size=buffer_size, seq_length=game.MAX_TOKEN_LENGTH)
 
     while True:
         for i in tqdm(range(update_period)):
@@ -157,12 +156,13 @@ def main(n_clients=24,
         replay.save('replay_buffer')
 
         num_iters = epochs_per_update * (len(replay) // batch_size)
-        info = np.zeros((num_iters, 4, 200))
+        info = np.zeros((num_iters, 4, game.MAX_TOKEN_LENGTH))
         loss = 0
 
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
 
+            # state, loss_i, info_i = network.train_step(state, *batch, eval=True)
             state, loss_i, info_i = network.train_step(state, *batch, eval=False)
 
             loss += loss_i
@@ -173,7 +173,7 @@ def main(n_clients=24,
         info = info.mean(axis=(0, 3))
 
         log_dict = {"loss": loss / num_iters,
-                    "value": wandb.Histogram(replay.reward_buffer[replay.index: replay.index + update_period]),
+                    "value": wandb.Histogram(replay.reward_buffer[replay.index - update_period: replay.index]),
                     "num updates": n_updates.value}
 
         for i in range(n_div):
@@ -184,14 +184,28 @@ def main(n_clients=24,
 
         wandb.log(log_dict)
 
+        state = state.replace(epoch=state.epoch + 1)
         checkpoints.save_checkpoint(
             ckpt_dir=CKPT_DIR, prefix=PREFIX,
-            target=state, step=n_updates.value, overwrite=True, keep=50)
+            target=state, step=state.epoch, overwrite=True, keep=50)
 
         n_updates.value += 1
 
 
+def show_replay_buffer():
+    replay = ReplayBuffer(buffer_size=10000, seq_length=game.MAX_TOKEN_LENGTH)
+    replay.load('replay_buffer')
+
+    print(replay.reward_buffer[:400])
+
+    for i in range(game.MAX_TOKEN_LENGTH):
+        print(replay.tokens_buffer[0, i])
+
+
 if __name__ == "__main__":
+    # show_replay_buffer()
+    # exit()
+
     try:
         main()
 

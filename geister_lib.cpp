@@ -216,7 +216,10 @@ int solve(SearchParam* search, Board* board, int alpha, int beta, int player, in
 			alpha = max(alpha, e);
 
 			if (alpha >= beta)
+			{
+				delete next_board;
 				return max_e;
+			}
 		}
 	}
 	delete next_board;
@@ -296,6 +299,9 @@ int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::arr
 	int max_d;
 
 	int e = solve_root(search, board, -100, 100, 1, depth, &max_move, &max_d);
+
+	delete search;
+	delete board;
 
 	if (e <= 0)
 		return -1;

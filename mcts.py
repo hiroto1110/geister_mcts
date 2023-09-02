@@ -51,15 +51,10 @@ def expand(node: Node,
 
     cv, ck = node.cache_v, node.cache_k
 
-    if state.tokens_p[-1][4] == state.tokens_p[-2][4]:
-        n_tokens = 2
-    else:
-        n_tokens = 1
-
-    tokens = state.tokens_p[-n_tokens:] if node.root_player == 1 else state.tokens_o[-n_tokens:]
+    tokens = state.get_last_tokens(node.root_player)
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
-    for i in range(n_tokens):
+    for i in range(tokens.shape[1]):
         pi, v, _, cv, ck = predict(pred_state, pred_state.params, tokens[:, i:i+1], cv, ck)
 
     next_node.p = np.array(jax.device_get(nn.softmax(pi))[0, 0])
@@ -127,12 +122,14 @@ def step(node1: Node,
          eps: float = 0.25):
 
     node = node1 if player == 1 else node2
-    start = time.perf_counter()
+    # start = time.perf_counter()
     action = find_checkmate(state, player, depth=8)
-    print(f"time: {time.perf_counter() - start}")
+    # action = -1
+    # print(f"time: {time.perf_counter() - start}")
 
     if action != -1:
-        print(f"find checkmate: {action}")
+        pass
+        # print(f"find checkmate: {action}")
 
     else:
         node.valid_actions = game.get_valid_actions(state, player)
@@ -170,10 +167,11 @@ def create_root_node(state: game.State, pred_state: PredictState, model: Transfo
     cache_v, cache_k = model.create_cache(1, 0)
 
     tokens = state.tokens_p if player == 1 else state.tokens_o
+    tokens = tokens[:8]
+    tokens = jnp.array([tokens], dtype=jnp.uint8)
 
-    for token in tokens:
-        token = jnp.array(token, dtype=jnp.uint8).reshape(1, 1, -1)
-        _, _, _, cache_v, cache_k = predict(pred_state, pred_state.params, token, cache_v, cache_k)
+    for i in range(tokens.shape[1]):
+        _, _, _, cache_v, cache_k = predict(pred_state, pred_state.params, tokens[:, i:i+1], cache_v, cache_k)
 
     node.cache_v = cache_v
     node.cache_k = cache_k
@@ -226,7 +224,7 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    for i in range(2):
+    for i in range(4):
         start = time.perf_counter()
         play_test_game(pred_state, model_with_cache)
         print(f"time: {time.perf_counter() - start} s")
