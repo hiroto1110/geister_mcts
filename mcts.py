@@ -11,7 +11,7 @@ import jax
 from flax.training import checkpoints
 
 import geister as game
-import geister_minimax
+import geister_lib
 from network_transformer import TransformerDecoderWithCache
 
 
@@ -107,52 +107,14 @@ def simulate(node: Node,
     return v
 
 
-def manhattan_distance(p1, p2):
-    x_diff, y_diff = pos_diff(p1, p2)
-    return abs(x_diff) + abs(y_diff)
-
-
-def pos_diff(p1, p2):
-    x1 = p1 % 6
-    y1 = p1 // 6
-    x2 = p2 % 6
-    y2 = p2 // 6
-
-    return (x1 - x2), (y1 - y2)
-
-
-def search_checkmate(state: game.State, player: int):
+def find_checkmate(state: game.State, player: int, depth: int):
     if player == 1:
-        escape_pos = game.ESCAPE_POS_P
-        pieces_p = state.pieces_p[state.color_p == game.BLUE]
-        pieces_o = state.pieces_o
+        n_cap_ob = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
+        return geister_lib.find_checkmate(state.pieces_p, state.color_p, state.pieces_o, n_cap_ob, player, depth)
+
     else:
-        escape_pos = game.ESCAPE_POS_O
-        pieces_p = state.pieces_o[state.color_o == game.BLUE]
-        pieces_o = state.pieces_p
-
-    pieces_p = pieces_p[pieces_p >= 0]
-    pieces_o = pieces_o[pieces_o >= 0]
-
-    for pos in escape_pos:
-        d_p = manhattan_distance(pos, pieces_p)
-        d_o = manhattan_distance(pos, pieces_o)
-
-        if d_p.min() >= d_o.min():
-            continue
-
-        p_pos = pieces_p[np.argmin(d_p)]
-
-        x_diff, y_diff = pos_diff(p_pos, pos)
-        if y_diff != 0:
-            action_d = 0 if y_diff > 0 else 3
-        else:
-            action_d = 1 if x_diff > 0 else 2
-
-        action = p_pos * 4 + action_d
-        return True, action
-
-    return False, -1
+        n_cap_ob = np.sum((state.pieces_p == game.CAPTURED) & (state.color_p == game.BLUE))
+        return geister_lib.find_checkmate(state.pieces_o, state.color_o, state.pieces_p, n_cap_ob, player, depth)
 
 
 def step(node1: Node,
@@ -164,17 +126,21 @@ def step(node1: Node,
          alpha: float = None,
          eps: float = 0.25):
 
-    # is_checkmate, action = search_checkmate(state, player)
-    action = geister_minimax.solve_root(state, player, depth=5)
+    node = node1 if player == 1 else node2
+    start = time.perf_counter()
+    action = find_checkmate(state, player, depth=8)
+    print(f"time: {time.perf_counter() - start}")
 
-    if action == -1:
-        node = node1 if player == 1 else node2
+    if action != -1:
+        print(f"find checkmate: {action}")
+
+    else:
+        node.valid_actions = game.get_valid_actions(state, player)
 
         if alpha is not None:
-            valid_actions = game.get_valid_actions(state, player)
-            dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(valid_actions))
+            dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(node.valid_actions))
 
-            for a, noise in zip(valid_actions, dirichlet_noise):
+            for a, noise in zip(node.valid_actions, dirichlet_noise):
                 node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
         for _ in range(num_sim):
@@ -182,9 +148,6 @@ def step(node1: Node,
 
         policy = node.get_policy()
         action = np.argmax(policy)
-    else:
-        print("find checkmate!")
-        pass
 
     state.step(action, player, is_sim=False)
 

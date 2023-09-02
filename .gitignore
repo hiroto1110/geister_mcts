@@ -6,3 +6,4 @@ checkpoints/
 log/
 data_*.npy
 log.txt
+*.so

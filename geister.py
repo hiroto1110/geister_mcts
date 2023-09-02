@@ -143,31 +143,31 @@ class State:
 
         self.update_is_done(player)
 
-    def update_is_done(self, player):
+    def update_is_done(self, player, is_purple_sim: bool = False):
         if self.n_ply > 200:
             self.is_done = True
             self.winner = 0
             return
 
-        if np.all(self.pieces_p[self.color_p == BLUE] == CAPTURED):
+        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
             self.is_done = True
             self.win_type = WinType.BLUE_4
             self.winner = -1
             return
 
-        if np.all(self.pieces_p[self.color_p == RED] == CAPTURED):
+        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
             self.is_done = True
             self.win_type = WinType.RED_4
             self.winner = 1
             return
 
-        if np.all(self.pieces_o[self.color_o == BLUE] == CAPTURED):
+        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
             self.is_done = True
             self.win_type = WinType.BLUE_4
             self.winner = 1
             return
 
-        if np.all(self.pieces_o[self.color_o == RED] == CAPTURED):
+        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
             self.is_done = True
             self.win_type = WinType.RED_4
             self.winner = -1
@@ -181,6 +181,9 @@ class State:
             pieces = self.pieces_o
             color = self.color_o
             escape_pos = ESCAPE_POS_O
+
+        if is_purple_sim:
+            color = BLUE
 
         escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
 
