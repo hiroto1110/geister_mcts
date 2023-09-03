@@ -316,7 +316,8 @@ class State:
             self.n_ply])
 
         tokens_o.append([
-            4,
+            # 4,
+            color_o[p_id] + 2,
             p_id + 8,
             pos_next % 6,
             pos_next // 6,
@@ -327,7 +328,8 @@ class State:
             pieces_o[p_cap_id] = CAPTURED
 
             tokens_p.append([
-                4 if is_sim else (color_o[p_cap_id] + 2),
+                # 4 if is_sim else (color_o[p_cap_id] + 2),
+                color_o[p_cap_id] + 2,
                 p_cap_id + 8,
                 6, 6, self.n_ply])
 

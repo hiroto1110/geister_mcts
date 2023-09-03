@@ -26,7 +26,7 @@ def start_selfplay_process(sender, n_updates,
         last_n_updates = n_updates.value
 
         while True:
-            num_mcts_simu1, num_mcts_simu2 = np.random.randint(10, num_mcts_simulations, size=2)
+            num_mcts_simu1, num_mcts_simu2 = np.random.randint(20, num_mcts_simulations, size=2)
             sample = selfplay(pred_state, model, num_mcts_simu1, num_mcts_simu2, dirichlet_alpha)
 
             sender.send(sample)

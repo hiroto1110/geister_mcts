@@ -4,7 +4,6 @@ import time
 
 import numpy as np
 import jax.numpy as jnp
-import flax.linen as nn
 from flax import core
 from flax import struct
 import jax
@@ -25,17 +24,50 @@ def predict(state, params, tokens, cache_v, cache_k):
     return state.apply_fn({'params': params}, tokens, cache_v, cache_k, eval=True)
 
 
+def softmax(x):
+    exp_x = np.exp(x)
+    return exp_x / np.sum(exp_x, axis=0)
+
+
 class Node:
     def __init__(self, root_player: int) -> None:
         self.root_player = root_player
+        self.winner = 0
+
         self.cache_v = None
         self.cache_k = None
         self.valid_actions = None
+        self.invalid_actions = np.full(shape=1, fill_value=-1)
 
         self.children = [None] * game.ACTION_SPACE
         self.p = np.zeros(game.ACTION_SPACE)
         self.w = np.zeros(game.ACTION_SPACE)
         self.n = np.zeros(game.ACTION_SPACE)
+
+    def apply_invalid_actions(self):
+        if self.valid_actions is None:
+            return
+
+        self.valid_actions = np.setdiff1d(self.valid_actions, self.invalid_actions)
+
+        self.valid_actions_mask = np.zeros(144, dtype=np.int8)
+        self.valid_actions_mask[self.valid_actions] = 1
+
+        self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
+        self.p = softmax(self.p)
+
+    def setup_valid_actions(self, state, player):
+        if self.valid_actions is not None:
+            return
+
+        self.valid_actions = game.get_valid_actions(state, player)
+        self.valid_actions = np.setdiff1d(self.valid_actions, self.invalid_actions)
+
+        self.valid_actions_mask = np.zeros(144, dtype=np.int8)
+        self.valid_actions_mask[self.valid_actions] = 1
+
+        self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
+        self.p = softmax(self.p)
 
     def get_policy(self):
         return self.n / self.n.sum()
@@ -43,11 +75,23 @@ class Node:
 
 def expand(node: Node,
            state: game.State,
-           action: int,
+           player: int,
            pred_state: PredictState):
-
     next_node = Node(node.root_player)
-    node.children[action] = next_node
+    next_node.winner = state.winner
+
+    if node.winner != 0:
+        next_node.winner = node.winner
+
+    elif next_node.winner == 0:
+        action = find_checkmate(state, player, depth=4)
+
+        if action != -1:
+            next_node.winner = player
+            next_node.n[action] += 1
+
+    if next_node.winner != 0:
+        return next_node, next_node.winner
 
     cv, ck = node.cache_v, node.cache_k
 
@@ -57,11 +101,11 @@ def expand(node: Node,
     for i in range(tokens.shape[1]):
         pi, v, _, cv, ck = predict(pred_state, pred_state.params, tokens[:, i:i+1], cv, ck)
 
-    next_node.p = np.array(jax.device_get(nn.softmax(pi))[0, 0])
+    next_node.p = np.array(jax.device_get(pi)[0, 0])
     next_node.cache_v = cv
     next_node.cache_k = ck
 
-    return jax.device_get(v)[0, 0, 0]
+    return next_node, jax.device_get(v)[0, 0, 0]
 
 
 def simulate(node: Node,
@@ -70,34 +114,31 @@ def simulate(node: Node,
              pred_state: PredictState,
              c_puct: float = 1) -> float:
 
-    if game.is_done(state, player):
-        return state.winner
+    if state.is_done or node.winner != 0:
+        return node.winner
+
+    node.setup_valid_actions(state, player)
 
     U = c_puct * node.p * np.sqrt(node.n.sum() + 1) / (1 + node.n)
     Q = node.w / np.where(node.n != 0, node.n, 1)
 
-    if node.valid_actions is None:
-        node.valid_actions = game.get_valid_actions(state, player)
-
-    valid_actions_mask = np.zeros(144, dtype=np.int8)
-    valid_actions_mask[node.valid_actions] = 1
-
     scores = U + Q
-    scores = np.where(valid_actions_mask, scores, -np.inf)
+    scores = np.where(node.valid_actions_mask, scores, -np.inf)
 
     action = np.argmax(scores)
 
     state.step(action, player, is_sim=True)
 
     if node.children[action] is None:
-        v = -expand(node, state, action, pred_state)
+        child, v = expand(node, state, player, pred_state)
+        node.children[action] = child
     else:
-        v = -simulate(node.children[action], state, -player, pred_state, c_puct)
+        v = simulate(node.children[action], state, -player, pred_state, c_puct)
 
     state.undo_step(action, player)
 
     node.n[action] += 1
-    node.w[action] += v
+    node.w[action] += v * player
 
     return v
 
@@ -122,17 +163,25 @@ def step(node1: Node,
          eps: float = 0.25):
 
     node = node1 if player == 1 else node2
-    # start = time.perf_counter()
-    action = find_checkmate(state, player, depth=8)
-    # action = -1
-    # print(f"time: {time.perf_counter() - start}")
+
+    if node.winner != 0:
+        if np.sum(node.n) == 0:
+            node.setup_valid_actions(state, player)
+            action = np.random.choice(node.valid_actions)
+        else:
+            action = np.argmax(node.n)
+    else:
+        # start = time.perf_counter()
+        action = find_checkmate(state, player, depth=8)
+        # action = -1
+        # print(f"time: {time.perf_counter() - start}")
 
     if action != -1:
         pass
         # print(f"find checkmate: {action}")
 
     else:
-        node.valid_actions = game.get_valid_actions(state, player)
+        node.setup_valid_actions(state, player)
 
         if alpha is not None:
             dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(node.valid_actions))
@@ -143,15 +192,24 @@ def step(node1: Node,
         for _ in range(num_sim):
             simulate(node, state, player, pred_state)
 
+        """v = [(a // 24,
+              a // 4 % 6,
+              a % 4,
+              round(node.w[a] / node.n[a], 3) if node.n[a] > 0 else 0,
+              round(node.p[a], 3)) for a in node.valid_actions]
+
+        v = sorted(v, key=lambda t: -(t[3] + t[4]))
+        print(v)"""
+
         policy = node.get_policy()
         action = np.argmax(policy)
 
     state.step(action, player, is_sim=False)
 
-    expand(node1, state, action, pred_state)
-    expand(node2, state, action, pred_state)
+    node1, _ = expand(node1, state, -player, pred_state)
+    node2, _ = expand(node2, state, -player, pred_state)
 
-    return action, node1.children[action], node2.children[action]
+    return action, node1, node2
 
 
 def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
@@ -162,7 +220,10 @@ def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
         pi, v, _, cv, ck = predict(state, state.params, data[0][:1, t:t+1], cv, ck)
 
 
-def create_root_node(state: game.State, pred_state: PredictState, model: TransformerDecoderWithCache, player: int):
+def create_root_node(state: game.State,
+                     pred_state: PredictState,
+                     model: TransformerDecoderWithCache,
+                     player: int) -> Node:
     node = Node(player)
     cache_v, cache_k = model.create_cache(1, 0)
 
@@ -179,7 +240,28 @@ def create_root_node(state: game.State, pred_state: PredictState, model: Transfo
     return node
 
 
-def play_test_game(pred_state, model):
+def create_invalid_actions(actions, state: game.State, player: int, pieces_history: np.ndarray):
+    invalid_actions = []
+
+    for a in actions:
+        state.step(a, player)
+
+        pieces = state.pieces_p if player == 1 else state.pieces_o
+        is_equals = np.all(pieces_history == pieces, axis=1)
+
+        state.undo_step(a, player)
+
+        if np.any(is_equals):
+            invalid_actions.append(a)
+
+    return np.array(invalid_actions, dtype=np.int16)
+
+
+def play_game(pred_state: PredictState,
+              model: TransformerDecoderWithCache,
+              num_mcts_sim1: int, num_mcts_sim2: int,
+              dirichlet_alpha: float,
+              print_board: bool = False):
     state = game.get_initial_state()
 
     player = 1
@@ -187,27 +269,46 @@ def play_test_game(pred_state, model):
     node1 = create_root_node(state, pred_state, model, 1)
     node2 = create_root_node(state, pred_state, model, -1)
 
+    action_history = np.zeros(201, dtype=np.int16)
+    pieces_history = np.zeros((2, 100, 8), dtype=np.int8)
+
     for i in range(200):
-        # start = time.perf_counter()
-        _, node1, node2 = step(node1, node2, state, player, pred_state, num_sim=10, alpha=0.3)
-        # print(f"step: {i}, {time.perf_counter() - start}")
+        pieces_history[i % 2, i // 2] = state.pieces_p if player == 1 else state.pieces_o
 
-        board = np.zeros(36, dtype=np.int8)
+        node1.setup_valid_actions(state, player)
+        node2.setup_valid_actions(state, player)
 
-        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
-        board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
-        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
-        board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
+        invalid_actions = create_invalid_actions(node1.valid_actions, state, player, pieces_history[i % 2])
+        node1.invalid_actions = node2.invalid_actions = invalid_actions
 
-        print(str(board.reshape((6, 6))).replace('0', ' '))
-        print(i)
+        node1.apply_invalid_actions()
+        node2.apply_invalid_actions()
 
-        if game.is_done(state, player):
+        action, node1, node2 = step(node1, node2,
+                                    state, player,
+                                    pred_state,
+                                    num_mcts_sim1 if player == 1 else num_mcts_sim2,
+                                    dirichlet_alpha)
+
+        action_history[i] = action
+
+        if print_board:
+            board = np.zeros(36, dtype=np.int8)
+
+            board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
+            board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
+            board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
+            board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
+
+            print(str(board.reshape((6, 6))).replace('0', ' '))
+            print(i)
+
+        if state.is_done:
             break
 
         player = -player
 
-    return state.winner
+    return state, action_history
 
 
 def test():
@@ -224,9 +325,9 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    for i in range(4):
+    for i in range(40):
         start = time.perf_counter()
-        play_test_game(pred_state, model_with_cache)
+        play_game(pred_state, model_with_cache, 50, 50, 0.3, True)
         print(f"time: {time.perf_counter() - start} s")
 
 
