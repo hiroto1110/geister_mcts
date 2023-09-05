@@ -135,7 +135,7 @@ def simulate(node: Node,
 
     action = np.argmax(scores)
 
-    state.step(action, player, is_sim=False)
+    state.step(action, player, is_sim=True)
 
     if node.children[action] is None:
         child, v = expand(node, state, player, pred_state)
@@ -190,7 +190,7 @@ def step(node1: Node,
 
     if action != -1:
         pass
-        # print(f"find checkmate: {action}")
+        print(f"find checkmate: {action}")
 
     else:
         node.setup_valid_actions(state, player)
@@ -204,14 +204,14 @@ def step(node1: Node,
         for _ in range(num_sim):
             simulate(node, state, player, pred_state)
 
-        """v = [(a // 24,
+        v = [(a // 24,
               a // 4 % 6,
               a % 4,
               round(node.w[a] / node.n[a], 3) if node.n[a] > 0 else 0,
               round(node.p[a], 3)) for a in node.valid_actions]
 
         v = sorted(v, key=lambda t: -(t[3] + t[4]))
-        print(v)"""
+        print(v)
 
         policy = node.get_policy()
         action = np.argmax(policy)
@@ -244,7 +244,7 @@ def create_root_node(state: game.State,
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
     for i in range(tokens.shape[1]):
-        _, _, _, cache_v, cache_k = predict(pred_state, pred_state.params, tokens[:, i:i+1], cache_v, cache_k)
+        _, _, cache_v, cache_k = predict(pred_state, pred_state.params, tokens[:, i:i+1], cache_v, cache_k)
 
     node.cache_v = cache_v
     node.cache_k = cache_k
@@ -347,10 +347,9 @@ def test():
 
     elapsed_times = []
 
-    for i in range(100):
-        np.random.seed(10)
+    for i in range(2):
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 50, 50, 0.3, 30, False)
+        play_game(pred_state, model_with_cache, 50, 50, 0.3, print_board=True)
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
 
