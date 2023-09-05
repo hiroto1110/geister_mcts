@@ -186,7 +186,7 @@ class TransformerDecoder(nn.Module):
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         pi = nn.Dense(features=NUM_ACTIONS)(x)
-        v = nn.Dense(features=1)(x)
+        v = nn.Dense(features=7)(x)
         color = nn.Dense(features=8)(x)
 
         return pi, v, color, attention  # [Batch, SeqLen, ...]
@@ -229,7 +229,7 @@ class TransformerDecoderWithCache(nn.Module):
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         logits_pi = nn.Dense(features=NUM_ACTIONS)(x)
-        logits_v = nn.Dense(features=1)(x)
+        logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
         return logits_pi, logits_v, logits_color, next_v, next_k
@@ -242,15 +242,17 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
 
     # [Batch, SeqLen, 144]
     y_pi = y_pi.reshape((-1, x.shape[1]))
-    y_v = jnp.clip(y_v.reshape((-1, 1, 1)), -1, 1)
+    y_v = y_v.reshape((-1, 1))
+    # y_v = jnp.clip(y_v.reshape((-1, 1, 1)), -1, 1)
     y_color = y_color.reshape((-1, 1, 8))
 
     loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean(axis=0)
     # loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean(axis=0)
-    loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
+    loss_v = optax.softmax_cross_entropy_with_integer_labels(v, y_v).mean(axis=0)
+    # loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
     loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=(0, 2))
 
-    loss = jnp.mean(0.1 * loss_pi + loss_v + 0.5 * loss_color)
+    loss = jnp.mean(0.1 * loss_pi + 0.5 * loss_v + 0.5 * loss_color)
 
     acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2))
 
@@ -461,7 +463,7 @@ def main_train(model, state, data):
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'geister_'
+    prefix = 'geister_test_'
 
     checkpoints.save_checkpoint(
         ckpt_dir=ckpt_dir, prefix=prefix,
@@ -618,7 +620,12 @@ def main():
         data = load_tokens("log.txt", MAX_LENGTH, (0, 100000))
         for i in range(len(data)):
             jnp.save(f"data_{i}.npy", data[i])
-
+    elif False:
+        tokens_buffer = np.load('replay_buffer/tokens.npy')
+        policy_buffer = np.load('replay_buffer/policy.npy')
+        reward_buffer = np.load('replay_buffer/reward.npy') + 3
+        pieces_buffer = np.load('replay_buffer/pieces.npy')
+        data = tokens_buffer, policy_buffer, reward_buffer, pieces_buffer
     else:
         data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 

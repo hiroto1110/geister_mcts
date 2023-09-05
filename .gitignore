@@ -4,6 +4,6 @@ build/
 cython/
 checkpoints/
 log/
-data_*.npy
+*.npy
 log.txt
 *.so

@@ -3,10 +3,10 @@ from typing import Any, Callable
 import time
 
 import numpy as np
-import jax.numpy as jnp
-from flax import core
-from flax import struct
 import jax
+import jax.numpy as jnp
+import flax.linen as nn
+from flax import core, struct
 from flax.training import checkpoints
 
 import geister as game
@@ -21,7 +21,13 @@ class PredictState(struct.PyTreeNode):
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 def predict(state, params, tokens, cache_v, cache_k):
-    return state.apply_fn({'params': params}, tokens, cache_v, cache_k, eval=True)
+    pi, v, _, cv, ck = state.apply_fn({'params': params}, tokens, cache_v, cache_k, eval=True)
+
+    pi = pi[0, 0]
+    v = v[0, 0]
+    v = nn.softmax(v) * np.array([-1, -1, -1, 0, 1, 1, 1], dtype=np.int8)
+    v = v.sum()
+    return pi, v, cv, ck
 
 
 def softmax(x):
@@ -78,12 +84,12 @@ def expand(node: Node,
            player: int,
            pred_state: PredictState):
     next_node = Node(node.root_player)
-    next_node.winner = state.winner
+    next_node.winner = state.simulate_is_done(player, node.root_player)
 
     if node.winner != 0:
         next_node.winner = node.winner
 
-    elif next_node.winner == 0:
+    if next_node.winner == 0 and player == node.root_player:
         action = find_checkmate(state, player, depth=4)
 
         if action != -1:
@@ -99,13 +105,15 @@ def expand(node: Node,
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
     for i in range(tokens.shape[1]):
-        pi, v, _, cv, ck = predict(pred_state, pred_state.params, tokens[:, i:i+1], cv, ck)
+        pi, v, cv, ck = predict(pred_state, pred_state.params, tokens[:, i:i+1], cv, ck)
 
-    next_node.p = np.array(jax.device_get(pi)[0, 0])
+    next_node.p = jax.device_get(pi)
     next_node.cache_v = cv
     next_node.cache_k = ck
 
-    return next_node, jax.device_get(v)[0, 0, 0]
+    v = jax.device_get(v) * player
+
+    return next_node, v
 
 
 def simulate(node: Node,
@@ -114,7 +122,7 @@ def simulate(node: Node,
              pred_state: PredictState,
              c_puct: float = 1) -> float:
 
-    if state.is_done or node.winner != 0:
+    if node.winner != 0:
         return node.winner
 
     node.setup_valid_actions(state, player)
@@ -127,7 +135,7 @@ def simulate(node: Node,
 
     action = np.argmax(scores)
 
-    state.step(action, player, is_sim=True)
+    state.step(action, player, is_sim=False)
 
     if node.children[action] is None:
         child, v = expand(node, state, player, pred_state)
@@ -171,10 +179,14 @@ def step(node1: Node,
         else:
             action = np.argmax(node.n)
     else:
-        # start = time.perf_counter()
-        action = find_checkmate(state, player, depth=8)
-        # action = -1
-        # print(f"time: {time.perf_counter() - start}")
+        action = -1
+    # start = time.perf_counter()
+    checkmate_action = find_checkmate(state, player, depth=8)
+    # action = -1
+    # print(f"time: {time.perf_counter() - start}")
+
+    if checkmate_action != -1:
+        action = checkmate_action
 
     if action != -1:
         pass
@@ -215,7 +227,7 @@ def step(node1: Node,
 def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
     cv, ck = model.create_cache(1, 0)
 
-    for t in range(200):
+    for t in range(50):
         print(t)
         pi, v, _, cv, ck = predict(state, state.params, data[0][:1, t:t+1], cv, ck)
 
@@ -242,6 +254,7 @@ def create_root_node(state: game.State,
 
 def create_invalid_actions(actions, state: game.State, player: int, pieces_history: np.ndarray):
     invalid_actions = []
+    exist_valid_action = False
 
     for a in actions:
         state.step(a, player)
@@ -253,6 +266,12 @@ def create_invalid_actions(actions, state: game.State, player: int, pieces_histo
 
         if np.any(is_equals):
             invalid_actions.append(a)
+        else:
+            exist_valid_action = True
+
+    if not exist_valid_action:
+        del_i = np.random.randint(0, len(invalid_actions))
+        del invalid_actions[del_i]
 
     return np.array(invalid_actions, dtype=np.int16)
 
@@ -261,6 +280,7 @@ def play_game(pred_state: PredictState,
               model: TransformerDecoderWithCache,
               num_mcts_sim1: int, num_mcts_sim2: int,
               dirichlet_alpha: float,
+              game_length: int = 200,
               print_board: bool = False):
     state = game.get_initial_state()
 
@@ -269,10 +289,10 @@ def play_game(pred_state: PredictState,
     node1 = create_root_node(state, pred_state, model, 1)
     node2 = create_root_node(state, pred_state, model, -1)
 
-    action_history = np.zeros(201, dtype=np.int16)
+    action_history = np.zeros(game_length + 1, dtype=np.int16)
     pieces_history = np.zeros((2, 100, 8), dtype=np.int8)
 
-    for i in range(200):
+    for i in range(game_length):
         pieces_history[i % 2, i // 2] = state.pieces_p if player == 1 else state.pieces_o
 
         node1.setup_valid_actions(state, player)
@@ -325,10 +345,19 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    for i in range(40):
+    elapsed_times = []
+
+    for i in range(100):
+        np.random.seed(10)
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 50, 50, 0.3, True)
-        print(f"time: {time.perf_counter() - start} s")
+        play_game(pred_state, model_with_cache, 50, 50, 0.3, 30, False)
+        elapsed = time.perf_counter() - start
+        print(f"time: {elapsed} s")
+
+        if i > 0:
+            elapsed_times.append(elapsed)
+
+    print(f"avg time: {sum(elapsed_times) / len(elapsed_times)} s")
 
 
 if __name__ == "__main__":

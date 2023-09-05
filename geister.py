@@ -316,8 +316,8 @@ class State:
             self.n_ply])
 
         tokens_o.append([
-            # 4,
-            color_o[p_id] + 2,
+            4,
+            # color_o[p_id] + 2,
             p_id + 8,
             pos_next % 6,
             pos_next // 6,
@@ -341,6 +341,48 @@ class State:
         pieces_p[p_id] = pos_next
 
         self.update_is_done(player)
+
+    def simulate_is_done(self, player, root_player):
+        if root_player == 1:
+            return self.simulate_is_done_p(player)
+        else:
+            return self.simulate_is_done_o(player)
+
+    def simulate_is_done_p(self, player):
+        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
+            return -1 * WinType.BLUE_4.value
+
+        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
+            return 1 * WinType.RED_4.value
+
+        if player == -1:
+            return 0
+
+        escaped = (self.pieces_p == ESCAPE_POS_P[0]) | (self.pieces_p == ESCAPE_POS_P[1])
+        escaped = escaped & (self.color_p == BLUE)
+
+        if np.any(escaped):
+            return WinType.ESCAPE.value
+        else:
+            return 0
+
+    def simulate_is_done_o(self, player):
+        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
+            return 1 * WinType.BLUE_4.value
+
+        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
+            return -1 * WinType.RED_4.value
+
+        if player == 1:
+            return 0
+
+        escaped = (self.pieces_o == ESCAPE_POS_O[0]) | (self.pieces_o == ESCAPE_POS_O[1])
+        escaped = escaped & (self.color_o == BLUE)
+
+        if np.any(escaped):
+            return -WinType.ESCAPE.value
+        else:
+            return 0
 
     def update_is_done(self, player, is_purple_sim: bool = False):
         if self.n_ply > 200:

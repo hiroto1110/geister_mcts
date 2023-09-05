@@ -40,37 +40,17 @@ def start_selfplay_process(sender, n_updates,
 
 def selfplay(pred_state: mcts.PredictState,
              model: network.TransformerDecoderWithCache,
-             num_mcts_simu1: int, num_mcts_simu2: int,
+             num_mcts_sim1: int, num_mcts_sim2: int,
              dirichlet_alpha):
 
-    state = game.get_initial_state()
-
-    player = 1
-
-    node1 = mcts.create_root_node(state, pred_state, model, 1)
-    node2 = mcts.create_root_node(state, pred_state, model, -1)
-
-    actions = np.zeros(201, dtype=np.int16)
-
-    for i in range(200):
-        action, node1, node2 = mcts.step(node1, node2,
-                                         state, player,
-                                         pred_state,
-                                         num_mcts_simu1 if player == 1 else num_mcts_simu2,
-                                         dirichlet_alpha)
-
-        actions[i] = action
-
-        if state.is_done:
-            break
-
-        player = -player
+    state, actions = mcts.play_game(pred_state, model,
+                                    num_mcts_sim1, num_mcts_sim2, dirichlet_alpha)
 
     record_player = np.random.choice([1, -1])
 
     tokens = state.get_tokens(record_player)
     actions = actions[tokens[:, 4]]
-    reward = int(state.winner * state.win_type.value * record_player)
+    reward = int(state.winner * state.win_type.value * record_player) + 3
     color = state.color_o if record_player == 1 else state.color_p
 
     return Sample(tokens, actions, reward, color)
@@ -113,11 +93,11 @@ def create_model():
     return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
 
-def main(n_clients=24,
+def main(n_clients=30,
          buffer_size=10000,
-         batch_size=128, epochs_per_update=1,
+         batch_size=256, epochs_per_update=1,
          num_mcts_simulations=50,
-         update_period=200, test_period=100,
+         update_period=400, test_period=100,
          n_testplay=5,
          dirichlet_alpha=0.3):
 
