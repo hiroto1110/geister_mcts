@@ -3,6 +3,7 @@ __pycache__/
 build/
 cython/
 checkpoints/
+graph/
 log/
 *.npy
 log.txt

@@ -13,6 +13,8 @@ import geister as game
 import geister_lib
 from network_transformer import TransformerDecoderWithCache
 
+from graphviz import Digraph
+
 
 class PredictState(struct.PyTreeNode):
     apply_fn: Callable = struct.field(pytree_node=False)
@@ -20,14 +22,14 @@ class PredictState(struct.PyTreeNode):
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
-def predict(state, params, tokens, cache_v, cache_k):
-    pi, v, _, cv, ck = state.apply_fn({'params': params}, tokens, cache_v, cache_k, eval=True)
+def predict(state: PredictState, tokens, cache_v, cache_k):
+    pi, v, c, cv, ck = state.apply_fn({'params': state.params}, tokens, cache_v, cache_k, eval=True)
 
     pi = pi[0, 0]
-    v = v[0, 0]
-    v = nn.softmax(v) * np.array([-1, -1, -1, 0, 1, 1, 1], dtype=np.int8)
+    v = nn.softmax(v[0, 0]) * np.array([-1, -1, -1, 0, 1, 1, 1], dtype=np.int8)
     v = v.sum()
-    return pi, v, cv, ck
+    c = nn.sigmoid(c[0, 0])
+    return pi, v, c, cv, ck
 
 
 def softmax(x):
@@ -40,10 +42,16 @@ class Node:
         self.root_player = root_player
         self.winner = 0
 
+        self.state_str = ""
+
+        self.c_puct = 1
+
         self.cache_v = None
         self.cache_k = None
         self.valid_actions = None
         self.invalid_actions = np.full(shape=1, fill_value=-1)
+
+        self.predicted_color = None
 
         self.children = [None] * game.ACTION_SPACE
         self.p = np.zeros(game.ACTION_SPACE)
@@ -79,25 +87,94 @@ class Node:
         return self.n / self.n.sum()
 
 
+class AfterStateNode:
+    def __init__(self, root_player: int) -> None:
+        self.root_player = root_player
+        self.winner = 0
+
+        self.state_str = ""
+
+        self.c_puct = 1
+
+        self.cache_v = None
+        self.cache_k = None
+
+        self.predicted_color = None
+
+        self.children = [None] * 2
+        self.p = np.zeros(2)
+
+
+def visibilize_node_graph(node: Node, g: Digraph):
+    if isinstance(node, Node):
+        for child, w, n, p in zip(node.children, node.w, node.n, node.p):
+            if child is None:
+                continue
+
+            v = w / n if n > 0 else 0
+            g.edge(node.state_str, child.state_str, label=f"v = {v:3f}\r\np = {p:3f}")
+
+            visibilize_node_graph(child, g)
+
+    else:
+        for child, p in zip(node.children, node.p):
+            if child is None:
+                continue
+
+            g.edge(node.state_str, child.state_str, label=f"p = {p:3f}")
+
+            visibilize_node_graph(child, g)
+
+
+def expand_afterstate(node: Node,
+                      state: game.SimulationState,
+                      pred_state: PredictState):
+
+    next_node = AfterStateNode(node.root_player)
+    next_node.state_str = sim_state_to_str(state)
+
+    v, _ = setup_node(next_node, node, state, pred_state)
+
+    next_node.p[1] = next_node.predicted_color[state.tokens_p[-1][game.Token.ID] - 8]
+    next_node.p[0] = 1 - next_node.p[1]
+
+    return next_node, v
+
+
 def expand(node: Node,
-           state: game.State,
-           player: int,
+           state: game.SimulationState,
            pred_state: PredictState):
+
     next_node = Node(node.root_player)
-    next_node.winner = state.simulate_is_done(player, node.root_player)
+    next_node.winner = state.winner
+    next_node.state_str = sim_state_to_str(state)
 
     if node.winner != 0:
         next_node.winner = node.winner
 
-    if next_node.winner == 0 and player == node.root_player:
+    """if next_node.winner == 0 and player == node.root_player:
         action = find_checkmate(state, player, depth=4)
 
         if action != -1:
             next_node.winner = player
-            next_node.n[action] += 1
+            next_node.n[action] += 1"""
 
     if next_node.winner != 0:
         return next_node, next_node.winner
+
+    v, next_node.p = setup_node(next_node, node, state, pred_state)
+
+    return next_node, v
+
+
+def expand_with_observation(node: Node,
+                            state: game.State,
+                            pred_state: PredictState):
+    next_node = Node(node.root_player)
+    next_node.winner = state.winner
+
+    if state.winner != 0:
+        return next_node
 
     cv, ck = node.cache_v, node.cache_k
 
@@ -105,29 +182,57 @@ def expand(node: Node,
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
     for i in range(tokens.shape[1]):
-        pi, v, cv, ck = predict(pred_state, pred_state.params, tokens[:, i:i+1], cv, ck)
+        pi, _, _, cv, ck = predict(pred_state, tokens[:, i:i+1], cv, ck)
 
     next_node.p = jax.device_get(pi)
     next_node.cache_v = cv
     next_node.cache_k = ck
 
-    v = jax.device_get(v) * player
+    return next_node
 
-    return next_node, v
+
+def setup_node(node: Node, parent_node: Node, state: game.State, pred_state: PredictState):
+    tokens = state.get_last_tokens()
+    tokens = jnp.array(tokens, dtype=jnp.uint8)
+
+    pi, v, c, cv, ck = predict(pred_state, tokens, parent_node.cache_v, parent_node.cache_k)
+    node.predicted_color = c
+    node.cache_v = cv
+    node.cache_k = ck
+
+    return jax.device_get(v), jax.device_get(pi)
+
+
+def simulate_afterstate(node: AfterStateNode,
+                        state: game.SimulationState,
+                        player: int,
+                        pred_state: PredictState) -> float:
+    color = np.random.choice([game.RED, game.BLUE], p=node.p)
+
+    state.step_afterstate(color)
+
+    if node.children[color] is None:
+        child, v = expand(node, state, pred_state)
+        node.children[color] = child
+    else:
+        v = simulate(node.children[color], state, player, pred_state)
+
+    state.undo_step_afterstate()
+
+    return v
 
 
 def simulate(node: Node,
-             state: game.State,
+             state: game.SimulationState,
              player: int,
-             pred_state: PredictState,
-             c_puct: float = 1) -> float:
+             pred_state: PredictState) -> float:
 
     if node.winner != 0:
         return node.winner
 
     node.setup_valid_actions(state, player)
 
-    U = c_puct * node.p * np.sqrt(node.n.sum() + 1) / (1 + node.n)
+    U = node.c_puct * node.p * np.sqrt(node.n.sum() + 1) / (1 + node.n)
     Q = node.w / np.where(node.n != 0, node.n, 1)
 
     scores = U + Q
@@ -135,13 +240,20 @@ def simulate(node: Node,
 
     action = np.argmax(scores)
 
-    state.step(action, player, is_sim=True)
+    state.step(action, player)
 
     if node.children[action] is None:
-        child, v = expand(node, state, player, pred_state)
+        if state.is_afterstate():
+            child, v = expand_afterstate(node, state, pred_state)
+        else:
+            child, v = expand(node, state, pred_state)
+
         node.children[action] = child
     else:
-        v = simulate(node.children[action], state, -player, pred_state, c_puct)
+        if state.is_afterstate():
+            v = simulate_afterstate(node.children[action], state, -player, pred_state)
+        else:
+            v = simulate(node.children[action], state, -player, pred_state)
 
     state.undo_step(action, player)
 
@@ -172,6 +284,8 @@ def step(node1: Node,
 
     node = node1 if player == 1 else node2
 
+    sim_state = game.SimulationState(state, node.root_player)
+
     if node.winner != 0:
         if np.sum(node.n) == 0:
             node.setup_valid_actions(state, player)
@@ -181,19 +295,19 @@ def step(node1: Node,
     else:
         action = -1
     # start = time.perf_counter()
-    checkmate_action = find_checkmate(state, player, depth=8)
+    # checkmate_action = find_checkmate(state, player, depth=8)
     # action = -1
     # print(f"time: {time.perf_counter() - start}")
 
-    if checkmate_action != -1:
-        action = checkmate_action
+    # if checkmate_action != -1:
+    #     action = checkmate_action
 
     if action != -1:
         pass
         print(f"find checkmate: {action}")
 
     else:
-        node.setup_valid_actions(state, player)
+        node.setup_valid_actions(sim_state, 1)
 
         if alpha is not None:
             dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(node.valid_actions))
@@ -202,24 +316,20 @@ def step(node1: Node,
                 node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
         for _ in range(num_sim):
-            simulate(node, state, player, pred_state)
-
-        v = [(a // 24,
-              a // 4 % 6,
-              a % 4,
-              round(node.w[a] / node.n[a], 3) if node.n[a] > 0 else 0,
-              round(node.p[a], 3)) for a in node.valid_actions]
-
-        v = sorted(v, key=lambda t: -(t[3] + t[4]))
-        print(v)
+            simulate(node, sim_state, 1, pred_state)
 
         policy = node.get_policy()
         action = np.argmax(policy)
 
-    state.step(action, player, is_sim=False)
+        dg = Digraph(format='png')
+        dg.attr('node', fontname="Myrica M")
+        visibilize_node_graph(node, dg)
+        dg.render(f'./graph/n_ply_{state.n_ply}')
 
-    node1, _ = expand(node1, state, -player, pred_state)
-    node2, _ = expand(node2, state, -player, pred_state)
+    state.step(action, player)
+
+    node1 = expand_with_observation(node1, state, pred_state)
+    node2 = expand_with_observation(node2, state, pred_state)
 
     return action, node1, node2
 
@@ -244,7 +354,7 @@ def create_root_node(state: game.State,
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
     for i in range(tokens.shape[1]):
-        _, _, cache_v, cache_k = predict(pred_state, pred_state.params, tokens[:, i:i+1], cache_v, cache_k)
+        _, _, _, cache_v, cache_k = predict(pred_state, tokens[:, i:i+1], cache_v, cache_k)
 
     node.cache_v = cache_v
     node.cache_k = cache_k
@@ -329,6 +439,20 @@ def play_game(pred_state: PredictState,
         player = -player
 
     return state, action_history
+
+
+def sim_state_to_str(state: game.SimulationState):
+    board = np.zeros(36, dtype=np.int8)
+
+    board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.BLUE)]] = 1
+    board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.RED)]] = 2
+    board[state.pieces_o[state.pieces_o >= 0]] = -1
+
+    s = str(board.reshape((6, 6))).replace('0', ' ')
+    s = s.replace('[[', ' [').replace('[', '|')
+    s = s.replace(']]', ']').replace(']', '|')
+
+    return s
 
 
 def test():

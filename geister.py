@@ -1,6 +1,6 @@
 import random
 import time
-from enum import Enum
+from enum import Enum, IntEnum
 
 import numpy as np
 
@@ -12,6 +12,7 @@ ACTION_SPACE = N_ROWS * N_COLS * len(DIRECTIONS)
 
 BLUE = 1
 RED = 0
+UNCERTAIN_PIECE = -1
 
 ESCAPE_POS_P = 30, 35
 ESCAPE_POS_O = 0, 5
@@ -22,207 +23,19 @@ TOKEN_SIZE = 5
 MAX_TOKEN_LENGTH = 200
 
 
+class Token(IntEnum):
+    COLOR = 0
+    ID = 1
+    X = 2
+    Y = 3
+    T = 4
+
+
 class WinType(Enum):
     DRAW = 0
     ESCAPE = 1
     BLUE_4 = 2
     RED_4 = 3
-
-
-class StateNdarray:
-    def __init__(self, color_p, color_o):
-        self.pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
-        self.pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
-
-        self.color_p = color_p
-        self.color_o = color_o
-
-        self.tokens_p = np.zeros((MAX_TOKEN_LENGTH, TOKEN_SIZE), dtype=np.uint8)
-        self.tokens_o = np.zeros((MAX_TOKEN_LENGTH, TOKEN_SIZE), dtype=np.uint8)
-        self.n_tokens = 8
-
-        for p_id in range(8):
-            pos = self.pieces_p[p_id]
-            self.tokens_p[p_id] = (self.color_p[p_id], p_id, pos % 6, pos // 6, 0)
-
-            pos = self.pieces_o[p_id]
-            self.tokens_o[p_id] = (self.color_o[p_id], p_id, pos % 6, pos // 6, 0)
-
-        self.is_done = False
-        self.winner = 0
-        self.win_type = WinType.DRAW
-        self.n_ply = 0
-
-    def undo_step(self, action: int, player: int):
-        pieces_p = self.pieces_p
-        pieces_o = self.pieces_o
-        tokens_p = self.tokens_p
-        tokens_o = self.tokens_o
-
-        if player == -1:
-            pieces_p, pieces_o = pieces_o, pieces_p
-            tokens_p, tokens_o = tokens_o, tokens_p
-
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
-
-        p_id = np.where(pieces_p == pos_next)[0][0]
-
-        pieces_p[p_id] = pos
-
-        self.n_tokens -= 1
-
-        if self.n_tokens > 0 and self.tokens_p[self.n_tokens, 4] == self.tokens_p[self.n_tokens - 1, 4]:
-            p_cap_id = tokens_o[self.n_tokens, 1]
-            pieces_o[p_cap_id] = pos_next
-
-            self.n_tokens -= 1
-
-        self.n_ply -= 1
-
-        self.is_done = False
-        self.winner = 0
-
-        if self.is_done:
-            self.update_is_done(player)
-
-    def step(self, action: int, player: int, is_sim: bool = False):
-        self.n_ply += 1
-
-        pieces_p = self.pieces_p
-        pieces_o = self.pieces_o
-        color_p = self.color_p
-        color_o = self.color_o
-        tokens_p = self.tokens_p
-        tokens_o = self.tokens_o
-
-        if player == -1:
-            pieces_p, pieces_o = pieces_o, pieces_p
-            color_p, color_o = color_o, color_p
-            tokens_p, tokens_o = tokens_o, tokens_p
-
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
-
-        p_id = np.where(pieces_p == pos)[0][0]
-        p_cap_id = np.where(pieces_o == pos_next)[0]
-
-        tokens_p[self.n_tokens] = (
-            color_p[p_id],
-            p_id,
-            pos_next % 6,
-            pos_next // 6,
-            self.n_ply)
-
-        tokens_o[self.n_tokens] = (
-            4,
-            p_id + 8,
-            pos_next % 6,
-            pos_next // 6,
-            self.n_ply)
-
-        self.n_tokens += 1
-
-        if len(p_cap_id) > 0:
-            p_cap_id = p_cap_id[0]
-            pieces_o[p_cap_id] = CAPTURED
-
-            tokens_p[self.n_tokens] = (
-                4 if is_sim else (color_o[p_cap_id] + 2),
-                p_cap_id + 8,
-                6, 6, self.n_ply)
-
-            tokens_o[self.n_tokens] = (
-                color_o[p_cap_id],
-                p_cap_id,
-                6, 6, self.n_ply)
-
-            self.n_tokens += 1
-
-        pieces_p[p_id] = pos_next
-
-        self.update_is_done(player)
-
-    def update_is_done(self, player, is_purple_sim: bool = False):
-        if self.n_ply > 200:
-            self.is_done = True
-            self.winner = 0
-            return
-
-        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.BLUE_4
-            self.winner = -1
-            return
-
-        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.RED_4
-            self.winner = 1
-            return
-
-        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.BLUE_4
-            self.winner = 1
-            return
-
-        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.RED_4
-            self.winner = -1
-            return
-
-        if player == -1:
-            pieces = self.pieces_p
-            color = self.color_p
-            escape_pos = ESCAPE_POS_P
-        else:
-            pieces = self.pieces_o
-            color = self.color_o
-            escape_pos = ESCAPE_POS_O
-
-        if is_purple_sim:
-            color = BLUE
-
-        escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
-
-        if np.any(escaped):
-            self.is_done = True
-            self.win_type = WinType.ESCAPE
-            self.winner = -player
-            return
-
-        self.is_done = False
-        self.win_type = WinType.DRAW
-        self.winner = 0
-
-    def get_tokens(self, player: int):
-        if player == 1:
-            tokens = self.tokens_p
-        else:
-            tokens = self.tokens_o
-
-        if self.n_tokens < MAX_TOKEN_LENGTH:
-            tokens[self.n_tokens:] = 0
-
-        return tokens
-
-    def get_last_tokens(self, player: int):
-        if player == 1:
-            tokens = self.tokens_p
-        else:
-            tokens = self.tokens_o
-
-        i = self.n_tokens
-        if tokens[i-2, 4] == tokens[i-1, 4]:
-            return tokens[i-2:i]
-        else:
-            return tokens[i-1:i]
 
 
 class State:
@@ -317,7 +130,6 @@ class State:
 
         tokens_o.append([
             4,
-            # color_o[p_id] + 2,
             p_id + 8,
             pos_next % 6,
             pos_next // 6,
@@ -328,8 +140,7 @@ class State:
             pieces_o[p_cap_id] = CAPTURED
 
             tokens_p.append([
-                4 if is_sim else (color_o[p_cap_id] + 2),
-                # color_o[p_cap_id] + 2,
+                color_o[p_cap_id] + 2,
                 p_cap_id + 8,
                 6, 6, self.n_ply])
 
@@ -342,49 +153,7 @@ class State:
 
         self.update_is_done(player)
 
-    def simulate_is_done(self, player, root_player):
-        if root_player == 1:
-            return self.simulate_is_done_p(player)
-        else:
-            return self.simulate_is_done_o(player)
-
-    def simulate_is_done_p(self, player):
-        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
-            return -1 * WinType.BLUE_4.value
-
-        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
-            return 1 * WinType.RED_4.value
-
-        if player == -1:
-            return 0
-
-        escaped = (self.pieces_p == ESCAPE_POS_P[0]) | (self.pieces_p == ESCAPE_POS_P[1])
-        escaped = escaped & (self.color_p == BLUE)
-
-        if np.any(escaped):
-            return WinType.ESCAPE.value
-        else:
-            return 0
-
-    def simulate_is_done_o(self, player):
-        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
-            return 1 * WinType.BLUE_4.value
-
-        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
-            return -1 * WinType.RED_4.value
-
-        if player == 1:
-            return 0
-
-        escaped = (self.pieces_o == ESCAPE_POS_O[0]) | (self.pieces_o == ESCAPE_POS_O[1])
-        escaped = escaped & (self.color_o == BLUE)
-
-        if np.any(escaped):
-            return -WinType.ESCAPE.value
-        else:
-            return 0
-
-    def update_is_done(self, player, is_purple_sim: bool = False):
+    def update_is_done(self, player):
         if self.n_ply > 200:
             self.is_done = True
             self.winner = 0
@@ -423,9 +192,6 @@ class State:
             color = self.color_o
             escape_pos = ESCAPE_POS_O
 
-        if is_purple_sim:
-            color = BLUE
-
         escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
 
         if np.any(escaped):
@@ -458,6 +224,234 @@ class State:
             return tokens[-2:]
         else:
             return tokens[-1:]
+
+
+class SimulationState:
+    def __init__(self, state: State, root_player: int):
+        if root_player == 1:
+            self.pieces_p = state.pieces_p
+            self.color_p = state.color_p
+            self.tokens_p = state.tokens_p
+
+            self.pieces_o = state.pieces_o
+            self.color_o = state.color_o
+
+            self.escape_pos_p = ESCAPE_POS_P
+            self.escape_pos_o = ESCAPE_POS_O
+        else:
+            self.pieces_p = state.pieces_o
+            self.color_p = state.color_o
+            self.tokens_p = state.tokens_o
+
+            self.pieces_o = state.pieces_p
+            self.color_o = state.color_p
+
+            self.escape_pos_p = ESCAPE_POS_O
+            self.escape_pos_o = ESCAPE_POS_P
+
+        self.color_o = np.copy(self.color_o)
+        self.color_o[self.pieces_o >= 0] = -1
+
+        self.is_done = state.is_done
+        self.winner = state.winner
+        self.win_type = state.win_type
+        self.n_ply = state.n_ply
+
+    def is_afterstate(self):
+        return (self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]) and (self.tokens_p[-1][Token.COLOR] == 4)
+
+    def step_afterstate(self, color: int):
+        if not self.is_afterstate():
+            print("This isn't a afterstate")
+            return
+
+        p_cap_id = self.tokens_p[-1][Token.ID] - 8
+
+        self.tokens_p[-1][Token.COLOR] = color + 2
+        self.color_o[p_cap_id] = color
+
+    def undo_step_afterstate(self):
+        p_cap_id = self.tokens_p[-1][Token.ID] - 8
+
+        self.tokens_p[-1][Token.COLOR] = 4
+        self.color_o[p_cap_id] = UNCERTAIN_PIECE
+
+    def undo_step(self, action: int, player: int):
+        if player == 1:
+            self.undo_step_p(action)
+        else:
+            self.undo_step_o(action)
+
+    def undo_step_p(self, action: int):
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(self.pieces_p == pos_next)[0][0]
+
+        self.pieces_p[p_id] = pos
+
+        if self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]:
+            p_cap_id = self.tokens_p[-1][Token.ID] - 8
+            self.pieces_o[p_cap_id] = pos_next
+
+            del self.tokens_p[-1]
+
+        del self.tokens_p[-1]
+
+        self.n_ply -= 1
+        self.is_done = False
+        self.winner = 0
+
+        if self.is_done:
+            self.update_is_done(1)
+
+    def undo_step_o(self, action: int):
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(self.pieces_o == pos_next)[0][0]
+        self.pieces_o[p_id] = pos
+
+        if self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]:
+            p_cap_id = self.tokens_p[-1][Token.ID]
+            self.pieces_p[p_cap_id] = pos_next
+
+            del self.tokens_p[-1]
+
+        del self.tokens_p[-1]
+
+        self.n_ply -= 1
+        self.is_done = False
+        self.winner = 0
+
+        if self.is_done:
+            self.update_is_done(-1)
+
+    def step(self, action: int, player: int):
+        if player == 1:
+            self.step_p(action)
+        else:
+            self.step_o(action)
+
+    def step_p(self, action: int):
+        self.n_ply += 1
+
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(self.pieces_p == pos)[0][0]
+        p_cap_id = np.where(self.pieces_o == pos_next)[0]
+
+        self.tokens_p.append([
+            self.color_p[p_id],
+            p_id,
+            pos_next % 6,
+            pos_next // 6,
+            self.n_ply])
+
+        if len(p_cap_id) > 0:
+            p_cap_id = p_cap_id[0]
+            self.pieces_o[p_cap_id] = CAPTURED
+
+            self.tokens_p.append([
+                4, p_cap_id + 8,
+                6, 6, self.n_ply])
+
+        self.pieces_p[p_id] = pos_next
+
+        self.update_is_done(1)
+
+    def step_o(self, action: int):
+        self.n_ply += 1
+
+        pos = action_to_pos(action)
+        d_i = action_to_direction_id(action)
+        d = DIRECTIONS[d_i]
+        pos_next = pos + d
+
+        p_id = np.where(self.pieces_o == pos)[0][0]
+        p_cap_id = np.where(self.pieces_p == pos_next)[0]
+
+        self.tokens_p.append([
+            4, p_id + 8,
+            pos_next % 6,
+            pos_next // 6,
+            self.n_ply])
+
+        if len(p_cap_id) > 0:
+            p_cap_id = p_cap_id[0]
+            self.pieces_p[p_cap_id] = CAPTURED
+
+            self.tokens_p.append([
+                self.color_p[p_cap_id], p_cap_id,
+                6, 6, self.n_ply])
+
+        self.pieces_o[p_id] = pos_next
+
+        self.update_is_done(-1)
+
+    def update_is_done(self, player: int):
+        if self.n_ply > 200:
+            self.is_done = True
+            self.winner = 0
+            return
+
+        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.BLUE_4
+            self.winner = -1
+            return
+
+        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.RED_4
+            self.winner = 1
+            return
+
+        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.BLUE_4
+            self.winner = 1
+            return
+
+        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
+            self.is_done = True
+            self.win_type = WinType.RED_4
+            self.winner = -1
+            return
+
+        if player == -1:
+            pieces = self.pieces_p
+            color = self.color_p
+            escape_pos = self.escape_pos_p
+        else:
+            pieces = self.pieces_o
+            color = self.color_o
+            escape_pos = self.escape_pos_o
+
+        escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
+
+        if np.any(escaped):
+            self.is_done = True
+            self.win_type = WinType.ESCAPE
+            self.winner = -player
+            return
+
+        self.is_done = False
+        self.win_type = WinType.DRAW
+        self.winner = 0
+
+    def get_last_tokens(self):
+        if self.is_afterstate():
+            return [self.tokens_p[-2:-1]]
+        else:
+            return [self.tokens_p[-1:]]
 
 
 def get_initial_state():

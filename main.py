@@ -53,14 +53,6 @@ def selfplay(pred_state: mcts.PredictState,
     reward = int(state.winner * state.win_type.value * record_player) + 3
     color = state.color_o if record_player == 1 else state.color_p
 
-    is_cap_token = (2 == tokens[:, 0]) & (3 == tokens[:, 0]) & (6 == tokens[:, 2])
-
-    if np.any(is_cap_token):
-        indices = np.where(is_cap_token)[0]
-        indices = np.random.choice(indices, np.random.randint(0, indices.shape[0]), replace=False)
-
-        tokens[indices, 0] = 4
-
     return Sample(tokens, actions, reward, color)
 
 
