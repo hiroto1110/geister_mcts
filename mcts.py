@@ -42,7 +42,7 @@ class Node:
         self.root_player = root_player
         self.winner = 0
 
-        self.state_str = ""
+        # self.state_str = ""
 
         self.c_puct = 1
 
@@ -92,7 +92,7 @@ class AfterStateNode:
         self.root_player = root_player
         self.winner = 0
 
-        self.state_str = ""
+        # self.state_str = ""
 
         self.c_puct = 1
 
@@ -131,7 +131,7 @@ def expand_afterstate(node: Node,
                       pred_state: PredictState):
 
     next_node = AfterStateNode(node.root_player)
-    next_node.state_str = sim_state_to_str(state)
+    # next_node.state_str = sim_state_to_str(state)
 
     v, _ = setup_node(next_node, node, state, pred_state)
 
@@ -147,7 +147,7 @@ def expand(node: Node,
 
     next_node = Node(node.root_player)
     next_node.winner = state.winner
-    next_node.state_str = sim_state_to_str(state)
+    # next_node.state_str = sim_state_to_str(state)
 
     if node.winner != 0:
         next_node.winner = node.winner
@@ -227,6 +227,9 @@ def simulate(node: Node,
              player: int,
              pred_state: PredictState) -> float:
 
+    if state.is_done:
+        return state.winner
+
     if node.winner != 0:
         return node.winner
 
@@ -285,6 +288,7 @@ def step(node1: Node,
     node = node1 if player == 1 else node2
 
     sim_state = game.SimulationState(state, node.root_player)
+    # node.state_str = sim_state_to_str(sim_state)
 
     if node.winner != 0:
         if np.sum(node.n) == 0:
@@ -295,16 +299,16 @@ def step(node1: Node,
     else:
         action = -1
     # start = time.perf_counter()
-    # checkmate_action = find_checkmate(state, player, depth=8)
+    checkmate_action = find_checkmate(state, player, depth=8)
     # action = -1
     # print(f"time: {time.perf_counter() - start}")
 
-    # if checkmate_action != -1:
-    #     action = checkmate_action
+    if checkmate_action != -1:
+        action = checkmate_action
 
     if action != -1:
         pass
-        print(f"find checkmate: {action}")
+        # print(f"find checkmate: {action}")
 
     else:
         node.setup_valid_actions(sim_state, 1)
@@ -321,10 +325,10 @@ def step(node1: Node,
         policy = node.get_policy()
         action = np.argmax(policy)
 
-        dg = Digraph(format='png')
-        dg.attr('node', fontname="Myrica M")
-        visibilize_node_graph(node, dg)
-        dg.render(f'./graph/n_ply_{state.n_ply}')
+        # dg = Digraph(format='png')
+        # dg.attr('node', fontname="Myrica M")
+        # visibilize_node_graph(node, dg)
+        # dg.render(f'./graph/n_ply_{state.n_ply}')
 
     state.step(action, player)
 
@@ -451,6 +455,11 @@ def sim_state_to_str(state: game.SimulationState):
     s = str(board.reshape((6, 6))).replace('0', ' ')
     s = s.replace('[[', ' [').replace('[', '|')
     s = s.replace(']]', ']').replace(']', '|')
+
+    n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
+    n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
+
+    s += f"\r\nblue={n_cap_b} red={n_cap_r}"
 
     return s
 
