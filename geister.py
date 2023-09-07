@@ -1,5 +1,6 @@
 import random
 import time
+from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 import numpy as np
@@ -10,9 +11,9 @@ DIRECTIONS = -6, -1, 1, 6
 
 ACTION_SPACE = N_ROWS * N_COLS * len(DIRECTIONS)
 
+UNCERTAIN_PIECE = 2
 BLUE = 1
 RED = 0
-UNCERTAIN_PIECE = -1
 
 ESCAPE_POS_P = 30, 35
 ESCAPE_POS_O = 0, 5
@@ -71,10 +72,7 @@ class State:
             pieces_p, pieces_o = pieces_o, pieces_p
             tokens_p, tokens_o = tokens_o, tokens_p
 
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(pieces_p == pos_next)[0][0]
 
@@ -113,10 +111,7 @@ class State:
             color_p, color_o = color_o, color_p
             tokens_p, tokens_o = tokens_o, tokens_p
 
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(pieces_p == pos)[0][0]
         p_cap_id = np.where(pieces_o == pos_next)[0]
@@ -226,6 +221,25 @@ class State:
             return tokens[-1:]
 
 
+class AfterstateType(Enum):
+    NONE = -1
+    ESCAPING = 0
+    CAPTURING = 1
+
+
+@dataclass
+class AfterstateInfo:
+    type: AfterstateType
+    token_id: int
+    piece_id: int
+
+    def is_afterstate(self):
+        return self.type != AfterstateType.NONE
+
+
+ASTERSTATE_INFO_NONE = AfterstateInfo(AfterstateType.NONE, -1, -1)
+
+
 class SimulationState:
     def __init__(self, state: State, root_player: int):
         if root_player == 1:
@@ -250,31 +264,31 @@ class SimulationState:
             self.escape_pos_o = ESCAPE_POS_P
 
         self.color_o = np.copy(self.color_o)
-        self.color_o[self.pieces_o >= 0] = -1
+        self.color_o[self.pieces_o >= 0] = UNCERTAIN_PIECE
 
         self.is_done = state.is_done
         self.winner = state.winner
         self.win_type = state.win_type
         self.n_ply = state.n_ply
 
-    def is_afterstate(self):
-        return (self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]) and (self.tokens_p[-1][Token.COLOR] == 4)
+    def step_afterstate(self, info: AfterstateInfo, color: int):
+        self.color_o[info.piece_id] = color
+        self.tokens_p[info.token_id][Token.COLOR] = color + 2
 
-    def step_afterstate(self, color: int):
-        if not self.is_afterstate():
+        if info.type == AfterstateType.CAPTURING:
+            self.update_is_done_caused_by_capturing()
+
+        elif info.type == AfterstateType.ESCAPING:
+            if color == BLUE:
+                self.is_done = True
+                self.winner = -1
+                self.win_type = WinType.ESCAPE
+        else:
             print("This isn't a afterstate")
-            return
 
-        p_cap_id = self.tokens_p[-1][Token.ID] - 8
-
-        self.tokens_p[-1][Token.COLOR] = color + 2
-        self.color_o[p_cap_id] = color
-
-    def undo_step_afterstate(self):
-        p_cap_id = self.tokens_p[-1][Token.ID] - 8
-
-        self.tokens_p[-1][Token.COLOR] = 4
-        self.color_o[p_cap_id] = UNCERTAIN_PIECE
+    def undo_step_afterstate(self, info: AfterstateInfo):
+        self.color_o[info.piece_id] = UNCERTAIN_PIECE
+        self.tokens_p[info.token_id][Token.COLOR] = 4
 
     def undo_step(self, action: int, player: int):
         if player == 1:
@@ -283,10 +297,7 @@ class SimulationState:
             self.undo_step_o(action)
 
     def undo_step_p(self, action: int):
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(self.pieces_p == pos_next)[0][0]
 
@@ -304,14 +315,8 @@ class SimulationState:
         self.is_done = False
         self.winner = 0
 
-        if self.is_done:
-            self.update_is_done(1)
-
     def undo_step_o(self, action: int):
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(self.pieces_o == pos_next)[0][0]
         self.pieces_o[p_id] = pos
@@ -328,25 +333,22 @@ class SimulationState:
         self.is_done = False
         self.winner = 0
 
-        if self.is_done:
-            self.update_is_done(-1)
-
-    def step(self, action: int, player: int):
+    def step(self, action: int, player: int) -> AfterstateInfo:
         if player == 1:
-            self.step_p(action)
+            return self.step_p(action)
         else:
             self.step_o(action)
+            return ASTERSTATE_INFO_NONE
 
-    def step_p(self, action: int):
+    def step_p(self, action: int) -> AfterstateInfo:
         self.n_ply += 1
 
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(self.pieces_p == pos)[0][0]
         p_cap_id = np.where(self.pieces_o == pos_next)[0]
+
+        info = ASTERSTATE_INFO_NONE
 
         self.tokens_p.append([
             self.color_p[p_id],
@@ -358,22 +360,39 @@ class SimulationState:
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
             self.pieces_o[p_cap_id] = CAPTURED
+            color = self.color_o[p_cap_id]
 
             self.tokens_p.append([
-                4, p_cap_id + 8,
+                color + 2,
+                p_cap_id + 8,
                 6, 6, self.n_ply])
+
+            if color == UNCERTAIN_PIECE:
+                info = AfterstateInfo(AfterstateType.CAPTURING,
+                                      token_id=len(self.tokens_p) - 1,
+                                      piece_id=p_cap_id)
 
         self.pieces_p[p_id] = pos_next
 
-        self.update_is_done(1)
+        self.update_is_done_caused_by_capturing()
+
+        escaped = (self.pieces_o == self.escape_pos_o[0]) | (self.pieces_o == self.escape_pos_o[1])
+        escaped = escaped & (self.color_o == UNCERTAIN_PIECE)
+        escaped_id = np.where(escaped)[0]
+
+        if len(escaped_id) > 0:
+            escaped_id = escaped_id[0]
+
+            info = AfterstateInfo(AfterstateType.ESCAPING,
+                                  token_id=len(self.tokens_p) - 2,
+                                  piece_id=escaped_id)
+
+        return info
 
     def step_o(self, action: int):
         self.n_ply += 1
 
-        pos = action_to_pos(action)
-        d_i = action_to_direction_id(action)
-        d = DIRECTIONS[d_i]
-        pos_next = pos + d
+        pos, pos_next = action_to_pos(action)
 
         p_id = np.where(self.pieces_o == pos)[0][0]
         p_cap_id = np.where(self.pieces_p == pos_next)[0]
@@ -394,14 +413,17 @@ class SimulationState:
 
         self.pieces_o[p_id] = pos_next
 
-        self.update_is_done(-1)
+        self.update_is_done_caused_by_capturing()
 
-    def update_is_done(self, player: int):
-        if self.n_ply > 200:
+        escaped = (self.pieces_p == self.escape_pos_p[0]) | (self.pieces_p == self.escape_pos_p[1])
+        escaped = escaped & (self.color_p == BLUE)
+
+        if np.any(escaped):
             self.is_done = True
-            self.winner = 0
-            return
+            self.winner = 1
+            self.win_type = WinType.ESCAPE
 
+    def update_is_done_caused_by_capturing(self):
         if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
             self.is_done = True
             self.win_type = WinType.BLUE_4
@@ -426,32 +448,16 @@ class SimulationState:
             self.winner = -1
             return
 
-        if player == -1:
-            pieces = self.pieces_p
-            color = self.color_p
-            escape_pos = self.escape_pos_p
-        else:
-            pieces = self.pieces_o
-            color = self.color_o
-            escape_pos = self.escape_pos_o
-
-        escaped = (color == BLUE) & ((pieces == escape_pos[0]) | (pieces == escape_pos[1]))
-
-        if np.any(escaped):
-            self.is_done = True
-            self.win_type = WinType.ESCAPE
-            self.winner = -player
-            return
-
         self.is_done = False
         self.win_type = WinType.DRAW
         self.winner = 0
 
+    def get_afterstate_tokens(self, info: AfterstateInfo):
+        i = info.token_id
+        return [self.tokens_p[i: i+1]]
+
     def get_last_tokens(self):
-        if self.is_afterstate():
-            return [self.tokens_p[-2:-1]]
-        else:
-            return [self.tokens_p[-1:]]
+        return [self.tokens_p[-1:]]
 
 
 def get_initial_state():
@@ -486,11 +492,11 @@ def is_valid_action(state: State, action: int, player: int):
 
 
 def action_to_pos(action):
-    return action // len(DIRECTIONS)
+    pos = action // 4
+    d_i = action % 4
+    d = DIRECTIONS[d_i]
 
-
-def action_to_direction_id(action):
-    return action % len(DIRECTIONS)
+    return pos, pos + d
 
 
 def get_valid_actions(state: State, player: int):

@@ -28,9 +28,9 @@ def predict(state: PredictState, tokens, cache_v, cache_k):
     pi = pi[0, 0]
     v = nn.softmax(v[0, 0]) * np.array([-1, -1, -1, 0, 1, 1, 1], dtype=np.int8)
     v = v.sum()
-    color = c[0, 0]
+    c = nn.sigmoid(c[0, 0])
 
-    return pi, v, color, cv, ck
+    return pi, v, c, cv, ck
 
 
 def softmax(x):
@@ -48,7 +48,7 @@ class Node:
 
         self.state_str = ""
 
-        self.c_init = 1.25
+        self.c_init = 1.5
         self.c_base = 19652
 
         self.cache_v = None
@@ -57,6 +57,7 @@ class Node:
         self.invalid_actions = np.full(shape=1, fill_value=-1)
 
         self.predicted_color = None
+        self.predicted_v = 0
 
         self.children = [None] * game.ACTION_SPACE
         self.p = np.zeros(game.ACTION_SPACE)
@@ -114,9 +115,12 @@ class AfterStateNode:
         self.cache_k = None
 
         self.predicted_color = None
+        self.predicted_v = 0
 
         self.children = [None] * 2
         self.p = np.zeros(2)
+        self.w = np.zeros(2)
+        self.n = np.zeros(2)
 
 
 def visibilize_node_graph(node: Node, g: Digraph):
@@ -126,7 +130,8 @@ def visibilize_node_graph(node: Node, g: Digraph):
                 continue
 
             v = w / n if n > 0 else 0
-            label = f"v = {v:2f}\r\np = {p:2f}"
+            v_ = child.predicted_v
+            label = f"w = {v:.3f}\r\nv = {v_:.3f}\r\np = {p:.3f}"
             g.edge(node.state_str, child.state_str, label)
 
             visibilize_node_graph(child, g)
@@ -139,7 +144,11 @@ def visibilize_node_graph(node: Node, g: Digraph):
                 continue
 
             color = 'blue' if i == 1 else 'red'
-            label = f"{color}\r\np = {node.p[i]:2f}"
+
+            v = node.w[i] / node.n[i] if node.n[i] > 0 else 0
+            v_ = child.predicted_v
+            p = node.p[i]
+            label = f"{color}\r\nw = {v:.3f}\r\nv = {v_:.3f}\r\np = {p:.3f}"
             g.edge(node.state_str, child.state_str, label=label)
 
             visibilize_node_graph(child, g)
@@ -147,21 +156,19 @@ def visibilize_node_graph(node: Node, g: Digraph):
 
 def expand_afterstate(node: Node,
                       state: game.SimulationState,
-                      pred_state: PredictState):
+                      pred_state: PredictState,
+                      info: game.AfterstateInfo):
 
     next_node = AfterStateNode(node.root_player)
 
     if should_do_visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state)
 
-    v, _ = setup_node(next_node, node, state, pred_state)
+    tokens = state.get_afterstate_tokens(info)
+    v, _ = setup_node(next_node, node, pred_state, tokens)
 
-    next_node.p[1] = nn.sigmoid(next_node.predicted_color[state.tokens_p[-1][game.Token.ID] - 8])
+    next_node.p[1] = next_node.predicted_color[info.piece_id]
     next_node.p[0] = 1 - next_node.p[1]
-
-    if np.isnan(next_node.p).any():
-        print("NaN !!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        next_node.p = np.array([0.5, 0.5])
 
     return next_node, v
 
@@ -189,7 +196,8 @@ def expand(node: Node,
     if next_node.winner != 0:
         return next_node, next_node.winner
 
-    v, next_node.p = setup_node(next_node, node, state, pred_state)
+    tokens = state.get_last_tokens()
+    v, next_node.p = setup_node(next_node, node, pred_state, tokens)
 
     return next_node, v
 
@@ -218,12 +226,16 @@ def expand_with_observation(node: Node,
     return next_node
 
 
-def setup_node(node: Node, parent_node: Node, state: game.State, pred_state: PredictState):
-    tokens = state.get_last_tokens()
+def setup_node(node: Node, parent_node: Node, pred_state: PredictState, tokens):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
 
     pi, v, c, cv, ck = predict(pred_state, tokens, parent_node.cache_v, parent_node.cache_k)
-    node.predicted_color = jax.device_get(c)
+
+    if np.isnan(c).any():
+        c = np.full(shape=8, fill_value=0.5)
+
+    node.predicted_color = c
+    node.predicted_v = v
     node.cache_v = cv
     node.cache_k = ck
 
@@ -233,10 +245,11 @@ def setup_node(node: Node, parent_node: Node, state: game.State, pred_state: Pre
 def simulate_afterstate(node: AfterStateNode,
                         state: game.SimulationState,
                         player: int,
-                        pred_state: PredictState) -> float:
+                        pred_state: PredictState,
+                        info: game.AfterstateInfo) -> float:
     color = np.random.choice([game.RED, game.BLUE], p=node.p)
 
-    state.step_afterstate(color)
+    state.step_afterstate(info, color)
 
     if node.children[color] is None:
         child, v = expand(node, state, pred_state)
@@ -244,7 +257,10 @@ def simulate_afterstate(node: AfterStateNode,
     else:
         v = simulate(node.children[color], state, player, pred_state)
 
-    state.undo_step_afterstate()
+    state.undo_step_afterstate(info)
+
+    node.n[color] += 1
+    node.w[color] += v * player
 
     return v
 
@@ -265,18 +281,18 @@ def simulate(node: Node,
     scores = node.calc_scores()
     action = np.argmax(scores)
 
-    state.step(action, player)
+    info = state.step(action, player)
 
     if node.children[action] is None:
-        if state.is_afterstate():
-            child, v = expand_afterstate(node, state, pred_state)
+        if info.is_afterstate():
+            child, v = expand_afterstate(node, state, pred_state, info)
         else:
             child, v = expand(node, state, pred_state)
 
         node.children[action] = child
     else:
-        if state.is_afterstate():
-            v = simulate_afterstate(node.children[action], state, -player, pred_state)
+        if info.is_afterstate():
+            v = simulate_afterstate(node.children[action], state, -player, pred_state, info)
         else:
             v = simulate(node.children[action], state, -player, pred_state)
 
@@ -332,7 +348,7 @@ def step(node1: Node,
 
     if action != -1:
         pass
-        print(f"find checkmate: {action}")
+        # print(f"find checkmate: {action}")
 
     else:
         node.setup_valid_actions(sim_state, 1)
@@ -475,7 +491,9 @@ def sim_state_to_str(state: game.SimulationState):
 
     board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.BLUE)]] = 1
     board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.RED)]] = 2
-    board[state.pieces_o[state.pieces_o >= 0]] = -1
+    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.BLUE)]] = -1
+    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.RED)]] = -2
+    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.UNCERTAIN_PIECE)]] = -3
 
     s = str(board.reshape((6, 6))).replace('0', ' ')
     s = s.replace('[[', ' [').replace('[', '|')

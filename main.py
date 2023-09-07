@@ -16,7 +16,7 @@ import mcts
 
 
 def start_selfplay_process(sender, n_updates,
-                           num_mcts_simulations: int, dirichlet_alpha):
+                           num_mcts_sim: int, dirichlet_alpha):
     with jax.default_device(jax.devices("cpu")[0]):
         model = create_model()
 
@@ -26,8 +26,8 @@ def start_selfplay_process(sender, n_updates,
         last_n_updates = n_updates.value
 
         while True:
-            # num_mcts_simu1, num_mcts_simu2 = np.random.randint(20, num_mcts_simulations, size=2)
-            sample = selfplay(pred_state, model, 100, 100, dirichlet_alpha)
+            # num_mcts_simu1, num_mcts_simu2 = np.random.randint(num_mcts_sim // 2, num_mcts_sim, size=2)
+            sample = selfplay(pred_state, model, num_mcts_sim, num_mcts_sim, dirichlet_alpha)
 
             sender.send(sample)
 
@@ -94,9 +94,9 @@ def create_model():
 
 
 def main(n_clients=30,
-         buffer_size=10000,
+         buffer_size=40000,
          batch_size=128, epochs_per_update=1,
-         num_mcts_simulations=50,
+         num_mcts_simulations=100,
          update_period=200, test_period=100,
          n_testplay=5,
          dirichlet_alpha=0.3):

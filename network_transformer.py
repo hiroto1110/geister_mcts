@@ -463,7 +463,7 @@ def main_train(model, state, data):
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'geister_test_'
+    prefix = 'geister_'
 
     checkpoints.save_checkpoint(
         ckpt_dir=ckpt_dir, prefix=prefix,
@@ -631,7 +631,7 @@ def main():
 
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=3)
+    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
