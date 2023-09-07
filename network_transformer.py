@@ -252,7 +252,7 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
     # loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
     loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=(0, 2))
 
-    loss = jnp.mean(0.1 * loss_pi + 0.5 * loss_v + 0.5 * loss_color)
+    loss = jnp.mean(0.2 * loss_pi + loss_v + loss_color)
 
     acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2))
 

@@ -26,8 +26,8 @@ def start_selfplay_process(sender, n_updates,
         last_n_updates = n_updates.value
 
         while True:
-            num_mcts_simu1, num_mcts_simu2 = np.random.randint(20, num_mcts_simulations, size=2)
-            sample = selfplay(pred_state, model, num_mcts_simu1, num_mcts_simu2, dirichlet_alpha)
+            # num_mcts_simu1, num_mcts_simu2 = np.random.randint(20, num_mcts_simulations, size=2)
+            sample = selfplay(pred_state, model, 100, 100, dirichlet_alpha)
 
             sender.send(sample)
 
@@ -172,20 +172,7 @@ def main(n_clients=30,
         n_updates.value += 1
 
 
-def show_replay_buffer():
-    replay = ReplayBuffer(buffer_size=10000, seq_length=game.MAX_TOKEN_LENGTH)
-    replay.load('replay_buffer')
-
-    print(replay.reward_buffer[:400])
-
-    for i in range(game.MAX_TOKEN_LENGTH):
-        print(replay.tokens_buffer[0, i])
-
-
 if __name__ == "__main__":
-    # show_replay_buffer()
-    # exit()
-
     try:
         main()
 

@@ -28,8 +28,9 @@ def predict(state: PredictState, tokens, cache_v, cache_k):
     pi = pi[0, 0]
     v = nn.softmax(v[0, 0]) * np.array([-1, -1, -1, 0, 1, 1, 1], dtype=np.int8)
     v = v.sum()
-    c = nn.sigmoid(c[0, 0])
-    return pi, v, c, cv, ck
+    color = c[0, 0]
+
+    return pi, v, color, cv, ck
 
 
 def softmax(x):
@@ -37,14 +38,18 @@ def softmax(x):
     return exp_x / np.sum(exp_x, axis=0)
 
 
+should_do_visibilize_node_graph = __name__ == '__main__'
+
+
 class Node:
     def __init__(self, root_player: int) -> None:
         self.root_player = root_player
         self.winner = 0
 
-        # self.state_str = ""
+        self.state_str = ""
 
-        self.c_puct = 1
+        self.c_init = 1.25
+        self.c_base = 19652
 
         self.cache_v = None
         self.cache_k = None
@@ -83,6 +88,17 @@ class Node:
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
         self.p = softmax(self.p)
 
+    def calc_scores(self):
+        c = self.c_init * np.log((self.n.sum() + 1 + self.c_base) / self.c_base)
+
+        U = c * self.p * np.sqrt(self.n.sum() + 1) / (self.n + 1)
+        Q = self.w / np.where(self.n != 0, self.n, 1)
+
+        scores = U + Q
+        scores = np.where(self.valid_actions_mask, scores, -np.inf)
+
+        return scores
+
     def get_policy(self):
         return self.n / self.n.sum()
 
@@ -92,9 +108,7 @@ class AfterStateNode:
         self.root_player = root_player
         self.winner = 0
 
-        # self.state_str = ""
-
-        self.c_puct = 1
+        self.state_str = ""
 
         self.cache_v = None
         self.cache_k = None
@@ -112,16 +126,21 @@ def visibilize_node_graph(node: Node, g: Digraph):
                 continue
 
             v = w / n if n > 0 else 0
-            g.edge(node.state_str, child.state_str, label=f"v = {v:3f}\r\np = {p:3f}")
+            label = f"v = {v:2f}\r\np = {p:2f}"
+            g.edge(node.state_str, child.state_str, label)
 
             visibilize_node_graph(child, g)
 
     else:
-        for child, p in zip(node.children, node.p):
+        for i in range(2):
+            child = node.children[i]
+
             if child is None:
                 continue
 
-            g.edge(node.state_str, child.state_str, label=f"p = {p:3f}")
+            color = 'blue' if i == 1 else 'red'
+            label = f"{color}\r\np = {node.p[i]:2f}"
+            g.edge(node.state_str, child.state_str, label=label)
 
             visibilize_node_graph(child, g)
 
@@ -131,12 +150,18 @@ def expand_afterstate(node: Node,
                       pred_state: PredictState):
 
     next_node = AfterStateNode(node.root_player)
-    # next_node.state_str = sim_state_to_str(state)
+
+    if should_do_visibilize_node_graph:
+        next_node.state_str = sim_state_to_str(state)
 
     v, _ = setup_node(next_node, node, state, pred_state)
 
-    next_node.p[1] = next_node.predicted_color[state.tokens_p[-1][game.Token.ID] - 8]
+    next_node.p[1] = nn.sigmoid(next_node.predicted_color[state.tokens_p[-1][game.Token.ID] - 8])
     next_node.p[0] = 1 - next_node.p[1]
+
+    if np.isnan(next_node.p).any():
+        print("NaN !!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        next_node.p = np.array([0.5, 0.5])
 
     return next_node, v
 
@@ -147,7 +172,9 @@ def expand(node: Node,
 
     next_node = Node(node.root_player)
     next_node.winner = state.winner
-    # next_node.state_str = sim_state_to_str(state)
+
+    if should_do_visibilize_node_graph:
+        next_node.state_str = sim_state_to_str(state)
 
     if node.winner != 0:
         next_node.winner = node.winner
@@ -196,7 +223,7 @@ def setup_node(node: Node, parent_node: Node, state: game.State, pred_state: Pre
     tokens = jnp.array(tokens, dtype=jnp.uint8)
 
     pi, v, c, cv, ck = predict(pred_state, tokens, parent_node.cache_v, parent_node.cache_k)
-    node.predicted_color = c
+    node.predicted_color = jax.device_get(c)
     node.cache_v = cv
     node.cache_k = ck
 
@@ -235,12 +262,7 @@ def simulate(node: Node,
 
     node.setup_valid_actions(state, player)
 
-    U = node.c_puct * node.p * np.sqrt(node.n.sum() + 1) / (1 + node.n)
-    Q = node.w / np.where(node.n != 0, node.n, 1)
-
-    scores = U + Q
-    scores = np.where(node.valid_actions_mask, scores, -np.inf)
-
+    scores = node.calc_scores()
     action = np.argmax(scores)
 
     state.step(action, player)
@@ -288,7 +310,9 @@ def step(node1: Node,
     node = node1 if player == 1 else node2
 
     sim_state = game.SimulationState(state, node.root_player)
-    # node.state_str = sim_state_to_str(sim_state)
+
+    if should_do_visibilize_node_graph:
+        node.state_str = sim_state_to_str(sim_state)
 
     if node.winner != 0:
         if np.sum(node.n) == 0:
@@ -308,7 +332,7 @@ def step(node1: Node,
 
     if action != -1:
         pass
-        # print(f"find checkmate: {action}")
+        print(f"find checkmate: {action}")
 
     else:
         node.setup_valid_actions(sim_state, 1)
@@ -325,10 +349,11 @@ def step(node1: Node,
         policy = node.get_policy()
         action = np.argmax(policy)
 
-        # dg = Digraph(format='png')
-        # dg.attr('node', fontname="Myrica M")
-        # visibilize_node_graph(node, dg)
-        # dg.render(f'./graph/n_ply_{state.n_ply}')
+        if should_do_visibilize_node_graph:
+            dg = Digraph(format='png')
+            dg.attr('node', fontname="Myrica M")
+            visibilize_node_graph(node, dg)
+            dg.render(f'./graph/n_ply_{state.n_ply}')
 
     state.step(action, player)
 
@@ -480,9 +505,9 @@ def test():
 
     elapsed_times = []
 
-    for i in range(2):
+    for i in range(1):
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 50, 50, 0.3, print_board=True)
+        play_game(pred_state, model_with_cache, 100, 100, 0.3, print_board=True)
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
 
