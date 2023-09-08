@@ -14,26 +14,6 @@ import matplotlib.pyplot as plt
 import geister
 
 
-class RelativePosition(nn.Module):
-    def __init__(self, embed_dim, max_relative_position):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.max_relative_position = max_relative_position
-        nn.init.xavier_uniform_(self.embeddings_table)
-
-    @nn.compact
-    def __call__(self, length_q, length_k):
-        range_vec_q = jnp.arange(length_q)
-        range_vec_k = jnp.arange(length_k)
-        distance_mat = range_vec_k[None, :] - range_vec_q[:, None]
-        distance_mat_clipped = jnp.clamp(distance_mat, -self.max_relative_position, self.max_relative_position)
-        final_mat = distance_mat_clipped + self.max_relative_position
-
-        embeddings = nn.Embed(self.max_relative_position * 2 + 1, self.embed_dim)(final_mat)
-
-        return embeddings
-
-
 class Embeddings(nn.Module):
     embed_dim: int
     piece_type: int = 5
@@ -56,13 +36,31 @@ class Embeddings(nn.Module):
         return embeddings
 
 
+class RelativePostionalEncoding(nn.Module):
+    num_heads: int
+    embed_dim: int
+    max_x: int
+
+    @nn.compact
+    def __call__(self, q, x):
+        seq_len = x.shape[1]
+        head_dim = self.embed_dim // self.num_heads
+
+        # [Batch, SeqLen, SeqLen]
+        rel_x = self.max_x + x.reshape(-1, 1, seq_len) - x.reshape(-1, seq_len, 1)
+        # [Batch, SeqLen, SeqLen, Dim]
+        rel_x = nn.Embed(self.max_x * 2 + 1, self.embed_dim)(rel_x)
+        rel_x = rel_x.reshape(-1, seq_len, seq_len, self.num_heads, head_dim)
+        # [Batch, Head, SeqLen, SeqLen]
+        return jnp.einsum('...qhd,...qkhd->...hqk', q, rel_x)
+
+
 class MultiHeadAttention(nn.Module):
-    board_size: int = 7
     num_heads: int
     embed_dim: int
 
     @nn.compact
-    def __call__(self, x, mask, pos_x, pos_y):
+    def __call__(self, x, mask):
         seq_len = x.shape[1]
         head_dim = self.embed_dim // self.num_heads
 
@@ -77,22 +75,6 @@ class MultiHeadAttention(nn.Module):
         # [Batch, Head, SeqLen, SeqLen]
         attention = (jnp.einsum('...qhd,...khd->...hqk', q, k) / jnp.sqrt(head_dim))
 
-        if pos_x is not None:
-            # [Batch, SeqLen, SeqLen]
-            rel_pos_x = self.board_size + pos_x.reshape(-1, 1, seq_len) - pos_x.reshape(-1, seq_len, 1)
-            # [Batch, SeqLen, SeqLen, Dim]
-            rel_pos_x = nn.Embed(self.board_size * 2 + 1, self.embed_dim)(rel_pos_x)
-            # [Batch, Head, SeqLen, SeqLen]
-            attention += jnp.einsum('...qhd,...qkd->...hqk', q, rel_pos_x)
-
-        if pos_y is not None:
-            # [Batch, SeqLen, SeqLen]
-            rel_pos_y = self.board_size + pos_y.reshape(-1, 1, seq_len) - pos_y.reshape(-1, seq_len, 1)
-            # [Batch, SeqLen, SeqLen, Dim]
-            rel_pos_y = nn.Embed(self.board_size * 2 + 1, self.embed_dim)(rel_pos_y)
-            # [Batch, Head, SeqLen, SeqLen]
-            attention += jnp.einsum('...qhd,...qkd->...hqk', q, rel_pos_y)
-
         attention = jnp.where(mask, attention, -jnp.inf)
         attention = nn.softmax(attention, axis=-1)
 
@@ -100,7 +82,7 @@ class MultiHeadAttention(nn.Module):
         values = values.reshape(-1, seq_len, self.num_heads * head_dim)  # [Batch, SeqLen, Head × Dim (=EmbedDim)]
         out = nn.Dense(self.embed_dim)(values)
 
-        return out, attention
+        return out
 
 
 class MultiHeadAttentionWithCache(nn.Module):
@@ -163,8 +145,8 @@ class TransformerBlock(nn.Module):
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
     @nn.compact
-    def __call__(self, x, attention_mask, pos_x, pos_y, eval):
-        out = self.attention(x, attention_mask, pos_x, pos_y)
+    def __call__(self, x, attention_mask, eval):
+        out = self.attention(x, attention_mask)
 
         x = x + out
         x = nn.LayerNorm()(x)
@@ -207,6 +189,7 @@ class TransformerDecoder(nn.Module):
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
+
         self.layers = [TransformerBlock(num_heads=self.num_heads, embed_dim=self.embed_dim)
                        for _ in range(self.num_hidden_layers)]
 
@@ -214,13 +197,10 @@ class TransformerDecoder(nn.Module):
     def __call__(self, x, eval=True):
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
-
-        pos_x, pos_y = x[..., 2], x[..., 3]
-
         x = self.embeddings(x, eval)
+
         for i in range(self.num_hidden_layers):
-            x = self.layers[i](x, mask, pos_x, pos_y, eval=eval)
-            pos_x, pos_y = None, None
+            x = self.layers[i](x, mask, eval=eval)
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         pi = nn.Dense(features=NUM_ACTIONS)(x)
@@ -275,8 +255,8 @@ class TransformerDecoderWithCache(nn.Module):
 
 @partial(jax.jit, static_argnames=['eval'])
 def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
-    pi, v, color, _ = state.apply_fn({'params': params}, x, eval=eval,
-                                     rngs={'dropout': dropout_rng})
+    pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
+                                  rngs={'dropout': dropout_rng})
 
     # [Batch, SeqLen, 144]
     y_pi = y_pi.reshape((-1, x.shape[1]))
