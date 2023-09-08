@@ -15,8 +15,7 @@ import geister as game
 import mcts
 
 
-def start_selfplay_process(sender, n_updates,
-                           num_mcts_sim: int, dirichlet_alpha):
+def start_selfplay_process(sender, n_updates, num_mcts_sim: int, dirichlet_alpha: float):
     with jax.default_device(jax.devices("cpu")[0]):
         model = create_model()
 
@@ -90,21 +89,21 @@ PREFIX = 'geister_'
 
 
 def create_model():
-    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=3)
 
 
 def main(n_clients=30,
          buffer_size=40000,
-         batch_size=128, epochs_per_update=1,
-         num_mcts_simulations=100,
-         update_period=200, test_period=100,
-         n_testplay=5,
+         batch_size=128,
+         epochs_per_update=1,
+         update_period=200,
+         num_mcts_sim=200,
          dirichlet_alpha=0.3):
 
     wandb.init(project="geister-zero",
                config={"dirichlet_alpha": dirichlet_alpha})
 
-    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=3)
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
     state = network.TrainState.create(
@@ -119,7 +118,7 @@ def main(n_clients=30,
 
     for i in range(n_clients):
         sender = pipe.get_sender(i)
-        args = sender, n_updates, num_mcts_simulations, dirichlet_alpha
+        args = sender, n_updates, num_mcts_sim, dirichlet_alpha
         process = mp.Process(target=start_selfplay_process, args=args)
         process.start()
 
@@ -141,8 +140,6 @@ def main(n_clients=30,
 
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
-
-            # state, loss_i, info_i = network.train_step(state, *batch, eval=True)
             state, loss_i, info_i = network.train_step(state, *batch, eval=False)
 
             loss += loss_i
@@ -154,6 +151,7 @@ def main(n_clients=30,
 
         log_dict = {"loss": loss / num_iters,
                     "value": wandb.Histogram(replay.reward_buffer[replay.index - update_period: replay.index]),
+                    "n_ply": replay.tokens_buffer[replay.index - update_period: replay.index, :, 4].max(axis=1).mean(),
                     "num updates": n_updates.value}
 
         for i in range(n_div):

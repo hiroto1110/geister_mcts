@@ -89,11 +89,11 @@ class Node:
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
         self.p = softmax(self.p)
 
-    def calc_scores(self):
+    def calc_scores(self, player: int):
         c = self.c_init * np.log((self.n.sum() + 1 + self.c_base) / self.c_base)
 
         U = c * self.p * np.sqrt(self.n.sum() + 1) / (self.n + 1)
-        Q = self.w / np.where(self.n != 0, self.n, 1)
+        Q = player * self.w / np.where(self.n != 0, self.n, 1)
 
         scores = U + Q
         scores = np.where(self.valid_actions_mask, scores, -np.inf)
@@ -260,7 +260,7 @@ def simulate_afterstate(node: AfterStateNode,
     state.undo_step_afterstate(info)
 
     node.n[color] += 1
-    node.w[color] += v * player
+    node.w[color] += v
 
     return v
 
@@ -278,7 +278,7 @@ def simulate(node: Node,
 
     node.setup_valid_actions(state, player)
 
-    scores = node.calc_scores()
+    scores = node.calc_scores(player)
     action = np.argmax(scores)
 
     info = state.step(action, player)
@@ -299,7 +299,7 @@ def simulate(node: Node,
     state.undo_step(action, player)
 
     node.n[action] += 1
-    node.w[action] += v * player
+    node.w[action] += v
 
     return v
 
@@ -368,6 +368,7 @@ def step(node1: Node,
         if should_do_visibilize_node_graph:
             dg = Digraph(format='png')
             dg.attr('node', fontname="Myrica M")
+            dg.attr('edge', fontname="Myrica M")
             visibilize_node_graph(node, dg)
             dg.render(f'./graph/n_ply_{state.n_ply}')
 
@@ -499,6 +500,8 @@ def sim_state_to_str(state: game.SimulationState):
     s = s.replace('[[', ' [').replace('[', '|')
     s = s.replace(']]', ']').replace(']', '|')
 
+    s = f"n_ply={state.n_ply}\r\n" + s
+
     n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
     n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
 
@@ -521,18 +524,11 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
-    elapsed_times = []
-
     for i in range(1):
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 100, 100, 0.3, print_board=True)
+        play_game(pred_state, model_with_cache, 200, 200, 0.3, print_board=True)
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
-
-        if i > 0:
-            elapsed_times.append(elapsed)
-
-    print(f"avg time: {sum(elapsed_times) / len(elapsed_times)} s")
 
 
 if __name__ == "__main__":

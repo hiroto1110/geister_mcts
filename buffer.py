@@ -12,15 +12,6 @@ class Sample:
 
 
 class ReplayBuffer:
-    buffer_size: int
-    index: int
-    n_samples: int
-
-    tokens_buffer: np.ndarray
-    policy_buffer: np.ndarray
-    reward_buffer: np.ndarray
-    pieces_buffer: np.ndarray
-
     def __init__(self, buffer_size, seq_length):
         self.buffer_size = buffer_size
         self.index = 0
