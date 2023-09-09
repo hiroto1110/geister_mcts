@@ -9,7 +9,7 @@ import numpy as np
 N_COLS = N_ROWS = 6
 DIRECTIONS = -6, -1, 1, 6
 
-ACTION_SPACE = N_ROWS * N_COLS * len(DIRECTIONS)
+ACTION_SPACE = 8 * len(DIRECTIONS)
 
 UNCERTAIN_PIECE = 2
 BLUE = 1
@@ -72,9 +72,10 @@ class State:
             pieces_p, pieces_o = pieces_o, pieces_p
             tokens_p, tokens_o = tokens_o, tokens_p
 
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(pieces_p == pos_next)[0][0]
+        pos_next = pieces_p[p_id]
+        pos = pos_next - d
 
         pieces_p[p_id] = pos
 
@@ -96,7 +97,7 @@ class State:
         if self.is_done:
             self.update_is_done(player)
 
-    def step(self, action: int, player: int, is_sim: bool = False):
+    def step(self, action: int, player: int):
         self.n_ply += 1
 
         pieces_p = self.pieces_p
@@ -111,9 +112,11 @@ class State:
             color_p, color_o = color_o, color_p
             tokens_p, tokens_o = tokens_o, tokens_p
 
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(pieces_p == pos)[0][0]
+        pos = pieces_p[p_id]
+        pos_next = pos + d
+
         p_cap_id = np.where(pieces_o == pos_next)[0]
 
         tokens_p.append([
@@ -245,23 +248,25 @@ class SimulationState:
         if root_player == 1:
             self.pieces_p = state.pieces_p
             self.color_p = state.color_p
-            self.tokens_p = state.tokens_p
 
             self.pieces_o = state.pieces_o
             self.color_o = state.color_o
 
             self.escape_pos_p = ESCAPE_POS_P
             self.escape_pos_o = ESCAPE_POS_O
+            self.tokens = state.tokens_p
         else:
             self.pieces_p = state.pieces_o
             self.color_p = state.color_o
-            self.tokens_p = state.tokens_o
 
             self.pieces_o = state.pieces_p
             self.color_o = state.color_p
 
             self.escape_pos_p = ESCAPE_POS_O
             self.escape_pos_o = ESCAPE_POS_P
+            self.tokens = state.tokens_o
+
+        # self.tokens = []
 
         self.color_o = np.copy(self.color_o)
         self.color_o[self.pieces_o >= 0] = UNCERTAIN_PIECE
@@ -273,9 +278,9 @@ class SimulationState:
 
     def step_afterstate(self, info: AfterstateInfo, color: int):
         self.color_o[info.piece_id] = color
-        self.tokens_p[info.token_id][Token.COLOR] = color + 2
 
         if info.type == AfterstateType.CAPTURING:
+            self.tokens[info.token_id][Token.COLOR] = color + 2
             self.update_is_done_caused_by_capturing()
 
         elif info.type == AfterstateType.ESCAPING:
@@ -288,7 +293,7 @@ class SimulationState:
 
     def undo_step_afterstate(self, info: AfterstateInfo):
         self.color_o[info.piece_id] = UNCERTAIN_PIECE
-        self.tokens_p[info.token_id][Token.COLOR] = 4
+        self.tokens[info.token_id][Token.COLOR] = 4
 
     def undo_step(self, action: int, player: int):
         if player == 1:
@@ -297,37 +302,36 @@ class SimulationState:
             self.undo_step_o(action)
 
     def undo_step_p(self, action: int):
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(self.pieces_p == pos_next)[0][0]
+        pos_next = self.pieces_p[p_id]
+        self.pieces_p[p_id] = pos_next - d
 
-        self.pieces_p[p_id] = pos
-
-        if self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]:
-            p_cap_id = self.tokens_p[-1][Token.ID] - 8
+        if len(self.tokens) >= 2 and self.tokens[-1][Token.T] == self.tokens[-2][Token.T]:
+            p_cap_id = self.tokens[-1][Token.ID] - 8
             self.pieces_o[p_cap_id] = pos_next
 
-            del self.tokens_p[-1]
+            del self.tokens[-1]
 
-        del self.tokens_p[-1]
+        del self.tokens[-1]
 
         self.n_ply -= 1
         self.is_done = False
         self.winner = 0
 
     def undo_step_o(self, action: int):
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(self.pieces_o == pos_next)[0][0]
-        self.pieces_o[p_id] = pos
+        pos_next = self.pieces_o[p_id]
+        self.pieces_o[p_id] = pos_next - d
 
-        if self.tokens_p[-1][Token.T] == self.tokens_p[-2][Token.T]:
-            p_cap_id = self.tokens_p[-1][Token.ID]
+        if len(self.tokens) >= 2 and self.tokens[-1][Token.T] == self.tokens[-2][Token.T]:
+            p_cap_id = self.tokens[-1][Token.ID]
             self.pieces_p[p_cap_id] = pos_next
 
-            del self.tokens_p[-1]
+            del self.tokens[-1]
 
-        del self.tokens_p[-1]
+        del self.tokens[-1]
 
         self.n_ply -= 1
         self.is_done = False
@@ -343,14 +347,16 @@ class SimulationState:
     def step_p(self, action: int) -> AfterstateInfo:
         self.n_ply += 1
 
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(self.pieces_p == pos)[0][0]
+        pos = self.pieces_p[p_id]
+        pos_next = pos + d
+
         p_cap_id = np.where(self.pieces_o == pos_next)[0]
 
         info = ASTERSTATE_INFO_NONE
 
-        self.tokens_p.append([
+        self.tokens.append([
             self.color_p[p_id],
             p_id,
             pos_next % 6,
@@ -362,14 +368,14 @@ class SimulationState:
             self.pieces_o[p_cap_id] = CAPTURED
             color = self.color_o[p_cap_id]
 
-            self.tokens_p.append([
+            self.tokens.append([
                 color + 2,
                 p_cap_id + 8,
                 6, 6, self.n_ply])
 
             if color == UNCERTAIN_PIECE:
                 info = AfterstateInfo(AfterstateType.CAPTURING,
-                                      token_id=len(self.tokens_p) - 1,
+                                      token_id=len(self.tokens) - 1,
                                       piece_id=p_cap_id)
 
         self.pieces_p[p_id] = pos_next
@@ -384,7 +390,7 @@ class SimulationState:
             escaped_id = escaped_id[0]
 
             info = AfterstateInfo(AfterstateType.ESCAPING,
-                                  token_id=len(self.tokens_p) - 2,
+                                  token_id=len(self.tokens) - 2,
                                   piece_id=escaped_id)
 
         return info
@@ -392,12 +398,14 @@ class SimulationState:
     def step_o(self, action: int):
         self.n_ply += 1
 
-        pos, pos_next = action_to_pos(action)
+        p_id, d = action_to_id(action)
 
-        p_id = np.where(self.pieces_o == pos)[0][0]
+        pos = self.pieces_o[p_id]
+        pos_next = pos + d
+
         p_cap_id = np.where(self.pieces_p == pos_next)[0]
 
-        self.tokens_p.append([
+        self.tokens.append([
             4, p_id + 8,
             pos_next % 6,
             pos_next // 6,
@@ -407,7 +415,7 @@ class SimulationState:
             p_cap_id = p_cap_id[0]
             self.pieces_p[p_cap_id] = CAPTURED
 
-            self.tokens_p.append([
+            self.tokens.append([
                 self.color_p[p_cap_id], p_cap_id,
                 6, 6, self.n_ply])
 
@@ -454,10 +462,10 @@ class SimulationState:
 
     def get_afterstate_tokens(self, info: AfterstateInfo):
         i = info.token_id
-        return [self.tokens_p[i: i+1]]
+        return [self.tokens[i: i+1]]
 
     def get_last_tokens(self):
-        return [self.tokens_p[-1:]]
+        return [self.tokens[-1:]]
 
 
 def get_initial_state():
@@ -473,22 +481,12 @@ def get_initial_state():
     return State(color_p, color_o)
 
 
-def is_valid_action(state: State, action: int, player: int):
-    xy = action % (N_ROWS * N_COLS)
-    d = action // (N_ROWS * N_COLS)
+def action_to_id(action):
+    p_id = action // 4
+    d_i = action % 4
+    d = DIRECTIONS[d_i]
 
-    if player == 1 and not np.any(state.pieces_p == xy):
-        return False
-
-    elif player == -1 and not np.any(state.pieces_o == xy):
-        return False
-
-    xy_next = xy + DIRECTIONS[d]
-
-    if xy_next < 0 or 36 <= xy_next or state.board[xy_next] * player > 0:
-        return False
-
-    return True
+    return p_id, d
 
 
 def action_to_pos(action):
@@ -499,15 +497,15 @@ def action_to_pos(action):
     return pos, pos + d
 
 
-def get_valid_actions(state: State, player: int):
+def get_valid_actions_mask(state: State, player: int):
     if player == 1:
         pieces = state.pieces_p
     else:
         pieces = state.pieces_o
 
-    pieces = pieces[pieces >= 0]
     pos = np.stack([pieces]*4, axis=1)
 
+    pos[pos == CAPTURED] = -1000
     pos[pos[:, 1] % 6 == 0, 1] = -1000
     pos[pos[:, 2] % 6 == 5, 2] = -1000
 
@@ -518,9 +516,12 @@ def get_valid_actions(state: State, player: int):
     is_not_player_piece = pieces != np.stack([next_pos]*len(pieces), axis=1)
     is_not_player_piece = np.all(is_not_player_piece, axis=1)
 
-    moves = pos * 4 + [0, 1, 2, 3]
-    moves = moves.flatten()
-    moves = moves[within_board & is_not_player_piece]
+    return within_board & is_not_player_piece
+
+
+def get_valid_actions(state: State, player: int):
+    mask = get_valid_actions_mask(state, player)
+    moves = np.where(mask)[0]
 
     return moves
 
@@ -580,32 +581,34 @@ def test_moves():
         state.step(move, player)
         done = state.is_done
 
-        """board = np.zeros(36, dtype=np.int8)
+        board = np.zeros(36, dtype=np.int8)
 
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
 
-        print(str(board.reshape((6, 6))).replace('0', ' '))"""
+        print(str(board.reshape((6, 6))).replace('0', ' '))
         print(state.n_ply)
 
         player = -player
 
     print(f"winner: {state.winner}")
 
+    return
+
     for move in move_history[::-1]:
         player = -player
         state.undo_step(move, player)
 
-        """board = np.zeros(36, dtype=np.int8)
+        board = np.zeros(36, dtype=np.int8)
 
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 1)]] = 1
         board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == 0)]] = 2
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 1)]] = -1
         board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == 0)]] = -2
 
-        print(str(board.reshape((6, 6))).replace('0', ' '))"""
+        print(str(board.reshape((6, 6))).replace('0', ' '))
         print(state.n_ply)
 
     tokens = state.get_tokens(1)
@@ -616,7 +619,7 @@ if __name__ == "__main__":
     np.random.seed(12)
 
     start = time.perf_counter()
-    for i in range(10):
+    for i in range(1):
         test_moves()
     end = time.perf_counter()
 

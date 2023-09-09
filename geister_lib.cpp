@@ -307,8 +307,15 @@ int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::arr
 		return -1;
 
 	int pos = tzcnt(max_move);
-	int action = pos * 4 + max_d;
-	return action;
+
+	for (int i = 0; i < 8; i++) {
+		int p_i = *pieces_p.data(i);
+
+		if (p_i == pos)
+			return i * 4 + max_d;
+	}
+
+	return -1;
 }
 
 PYBIND11_MODULE(geister_lib, m) {

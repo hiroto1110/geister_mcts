@@ -178,7 +178,7 @@ class TransformerBlockWithCache(nn.Module):
         return x, v, k
 
 
-NUM_ACTIONS = 36 * 4
+NUM_ACTIONS = 32
 MAX_LENGTH = 200
 
 
@@ -381,7 +381,7 @@ def line_to_tokens(line, max_length):
     tokens = geister.get_tokens(state, 1, max_length)
     tokens = jnp.array(tokens, dtype=jnp.uint8)
 
-    actions = np.random.randint(0, 144, size=tokens.shape[0])
+    actions = np.random.randint(0, 32, size=tokens.shape[0])
     actions = jnp.array(actions)
 
     return tokens, actions, [winner], init_pieces_o

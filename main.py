@@ -97,7 +97,7 @@ def main(n_clients=30,
          batch_size=128,
          epochs_per_update=1,
          update_period=200,
-         num_mcts_sim=100,
+         num_mcts_sim=20,
          dirichlet_alpha=0.3):
 
     wandb.init(project="geister-zero",

@@ -44,6 +44,7 @@ should_do_visibilize_node_graph = __name__ == '__main__'
 class Node:
     def __init__(self, root_player: int) -> None:
         self.root_player = root_player
+        self.is_afterstate = False
         self.winner = 0
 
         self.state_str = ""
@@ -53,8 +54,8 @@ class Node:
 
         self.cache_v = None
         self.cache_k = None
-        self.valid_actions = None
-        self.invalid_actions = np.full(shape=1, fill_value=-1)
+        self.valid_actions_mask = None
+        self.invalid_actions = np.zeros(shape=0, dtype=np.uint8)
 
         self.predicted_color = None
         self.predicted_v = 0
@@ -62,29 +63,25 @@ class Node:
         self.children = [None] * game.ACTION_SPACE
         self.p = np.zeros(game.ACTION_SPACE)
         self.w = np.zeros(game.ACTION_SPACE)
-        self.n = np.zeros(game.ACTION_SPACE)
+        self.n = np.zeros(game.ACTION_SPACE, dtype=np.int16)
 
     def apply_invalid_actions(self):
-        if self.valid_actions is None:
+        if self.valid_actions_mask is None:
             return
 
-        self.valid_actions = np.setdiff1d(self.valid_actions, self.invalid_actions)
-
-        self.valid_actions_mask = np.zeros(144, dtype=np.int8)
-        self.valid_actions_mask[self.valid_actions] = 1
+        self.valid_actions_mask[self.invalid_actions] = 0
 
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
         self.p = softmax(self.p)
 
     def setup_valid_actions(self, state, player):
-        if self.valid_actions is not None:
+        if self.valid_actions_mask is not None:
             return
 
-        self.valid_actions = game.get_valid_actions(state, player)
-        self.valid_actions = np.setdiff1d(self.valid_actions, self.invalid_actions)
+        self.valid_actions_mask = game.get_valid_actions_mask(state, player)
+        self.valid_actions_mask[self.invalid_actions] = 0
 
-        self.valid_actions_mask = np.zeros(144, dtype=np.int8)
-        self.valid_actions_mask[self.valid_actions] = 1
+        self.valid_actions = np.where(self.valid_actions_mask)[0]
 
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
         self.p = softmax(self.p)
@@ -107,7 +104,10 @@ class Node:
 class AfterStateNode:
     def __init__(self, root_player: int) -> None:
         self.root_player = root_player
+        self.is_afterstate = True
         self.winner = 0
+
+        self.piece_id = -1
 
         self.state_str = ""
 
@@ -120,7 +120,7 @@ class AfterStateNode:
         self.children = [None] * 2
         self.p = np.zeros(2)
         self.w = np.zeros(2)
-        self.n = np.zeros(2)
+        self.n = np.zeros(2, dtype=np.int16)
 
 
 def visibilize_node_graph(node: Node, g: Digraph):
@@ -160,12 +160,16 @@ def expand_afterstate(node: Node,
                       info: game.AfterstateInfo):
 
     next_node = AfterStateNode(node.root_player)
+    next_node.piece_id = info.piece_id
 
     if should_do_visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state)
 
     tokens = state.get_afterstate_tokens(info)
     v, _ = setup_node(next_node, node, pred_state, tokens)
+
+    if next_node.predicted_color is None:
+        print(info.type)
 
     next_node.p[1] = next_node.predicted_color[info.piece_id]
     next_node.p[0] = 1 - next_node.p[1]
@@ -217,7 +221,10 @@ def expand_with_observation(node: Node,
     tokens = jnp.array([tokens], dtype=jnp.uint8)
 
     for i in range(tokens.shape[1]):
-        pi, _, _, cv, ck = predict(pred_state, tokens[:, i:i+1], cv, ck)
+        pi, v, c, cv, ck = predict(pred_state, tokens[:, i:i+1], cv, ck)
+
+    node.predicted_color = c
+    node.predicted_v = v
 
     next_node.p = jax.device_get(pi)
     next_node.cache_v = cv
@@ -314,6 +321,24 @@ def find_checkmate(state: game.State, player: int, depth: int):
         return geister_lib.find_checkmate(state.pieces_o, state.color_o, state.pieces_p, n_cap_ob, player, depth)
 
 
+def get_next_node(node: Node, action: int, state: game.State, pred_state: PredictState):
+    if node.children[action] is None:
+        return expand_with_observation(node, state, pred_state)
+
+    next_node = node.children[action]
+
+    if not next_node.is_afterstate:
+        return next_node
+
+    color = state.color_o if node.root_player == 1 else state.color_p
+    piece_color = color[next_node.piece_id]
+
+    if not next_node.children[piece_color] is None:
+        return expand_with_observation(node, state, pred_state)
+
+    return next_node.children[piece_color]
+
+
 def step(node1: Node,
          node2: Node,
          state: game.State,
@@ -331,7 +356,7 @@ def step(node1: Node,
         node.state_str = sim_state_to_str(sim_state)
 
     if node.winner != 0:
-        if np.sum(node.n) == 0:
+        if node.n.sum() == 0:
             node.setup_valid_actions(state, player)
             action = np.random.choice(node.valid_actions)
         else:
@@ -359,7 +384,8 @@ def step(node1: Node,
             for a, noise in zip(node.valid_actions, dirichlet_noise):
                 node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
-        for _ in range(num_sim):
+        print("sum(node.n) =", node.n.sum())
+        for _ in range(num_sim - node.n.sum()):
             simulate(node, sim_state, 1, pred_state)
 
         policy = node.get_policy()
@@ -374,8 +400,9 @@ def step(node1: Node,
 
     state.step(action, player)
 
-    node1 = expand_with_observation(node1, state, pred_state)
-    node2 = expand_with_observation(node2, state, pred_state)
+    if not state.is_done:
+        node1 = get_next_node(node1, action, state, pred_state)
+        node2 = get_next_node(node2, action, state, pred_state)
 
     return action, node1, node2
 
@@ -526,7 +553,7 @@ def test():
 
     for i in range(1):
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 200, 200, 0.3, print_board=True)
+        play_game(pred_state, model_with_cache, 25, 25, 0.3, print_board=True)
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
 
