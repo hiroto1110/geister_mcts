@@ -309,13 +309,13 @@ class SimulationState:
         self.win_type = WinType.DRAW
         self.winner = 0
 
-    def step(self, action: int, player: int) -> Tuple[List[List[int]], AfterstateInfo]:
+    def step(self, action: int, player: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
         if player == 1:
             return self.step_p(action)
         else:
             return self.step_o(action)
 
-    def step_p(self, action: int) -> Tuple[List[List[int]], AfterstateInfo]:
+    def step_p(self, action: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
         self.n_ply += 1
 
         p_id, d = action_to_id(action)
@@ -325,7 +325,7 @@ class SimulationState:
 
         p_cap_id = np.where(self.pieces_o == pos_next)[0]
 
-        info = AFTERSTATE_INFO_NONE
+        info = []
 
         tokens = [[
             self.color_p[p_id],
@@ -340,7 +340,8 @@ class SimulationState:
             color = self.color_o[p_cap_id]
 
             if color == UNCERTAIN_PIECE:
-                info = AfterstateInfo(AfterstateType.CAPTURING, p_cap_id)
+                info.append(AfterstateInfo(AfterstateType.CAPTURING, p_cap_id))
+
             elif color == RED:
                 tokens.append([
                     color + 2, p_cap_id + 8,
@@ -358,13 +359,11 @@ class SimulationState:
 
         if len(escaped_id) > 0:
             escaped_id = escaped_id[0]
-
-            info = AfterstateInfo(AfterstateType.ESCAPING,
-                                  piece_id=escaped_id)
+            info.append(AfterstateInfo(AfterstateType.ESCAPING, escaped_id))
 
         return tokens, info
 
-    def step_o(self, action: int) -> Tuple[List[List[int]], AfterstateInfo]:
+    def step_o(self, action: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
         self.n_ply += 1
 
         p_id, d = action_to_id(action)
@@ -400,7 +399,7 @@ class SimulationState:
             self.winner = 1
             self.win_type = WinType.ESCAPE
 
-        return tokens, AFTERSTATE_INFO_NONE
+        return tokens, []
 
     def update_is_done_caused_by_capturing(self):
         if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
@@ -440,16 +439,16 @@ class SimulationState:
         else:
             self.undo_step_o(action, tokens)
 
-    def undo_step_p(self, action: int, tokens: List[List[int]], info: AfterstateInfo):
+    def undo_step_p(self, action: int, tokens: List[List[int]], info: List[AfterstateInfo]):
         p_id, d = action_to_id(action)
 
         pos_next = self.pieces_p[p_id]
         self.pieces_p[p_id] = pos_next - d
 
-        if info.type == AfterstateType.CAPTURING:
-            self.pieces_o[info.piece_id] = pos_next
+        if len(info) > 0 and info[0].type == AfterstateType.CAPTURING:
+            self.pieces_o[info[0].piece_id] = pos_next
 
-        elif len(tokens) == 2:
+        if len(tokens) == 2:
             p_cap_id = tokens[1][Token.ID] - 8
             self.pieces_o[p_cap_id] = pos_next
 
@@ -470,13 +469,6 @@ class SimulationState:
         self.n_ply -= 1
         self.is_done = False
         self.winner = 0
-
-    def get_afterstate_tokens(self, info: AfterstateInfo):
-        i = info.token_id
-        return [self.tokens[i: i+1]]
-
-    def get_last_tokens(self):
-        return [self.tokens[-1:]]
 
 
 def get_initial_state_pair() -> Tuple[SimulationState, SimulationState]:

@@ -256,16 +256,20 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
                                   rngs={'dropout': dropout_rng})
 
+    # print("isnan")
+    # print(jnp.isnan(pi).any(axis=(1, 2)))
+    # print("nan tokens")
+    # print(x[jnp.isnan(pi).any(axis=(1, 2))])
+
+    # jnp.save("nan_tokens", x[jnp.isnan(pi).any(axis=(1, 2))])
+
     # [Batch, SeqLen, 144]
-    y_pi = jnp.clip(y_pi.reshape((-1, x.shape[1])), 0, 31)
-    y_v = jnp.clip(y_v.reshape((-1, 1)), 0, 6)
-    # y_v = jnp.clip(y_v.reshape((-1, 1, 1)), -1, 1)
+    y_pi = y_pi.reshape((-1, x.shape[1])) % 32
+    y_v = y_v.reshape((-1, 1)) % 7
     y_color = y_color.reshape((-1, 1, 8))
 
     loss_pi = mask * optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
-    # loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean(axis=0)
     loss_v = mask * optax.softmax_cross_entropy_with_integer_labels(v, y_v)
-    # loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
     loss_color = mask * optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=2)
 
     loss = jnp.mean(0.5 * loss_pi + loss_v + loss_color)
@@ -301,6 +305,7 @@ def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
     for x, y_pi, y_v, y_color in zip(*data_batched):
         state, loss, info = train_step(state, x, 1, y_pi, y_v, y_color, eval)
+        # print(loss, info)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=(0, 2))
@@ -418,7 +423,14 @@ def main_test(model, state, data):
 
 
 def main():
-    if False:
+    nan_tokens = jnp.load("nan_tokens.npy")
+    for i in range(nan_tokens.shape[0]):
+        print(i)
+        print(nan_tokens[i])
+
+    # return
+
+    if True:
         tokens_buffer = np.load('replay_buffer/tokens.npy')
         policy_buffer = np.load('replay_buffer/policy.npy')
         reward_buffer = np.load('replay_buffer/reward.npy') + 3

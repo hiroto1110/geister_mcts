@@ -77,6 +77,9 @@ def main(n_clients=30,
          update_period=200,
          num_mcts_sim=20,
          dirichlet_alpha=0.3):
+    # jax.config.update("jax_debug_nans", True)
+    # jax.config.parse_flags_with_absl()
+    # jax.config.update("jax_enable_x64", True)
 
     wandb.init(project="geister-zero",
                config={"dirichlet_alpha": dirichlet_alpha})
@@ -120,7 +123,7 @@ def main(n_clients=30,
 
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
-            state, loss_i, info_i = network.train_step(state, *batch, eval=False)
+            state, loss_i, info_i = network.train_step(state, *batch, eval=True)
 
             print(loss)
             print(info_i)

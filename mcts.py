@@ -34,11 +34,6 @@ def predict(state: PredictState, tokens, cache_v, cache_k):
     return pi, v, c, cv, ck
 
 
-def softmax(x):
-    exp_x = np.exp(x)
-    return exp_x / np.sum(exp_x, axis=0)
-
-
 should_do_visibilize_node_graph = __name__ == '__main__'
 
 
@@ -75,7 +70,7 @@ class Node:
         # self.valid_actions = np.where(self.valid_actions_mask)[0]
 
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
-        self.p = softmax(self.p)
+        self.p = np.array(nn.softmax(self.p))
 
     def setup_valid_actions(self, state, player):
         if self.valid_actions_mask is not None:
@@ -87,7 +82,7 @@ class Node:
         self.valid_actions = np.where(self.valid_actions_mask)[0]
 
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
-        self.p = softmax(self.p)
+        self.p = np.array(nn.softmax(self.p))
 
     def calc_scores(self, player: int):
         c = self.c_init * np.log((self.n.sum() + 1 + self.c_base) / self.c_base)
@@ -163,7 +158,6 @@ def expand_afterstate(node: Node,
                       info: game.AfterstateInfo,
                       state: game.SimulationState,
                       pred_state: PredictState):
-
     next_node = AfterStateNode(node.root_player)
     next_node.piece_id = info.piece_id
 
@@ -222,7 +216,7 @@ def simulate_afterstate(node: AfterStateNode,
                         state: game.SimulationState,
                         player: int,
                         pred_state: PredictState,
-                        info: game.AfterstateInfo) -> float:
+                        info: List[game.AfterstateInfo]) -> float:
     if not isinstance(node, AfterStateNode) or len(node.p) != 2:
         print("node is not AfterStateNode")
         print(info.type, info.piece_id)
@@ -237,15 +231,22 @@ def simulate_afterstate(node: AfterStateNode,
 
     color = np.random.choice([game.RED, game.BLUE], p=node.p)
 
-    tokens = state.step_afterstate(info, color)
+    tokens = state.step_afterstate(info[0], color)
 
     if node.children[color] is None:
-        child, v = expand(node, tokens, state, pred_state)
+        if len(info) > 1:
+            child, v = expand_afterstate(node, tokens, info[1], state, pred_state)
+        else:
+            child, v = expand(node, tokens, state, pred_state)
+
         node.children[color] = child
     else:
-        v = simulate(node.children[color], state, player, pred_state)
+        if len(info) > 1:
+            v = simulate_afterstate(node.children[color], state, player, pred_state, info[1:])
+        else:
+            v = simulate(node.children[color], state, player, pred_state)
 
-    state.undo_step_afterstate(info)
+    state.undo_step_afterstate(info[0])
 
     node.n[color] += 1
     node.w[color] += v
@@ -281,32 +282,33 @@ def simulate(node: Node,
     scores = node.calc_scores(player)
     action = np.argmax(scores)
 
-    # pieces_p_copy = np.copy(state.pieces_p)
-    # pieces_o_copy = np.copy(state.pieces_o)
+    p_copy = np.copy(state.pieces_p)
+    o_copy = np.copy(state.pieces_o)
 
     tokens, info = state.step(action, player)
 
     if node.children[action] is None:
-        if info.is_afterstate():
-            child, v = expand_afterstate(node, tokens, info, state, pred_state)
+        if len(info) > 0:
+            child, v = expand_afterstate(node, tokens, info[0], state, pred_state)
         else:
             child, v = expand(node, tokens, state, pred_state)
 
         node.children[action] = child
     else:
-        if info.is_afterstate():
+        if len(info) > 0:
             v = simulate_afterstate(node.children[action], state, -player, pred_state, info)
         else:
             v = simulate(node.children[action], state, -player, pred_state)
 
     state.undo_step(action, player, tokens, info)
 
-    """if np.any(pieces_p_copy != state.pieces_p):
+    if np.any(state.pieces_p != p_copy) or np.any(state.pieces_o != o_copy):
         print()
-        print(f"n_ply={state.n_ply}, id={action//4}, d={action % 4}")
-        print(pieces_p_copy, state.pieces_p)
-        print(pieces_o_copy, state.pieces_o)
-        print(tokens, info.type, info.piece_id)"""
+        print(f"n_ply={state.n_ply}, player={player}, id={action // 4}, d={action % 4}")
+        print(tokens)
+        print(info.type, info.piece_id)
+        print(p_copy, o_copy)
+        print(state.pieces_p, state.pieces_o)
 
     node.n[action] += 1
     node.w[action] += v
@@ -402,11 +404,11 @@ def apply_action(node: Node,
 
     tokens, info = state.step(action, player * node.root_player)
 
-    if info.is_afterstate():
-        child_afterstate, _ = expand_afterstate(node, tokens, info, state, pred_state)
-
-        tokens_afterstate = state.step_afterstate(info, true_color_o[info.piece_id])
-        tokens += tokens_afterstate
+    if len(info) > 0:
+        for i in range(len(info)):
+            child_afterstate, _ = expand_afterstate(node, tokens, info[i], state, pred_state)
+            tokens_afterstate = state.step_afterstate(info[i], true_color_o[info[i].piece_id])
+            tokens += tokens_afterstate
 
         child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state)
     else:
