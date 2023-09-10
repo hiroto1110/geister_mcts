@@ -15,7 +15,9 @@ import geister as game
 import mcts
 
 
-def start_selfplay_process(sender, n_updates, num_mcts_sim: int, dirichlet_alpha: float):
+def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, dirichlet_alpha: float):
+    np.random.seed(seed)
+
     with jax.default_device(jax.devices("cpu")[0]):
         model = create_model()
 
@@ -42,15 +44,17 @@ def selfplay(pred_state: mcts.PredictState,
              num_mcts_sim1: int, num_mcts_sim2: int,
              dirichlet_alpha):
 
-    state, actions = mcts.play_game(pred_state, model,
-                                    num_mcts_sim1, num_mcts_sim2, dirichlet_alpha)
-
     record_player = np.random.choice([1, -1])
 
-    tokens = state.get_tokens(record_player)
+    tokens_ls, actions, reward, color = mcts.play_game(pred_state, model,
+                                                       num_mcts_sim1, num_mcts_sim2, dirichlet_alpha,
+                                                       record_player)
+
+    tokens = np.zeros((200, 5), dtype=np.uint8)
+    tokens[:min(200, len(tokens_ls))] = tokens_ls[:200]
+
     actions = actions[tokens[:, 4]]
-    reward = int(state.winner * state.win_type.value * record_player) + 3
-    color = state.color_o if record_player == 1 else state.color_p
+    reward = reward + 3
 
     return Sample(tokens, actions, reward, color)
 
@@ -94,10 +98,10 @@ def create_model():
 
 def main(n_clients=30,
          buffer_size=100000,
-         batch_size=256,
+         batch_size=128,
          epochs_per_update=1,
-         update_period=400,
-         num_mcts_sim=10,
+         update_period=200,
+         num_mcts_sim=20,
          dirichlet_alpha=0.3):
 
     wandb.init(project="geister-zero",
@@ -118,7 +122,9 @@ def main(n_clients=30,
 
     for i in range(n_clients):
         sender = pipe.get_sender(i)
-        args = sender, n_updates, num_mcts_sim, dirichlet_alpha
+        seed = np.random.randint(0, 1000)
+        args = sender, n_updates, seed, num_mcts_sim, dirichlet_alpha
+
         process = mp.Process(target=start_selfplay_process, args=args)
         process.start()
 

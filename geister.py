@@ -234,48 +234,45 @@ class AfterstateType(Enum):
 @dataclass
 class AfterstateInfo:
     type: AfterstateType
-    token_id: int
     piece_id: int
 
     def is_afterstate(self):
         return self.type != AfterstateType.NONE
 
 
-AFTERSTATE_INFO_NONE = AfterstateInfo(AfterstateType.NONE, -1, -1)
+AFTERSTATE_INFO_NONE = AfterstateInfo(AfterstateType.NONE, -1)
 
 
 class SimulationState:
-    def __init__(self, state: State, root_player: int):
-        if root_player == 1:
-            self.pieces_p = state.pieces_p
-            self.color_p = state.color_p
+    def __init__(self, color1, color2, root_player: int):
+        self.root_player = root_player
 
-            self.pieces_o = state.pieces_o
-            self.color_o = state.color_o
+        self.pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
+        self.pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
 
-            self.escape_pos_p = ESCAPE_POS_P
-            self.escape_pos_o = ESCAPE_POS_O
-        else:
-            self.pieces_p = state.pieces_o
-            self.color_p = state.color_o
+        self.color_p = color1
+        self.color_o = color2
 
-            self.pieces_o = state.pieces_p
-            self.color_o = state.color_p
+        self.escape_pos_p = ESCAPE_POS_P
+        self.escape_pos_o = ESCAPE_POS_O
 
-            self.escape_pos_p = ESCAPE_POS_O
-            self.escape_pos_o = ESCAPE_POS_P
-
-        # self.tokens = []
+        if root_player == -1:
+            self.pieces_p, self.pieces_o = self.pieces_o, self.pieces_p
+            self.color_p, self.color_o = self.color_o, self.color_p
+            self.escape_pos_p, self.escape_pos_o = self.escape_pos_o, self.escape_pos_p
 
         self.color_o = np.copy(self.color_o)
         self.color_o[self.pieces_o >= 0] = UNCERTAIN_PIECE
 
-        self.is_done = state.is_done
-        self.winner = state.winner
-        self.win_type = state.win_type
-        self.n_ply = state.n_ply
+        self.is_done = False
+        self.winner = 0
+        self.win_type = WinType.DRAW
+        self.n_ply = 0
 
-    def step_afterstate(self, info: AfterstateInfo, color: int) -> List[int]:
+    def create_init_tokens(self):
+        return [[self.color_p[i], i, self.pieces_p[i] % 6, self.pieces_p[i] // 6, 0] for i in range(8)]
+
+    def step_afterstate(self, info: AfterstateInfo, color: int) -> List[List[int]]:
         self.color_o[info.piece_id] = color
 
         if info.type == AfterstateType.CAPTURING:
@@ -307,6 +304,10 @@ class SimulationState:
 
     def undo_step_afterstate(self, info: AfterstateInfo):
         self.color_o[info.piece_id] = UNCERTAIN_PIECE
+
+        self.is_done = False
+        self.win_type = WinType.DRAW
+        self.winner = 0
 
     def step(self, action: int, player: int) -> Tuple[List[List[int]], AfterstateInfo]:
         if player == 1:
@@ -340,7 +341,6 @@ class SimulationState:
 
             if color == UNCERTAIN_PIECE:
                 info = AfterstateInfo(AfterstateType.CAPTURING,
-                                      token_id=len(self.tokens) - 1,
                                       piece_id=p_cap_id)
 
         self.pieces_p[p_id] = pos_next
@@ -355,7 +355,6 @@ class SimulationState:
             escaped_id = escaped_id[0]
 
             info = AfterstateInfo(AfterstateType.ESCAPING,
-                                  token_id=len(self.tokens) - 1,
                                   piece_id=escaped_id)
 
         return tokens, info
@@ -469,6 +468,22 @@ class SimulationState:
 
     def get_last_tokens(self):
         return [self.tokens[-1:]]
+
+
+def get_initial_state_pair() -> Tuple[SimulationState, SimulationState]:
+    blue_p = np.random.choice(np.arange(8), 4, replace=False)
+    blue_o = np.random.choice(np.arange(8), 4, replace=False)
+
+    color_p = np.zeros(8, dtype=np.int16)
+    color_p[blue_p] = 1
+
+    color_o = np.zeros(8, dtype=np.int16)
+    color_o[blue_o] = 1
+
+    state_p = SimulationState(color_p, color_o, 1)
+    state_o = SimulationState(color_p, color_o, -1)
+
+    return state_p, state_o
 
 
 def get_initial_state():
