@@ -11,8 +11,6 @@ import optax
 
 import matplotlib.pyplot as plt
 
-import geister
-
 
 class Embeddings(nn.Module):
     embed_dim: int
@@ -254,23 +252,27 @@ class TransformerDecoderWithCache(nn.Module):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
+def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
                                   rngs={'dropout': dropout_rng})
 
     # [Batch, SeqLen, 144]
-    y_pi = y_pi.reshape((-1, x.shape[1]))
-    y_v = y_v.reshape((-1, 1))
+    y_pi = jnp.clip(y_pi.reshape((-1, x.shape[1])), 0, 31)
+    y_v = jnp.clip(y_v.reshape((-1, 1)), 0, 6)
     # y_v = jnp.clip(y_v.reshape((-1, 1, 1)), -1, 1)
     y_color = y_color.reshape((-1, 1, 8))
 
-    loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean(axis=0)
+    loss_pi = mask * optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
     # loss_pi = optax.softmax_cross_entropy(pi, y_pi).mean(axis=0)
-    loss_v = optax.softmax_cross_entropy_with_integer_labels(v, y_v).mean(axis=0)
+    loss_v = mask * optax.softmax_cross_entropy_with_integer_labels(v, y_v)
     # loss_v = jnp.mean((v - y_v) ** 2, axis=(0, 2))
-    loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=(0, 2))
+    loss_color = mask * optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=2)
 
-    loss = jnp.mean(0.2 * loss_pi + loss_v + loss_color)
+    loss = jnp.mean(0.5 * loss_pi + loss_v + loss_color)
+
+    loss_pi = loss_pi.mean(axis=0)
+    loss_v = loss_v.mean(axis=0)
+    loss_color = loss_color.mean(axis=0)
 
     acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2))
 
@@ -280,16 +282,16 @@ def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state, x, y_pi, y_v, y_color, eval):
+def train_step(state, x, mask, y_pi, y_v, y_color, eval):
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
         (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            state.params, state, x, y_pi, y_v, y_color, dropout_rng, eval)
+            state.params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval)
 
         new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
     else:
         loss, info = loss_fn(
-            state.params, state, x, y_pi, y_v, y_color, random.PRNGKey(0), eval)
+            state.params, state, x, mask, y_pi, y_v, y_color, random.PRNGKey(0), eval)
         new_state = state
 
     return new_state, loss, info
@@ -298,7 +300,7 @@ def train_step(state, x, y_pi, y_v, y_color, eval):
 def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
     for x, y_pi, y_v, y_color in zip(*data_batched):
-        state, loss, info = train_step(state, x, y_pi, y_v, y_color, eval)
+        state, loss, info = train_step(state, x, 1, y_pi, y_v, y_color, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=(0, 2))
@@ -356,124 +358,6 @@ class TrainState(train_state.TrainState):
     dropout_rng: Any
 
 
-def line_to_tokens(line, max_length):
-    tokens = line.split()
-
-    init_pieces_p = tokens[0]
-    init_pieces_o = tokens[1]
-
-    init_pieces_p = np.array([int(c) for c in init_pieces_p])
-    init_pieces_o = np.array([int(c) for c in init_pieces_o])
-
-    winner = int(tokens[2])
-    # win_type = int(tokens[3])
-    moves = tokens[4:]
-
-    state = geister.State(init_pieces_p, init_pieces_o)
-    player = 1
-
-    for token in moves:
-        pos, d_i = token.split('-')
-        action = int(pos) * 4 + int(d_i)
-        state.step(action, player)
-        player = -player
-
-    tokens = geister.get_tokens(state, 1, max_length)
-    tokens = jnp.array(tokens, dtype=jnp.uint8)
-
-    actions = np.random.randint(0, 32, size=tokens.shape[0])
-    actions = jnp.array(actions)
-
-    return tokens, actions, [winner], init_pieces_o
-    tokens = line.split()
-
-    init_pieces_p = tokens[0]
-    init_pieces_o = tokens[1]
-    winner = int(tokens[2])
-    # win_type = int(tokens[3])
-    moves = tokens[4:]
-
-    reward = [winner]
-    label_pieces = [int(c) for c in init_pieces_o]
-
-    game = []
-    actions = []
-
-    length = min(max_length, len(moves))
-
-    pieces = [1, 2, 3, 4, 7, 8, 9, 10, 25, 26, 27, 28, 31, 32, 33, 34]
-
-    types = [int(c) for c in init_pieces_p] + [4] * 8
-    true_types = [int(c) for c in init_pieces_p] + [int(c) + 2 for c in init_pieces_o]
-
-    directions = [-6, -1, 1, 6]
-
-    for p_id in range(8):
-        pos = pieces[p_id]
-        game.append((types[p_id], p_id, pos % 6, pos // 6, 0))
-
-    for i in range(length):
-        if len(game) >= max_length:
-            break
-
-        token = moves[i]
-
-        pos, d_i = token.split('-')
-        pos, d_i = int(pos), int(d_i)
-        actions.append(pos * d_i)
-
-        p_id = pieces.index(pos)
-
-        next_pos = pieces[p_id] + directions[d_i]
-
-        game.append([
-            types[p_id],
-            p_id,
-            next_pos % 6,
-            next_pos // 6,
-            i + 1])
-
-        if next_pos in pieces:
-            cap_p_id = pieces.index(next_pos)
-            pieces[cap_p_id] = -1
-
-            game.append([
-                true_types[cap_p_id],
-                cap_p_id,
-                6, 6, i + 1])
-
-        pieces[p_id] = next_pos
-
-    if len(game) < max_length:
-        game += [(0, 0, 0, 0, 0)] * (max_length - len(game))
-
-    tokens = jnp.array(game[:max_length], dtype=jnp.uint8).clip(0, len(actions) - 1)
-
-    actions = jnp.array(actions, dtype=jnp.uint8)[tokens[:, 4]]
-
-    return tokens, actions, reward, label_pieces
-
-
-def load_tokens(path, max_length, line_index=(0, -1)):
-    with open(path, mode='r') as f:
-        lines = f.readlines()
-
-    games = []
-    y_policy = []
-    y_rewards = []
-    y_pieces = []
-
-    for line in lines[line_index[0]: line_index[1]]:
-        game, policy, reward, pieces = line_to_tokens(line, max_length)
-
-        games.append(game)
-        y_policy.append(policy)
-        y_rewards.append(reward)
-        y_pieces.append(pieces)
-
-    return jnp.array(games), jnp.array(y_policy), jnp.array(y_rewards), jnp.array(y_pieces)
-
-
 def main_train(model, state, data):
     train_n = int(len(data[0]) * 0.8)
 
@@ -496,37 +380,6 @@ def main_train(model, state, data):
 
     end = time.perf_counter()
     print(end - start)
-
-
-def main_test_attention(model, state, data):
-    n = 0
-    print(f"winner: {data[2][n]}")
-
-    # attention: [1, Layer, Head, SeqLen q, SeqLen k]
-    pi, v, c, attention = model.apply({'params': state.params}, data[0][n:n+1], eval=True)
-    # attention: [Layer, SeqLen q, SeqLen k]
-    attention = attention.mean(axis=(0, 2))
-
-    fig = plt.figure(figsize=(9, 3))
-    fig.subplots_adjust(wspace=0.3)
-
-    for i in range(attention.shape[0]):
-        print(f"Layer: {i}")
-        ranking = jnp.argsort(attention[i].mean(axis=0) * (jnp.arange(MAX_LENGTH) >= 8))
-
-        for j in range(10):
-            k = ranking[-(j+1)]
-            print(f"{k}: {data[0][n, k]}")
-
-        ax = fig.add_subplot(1, 3, i + 1)
-        ax.set_aspect('equal', adjustable='box')
-        ax.tick_params(labelsize=7)
-        ax.xaxis.set_ticks(jnp.arange(0, MAX_LENGTH+1, 50))
-        ax.yaxis.set_ticks(jnp.arange(0, MAX_LENGTH+1, 50))
-
-        ax.pcolor(attention[i].clip(0, 0.1).T)
-
-    plt.savefig(f"fig_attention_{n}", dpi=150)
 
 
 def main_test(model, state, data):
@@ -564,81 +417,8 @@ def main_test(model, state, data):
     plt.savefig("fig_acc_piece")
 
 
-@partial(jax.jit, device=jax.devices("cpu")[0])
-def test_performance(state, game):
-    result = jnp.zeros(140)
-
-    for t in range(140):
-        pi, v, _, _ = state.apply_fn({'params': state.params}, game[:, :t+1], eval=True)
-        result = result.at[t].set(v[0, -1, 0])
-
-    return result
-
-
-@partial(jax.jit, device=jax.devices("cpu")[0])
-def test_performance_with_cache(state, cv, ck, game):
-    result = jnp.zeros(140)
-
-    for t in range(140):
-        pi, v, _, cv, ck = state.apply_fn({'params': state.params}, game[:, t:t+1], cv, ck, eval=True)
-        result = result.at[t].set(v[0, 0, 0])
-
-    return result
-
-
-def main_test_performance(model: TransformerDecoder, state: TrainState, data):
-    data = [jax.device_put(a) for a in data]
-
-    state = TrainState.create(
-        apply_fn=model.apply,
-        params=state.params,
-        tx=optax.adam(learning_rate=0.00005),
-        dropout_rng=state.dropout_rng,
-        epoch=0)
-
-    print("test")
-
-    v = test_performance(state, data[0][1:2])
-    print(f"v: {v}")
-
-    start = time.perf_counter()
-    v = test_performance(state, data[0][1:2])
-    print(f"v: {v}")
-    end = time.perf_counter()
-
-    print(f"time: {end - start}")
-
-    model_with_cache = TransformerDecoderWithCache(
-        num_heads=model.num_heads,
-        embed_dim=model.embed_dim,
-        num_hidden_layers=model.num_hidden_layers)
-
-    state = TrainState.create(
-        apply_fn=model_with_cache.apply,
-        params=state.params,
-        tx=optax.adam(learning_rate=0.00005),
-        dropout_rng=state.dropout_rng,
-        epoch=0)
-
-    cv, ck = model_with_cache.create_cache(1, 0)
-
-    v = test_performance_with_cache(state, cv, ck, data[0][1:2])
-    print(f"v: {v}")
-
-    start = time.perf_counter()
-    v = test_performance_with_cache(state, cv, ck, data[0][1:2])
-    print(f"v: {v}")
-    end = time.perf_counter()
-
-    print(f"time: {end - start}")
-
-
 def main():
     if False:
-        data = load_tokens("log.txt", MAX_LENGTH, (0, 100000))
-        for i in range(len(data)):
-            jnp.save(f"data_{i}.npy", data[i])
-    elif False:
         tokens_buffer = np.load('replay_buffer/tokens.npy')
         policy_buffer = np.load('replay_buffer/policy.npy')
         reward_buffer = np.load('replay_buffer/reward.npy') + 3
@@ -670,8 +450,6 @@ def main():
 
     main_train(model, state, data)
     # main_test(model, state, data)
-    # main_test_attention(model, state, data)
-    # main_test_performance(model, state, data)
 
 
 if __name__ == "__main__":

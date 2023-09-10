@@ -53,39 +53,13 @@ def selfplay(pred_state: mcts.PredictState,
     tokens = np.zeros((200, 5), dtype=np.uint8)
     tokens[:min(200, len(tokens_ls))] = tokens_ls[:200]
 
+    mask = np.zeros(200, dtype=np.uint8)
+    mask[:len(tokens_ls)] = 1
+
     actions = actions[tokens[:, 4]]
     reward = reward + 3
 
-    return Sample(tokens, actions, reward, color)
-
-
-def testplay(train_state, model, num_mcts_simulations, dirichlet_alpha=None, n_testplay=10):
-    result = 0
-
-    for _ in range(n_testplay):
-        alphazero = np.random.choice([1, -1])
-        player = 1
-
-        state = game.get_initial_state()
-
-        node1 = mcts.create_root_node(state, train_state, model, 1)
-        node2 = mcts.create_root_node(state, train_state, model, -1)
-
-        for i in range(200):
-            if player == alphazero:
-                policy, node1, node2 = mcts.step(node1, node2, state, player, train_state, num_mcts_simulations)
-            else:
-                action = game.greedy_action(state, player, epsilon=1)
-                state.step(action, player)
-
-            if game.is_done(state, player):
-                break
-
-            player = -player
-
-        result += state.winner
-
-    return result / n_testplay
+    return Sample(tokens, mask, actions, reward, color)
 
 
 CKPT_DIR = './checkpoints/'
@@ -147,6 +121,9 @@ def main(n_clients=30,
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
             state, loss_i, info_i = network.train_step(state, *batch, eval=False)
+
+            print(loss)
+            print(info_i)
 
             loss += loss_i
             info[i] = info_i

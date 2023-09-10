@@ -72,6 +72,8 @@ class Node:
 
         self.valid_actions_mask[self.invalid_actions] = 0
 
+        # self.valid_actions = np.where(self.valid_actions_mask)[0]
+
         self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
         self.p = softmax(self.p)
 
@@ -279,6 +281,9 @@ def simulate(node: Node,
     scores = node.calc_scores(player)
     action = np.argmax(scores)
 
+    # pieces_p_copy = np.copy(state.pieces_p)
+    # pieces_o_copy = np.copy(state.pieces_o)
+
     tokens, info = state.step(action, player)
 
     if node.children[action] is None:
@@ -295,6 +300,13 @@ def simulate(node: Node,
             v = simulate(node.children[action], state, -player, pred_state)
 
     state.undo_step(action, player, tokens, info)
+
+    """if np.any(pieces_p_copy != state.pieces_p):
+        print()
+        print(f"n_ply={state.n_ply}, id={action//4}, d={action % 4}")
+        print(pieces_p_copy, state.pieces_p)
+        print(pieces_o_copy, state.pieces_o)
+        print(tokens, info.type, info.piece_id)"""
 
     node.n[action] += 1
     node.w[action] += v
@@ -388,7 +400,7 @@ def apply_action(node: Node,
                  true_color_o: np.ndarray,
                  pred_state: PredictState):
 
-    tokens, info = state.step(action, player)
+    tokens, info = state.step(action, player * node.root_player)
 
     if info.is_afterstate():
         child_afterstate, _ = expand_afterstate(node, tokens, info, state, pred_state)
@@ -400,7 +412,7 @@ def apply_action(node: Node,
     else:
         child, _ = expand(node, tokens, state, pred_state)
 
-    return child, state, tokens
+    return child, tokens
 
 
 def create_root_node(state: game.SimulationState,
@@ -449,8 +461,8 @@ def play_game(pred_state: PredictState,
             action = step(node2, state2, pieces_history2,
                           pred_state, num_mcts_sim2, dirichlet_alpha)
 
-        node1, state1, tokens1_i = apply_action(node1, state1, action, player, state2.color_p, pred_state)
-        node2, state2, tokens2_i = apply_action(node2, state2, action, -player, state1.color_p, pred_state)
+        node1, tokens1_i = apply_action(node1, state1, action, player, state2.color_p, pred_state)
+        node2, tokens2_i = apply_action(node2, state2, action, player, state1.color_p, pred_state)
 
         if record_player == 1:
             tokens += tokens1_i
@@ -526,20 +538,34 @@ def test():
 
     # init_jit(pred_state, model_with_cache, data)
 
+    np.random.seed(13)
+
     for i in range(1):
         start = time.perf_counter()
 
-        tokens, _, _, _ = play_game(pred_state,
-                                    model_with_cache,
-                                    20, 20, 0.3,
-                                    record_player=1,
-                                    game_length=200,
-                                    print_board=True)
+        tokens_ls, actions, reward, color = play_game(pred_state,
+                                                      model_with_cache,
+                                                      20, 20, 0.3,
+                                                      record_player=1,
+                                                      game_length=200,
+                                                      print_board=True)
 
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
 
+        tokens = np.zeros((200, 5), dtype=np.uint8)
+        tokens[:min(200, len(tokens_ls))] = tokens_ls[:200]
+
+        mask = np.zeros(200, dtype=np.uint8)
+        mask[:len(tokens_ls)] = 1
+
+        actions = actions[tokens[:, 4]]
+
         print(tokens)
+        print(mask)
+        print(actions)
+        print(reward + 3)
+        print(color)
 
 
 if __name__ == "__main__":
