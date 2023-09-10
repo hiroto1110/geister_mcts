@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable
+from typing import List, Any, Callable
 import time
 
 import numpy as np
@@ -14,6 +14,7 @@ import geister_lib
 from network_transformer import TransformerDecoderWithCache
 
 from graphviz import Digraph
+from line_profiler import profile
 
 
 class PredictState(struct.PyTreeNode):
@@ -154,10 +155,12 @@ def visibilize_node_graph(node: Node, g: Digraph):
             visibilize_node_graph(child, g)
 
 
+@profile
 def expand_afterstate(node: Node,
+                      tokens: List[List[int]],
+                      info: game.AfterstateInfo,
                       state: game.SimulationState,
-                      pred_state: PredictState,
-                      info: game.AfterstateInfo):
+                      pred_state: PredictState):
 
     next_node = AfterStateNode(node.root_player)
     next_node.piece_id = info.piece_id
@@ -165,11 +168,7 @@ def expand_afterstate(node: Node,
     if should_do_visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state)
 
-    tokens = state.get_afterstate_tokens(info)
     v, _ = setup_node(next_node, node, pred_state, tokens)
-
-    if next_node.predicted_color is None:
-        print(info.type)
 
     next_node.p[1] = next_node.predicted_color[info.piece_id]
     next_node.p[0] = 1 - next_node.p[1]
@@ -177,7 +176,9 @@ def expand_afterstate(node: Node,
     return next_node, v
 
 
+@profile
 def expand(node: Node,
+           tokens: List[List[int]],
            state: game.SimulationState,
            pred_state: PredictState):
 
@@ -200,7 +201,6 @@ def expand(node: Node,
     if next_node.winner != 0:
         return next_node, next_node.winner
 
-    tokens = state.get_last_tokens()
     v, next_node.p = setup_node(next_node, node, pred_state, tokens)
 
     return next_node, v
@@ -235,8 +235,13 @@ def expand_with_observation(node: Node,
 
 def setup_node(node: Node, parent_node: Node, pred_state: PredictState, tokens):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
+    tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
-    pi, v, c, cv, ck = predict(pred_state, tokens, parent_node.cache_v, parent_node.cache_k)
+    cv, ck = parent_node.cache_v, parent_node.cache_k
+
+    for i in range(tokens.shape[0]):
+        token = tokens[i].reshape(1, 1, game.TOKEN_SIZE)
+        pi, v, c, cv, ck = predict(pred_state, token, parent_node.cache_v, parent_node.cache_k)
 
     if np.isnan(c).any():
         c = np.full(shape=8, fill_value=0.5)
@@ -249,6 +254,7 @@ def setup_node(node: Node, parent_node: Node, pred_state: PredictState, tokens):
     return jax.device_get(v), jax.device_get(pi)
 
 
+@profile
 def simulate_afterstate(node: AfterStateNode,
                         state: game.SimulationState,
                         player: int,
@@ -256,10 +262,10 @@ def simulate_afterstate(node: AfterStateNode,
                         info: game.AfterstateInfo) -> float:
     color = np.random.choice([game.RED, game.BLUE], p=node.p)
 
-    state.step_afterstate(info, color)
+    tokens = state.step_afterstate(info, color)
 
     if node.children[color] is None:
-        child, v = expand(node, state, pred_state)
+        child, v = expand(node, tokens, state, pred_state)
         node.children[color] = child
     else:
         v = simulate(node.children[color], state, player, pred_state)
@@ -272,6 +278,7 @@ def simulate_afterstate(node: AfterStateNode,
     return v
 
 
+@profile
 def simulate(node: Node,
              state: game.SimulationState,
              player: int,
@@ -288,13 +295,13 @@ def simulate(node: Node,
     scores = node.calc_scores(player)
     action = np.argmax(scores)
 
-    info = state.step(action, player)
+    tokens, info = state.step(action, player)
 
     if node.children[action] is None:
         if info.is_afterstate():
-            child, v = expand_afterstate(node, state, pred_state, info)
+            child, v = expand_afterstate(node, tokens, info, state, pred_state)
         else:
-            child, v = expand(node, state, pred_state)
+            child, v = expand(node, tokens, state, pred_state)
 
         node.children[action] = child
     else:
@@ -303,7 +310,7 @@ def simulate(node: Node,
         else:
             v = simulate(node.children[action], state, -player, pred_state)
 
-    state.undo_step(action, player)
+    state.undo_step(action, player, tokens, info)
 
     node.n[action] += 1
     node.w[action] += v
@@ -321,24 +328,7 @@ def find_checkmate(state: game.State, player: int, depth: int):
         return geister_lib.find_checkmate(state.pieces_o, state.color_o, state.pieces_p, n_cap_ob, player, depth)
 
 
-def get_next_node(node: Node, action: int, state: game.State, pred_state: PredictState):
-    if node.children[action] is None:
-        return expand_with_observation(node, state, pred_state)
-
-    next_node = node.children[action]
-
-    if not next_node.is_afterstate:
-        return next_node
-
-    color = state.color_o if node.root_player == 1 else state.color_p
-    piece_color = color[next_node.piece_id]
-
-    if not next_node.children[piece_color] is None:
-        return expand_with_observation(node, state, pred_state)
-
-    return next_node.children[piece_color]
-
-
+@profile
 def step(node1: Node,
          node2: Node,
          state: game.State,
@@ -364,7 +354,7 @@ def step(node1: Node,
     else:
         action = -1
     # start = time.perf_counter()
-    checkmate_action = find_checkmate(state, player, depth=8)
+    checkmate_action = find_checkmate(state, player, depth=4)
     # action = -1
     # print(f"time: {time.perf_counter() - start}")
 
@@ -384,8 +374,7 @@ def step(node1: Node,
             for a, noise in zip(node.valid_actions, dirichlet_noise):
                 node.p[a] = (1 - eps) * node.p[a] + eps * noise
 
-        print("sum(node.n) =", node.n.sum())
-        for _ in range(num_sim - node.n.sum()):
+        for _ in range(num_sim):
             simulate(node, sim_state, 1, pred_state)
 
         policy = node.get_policy()
@@ -400,19 +389,10 @@ def step(node1: Node,
 
     state.step(action, player)
 
-    if not state.is_done:
-        node1 = get_next_node(node1, action, state, pred_state)
-        node2 = get_next_node(node2, action, state, pred_state)
+    node1 = expand_with_observation(node1, state, pred_state)
+    node2 = expand_with_observation(node2, state, pred_state)
 
     return action, node1, node2
-
-
-def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
-    cv, ck = model.create_cache(1, 0)
-
-    for t in range(50):
-        print(t)
-        pi, v, _, cv, ck = predict(state, state.params, data[0][:1, t:t+1], cv, ck)
 
 
 def create_root_node(state: game.State,
@@ -537,6 +517,14 @@ def sim_state_to_str(state: game.SimulationState):
     return s
 
 
+def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
+    cv, ck = model.create_cache(1, 0)
+
+    for t in range(100):
+        print(t)
+        _, _, _, cv, ck = predict(state, data[0][:1, t:t+1], cv, ck)
+
+
 def test():
     # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
@@ -553,7 +541,7 @@ def test():
 
     for i in range(1):
         start = time.perf_counter()
-        play_game(pred_state, model_with_cache, 25, 25, 0.3, print_board=True)
+        play_game(pred_state, model_with_cache, 100, 100, 0.3, game_length=50, print_board=True)
         elapsed = time.perf_counter() - start
         print(f"time: {elapsed} s")
 

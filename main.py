@@ -93,11 +93,11 @@ def create_model():
 
 
 def main(n_clients=30,
-         buffer_size=40000,
-         batch_size=128,
+         buffer_size=100000,
+         batch_size=256,
          epochs_per_update=1,
-         update_period=200,
-         num_mcts_sim=20,
+         update_period=400,
+         num_mcts_sim=10,
          dirichlet_alpha=0.3):
 
     wandb.init(project="geister-zero",
@@ -156,9 +156,9 @@ def main(n_clients=30,
 
         for i in range(n_div):
             log_dict.update({f"{i}/loss policy": info[0, i],
-                             f"{i}/loss reward": info[1, i],
-                             f"{i}/loss pieces": info[2, i],
-                             f"{i}/acc pieces": info[3, i]})
+                             f"{i}/loss value": info[1, i],
+                             f"{i}/loss color": info[2, i],
+                             f"{i}/acc color": info[3, i]})
 
         wandb.log(log_dict)
 

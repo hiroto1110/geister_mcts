@@ -8,3 +8,4 @@ log/
 *.npy
 log.txt
 *.so
+*.lprof
