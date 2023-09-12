@@ -423,13 +423,6 @@ def main_test(model, state, data):
 
 
 def main():
-    nan_tokens = jnp.load("nan_tokens.npy")
-    for i in range(nan_tokens.shape[0]):
-        print(i)
-        print(nan_tokens[i])
-
-    # return
-
     if True:
         tokens_buffer = np.load('replay_buffer/tokens.npy')
         policy_buffer = np.load('replay_buffer/policy.npy')

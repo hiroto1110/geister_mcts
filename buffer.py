@@ -61,3 +61,6 @@ class ReplayBuffer:
         self.policy_buffer = np.load(save_dir + '/policy.npy')
         self.reward_buffer = np.load(save_dir + '/reward.npy')
         self.pieces_buffer = np.load(save_dir + '/pieces.npy')
+
+        self.n_samples = int(np.sum(self.mask_buffer[:, 0]))
+        self.index = int(self.n_samples % self.buffer_size)

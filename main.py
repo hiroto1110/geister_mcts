@@ -74,12 +74,9 @@ def main(n_clients=30,
          buffer_size=100000,
          batch_size=128,
          epochs_per_update=1,
-         update_period=200,
-         num_mcts_sim=20,
+         update_period=400,
+         num_mcts_sim=50,
          dirichlet_alpha=0.3):
-    # jax.config.update("jax_debug_nans", True)
-    # jax.config.parse_flags_with_absl()
-    # jax.config.update("jax_enable_x64", True)
 
     wandb.init(project="geister-zero",
                config={"dirichlet_alpha": dirichlet_alpha})
@@ -106,6 +103,7 @@ def main(n_clients=30,
         process.start()
 
     replay = ReplayBuffer(buffer_size=buffer_size, seq_length=game.MAX_TOKEN_LENGTH)
+    replay.load('replay_buffer')
 
     while True:
         for i in tqdm(range(update_period)):
@@ -117,16 +115,16 @@ def main(n_clients=30,
 
         replay.save('replay_buffer')
 
-        num_iters = epochs_per_update * (len(replay) // batch_size)
+        num_iters = epochs_per_update * (len(replay) // batch_size) // 2
+        if num_iters <= 0:
+            continue
+
         info = np.zeros((num_iters, 4, game.MAX_TOKEN_LENGTH))
         loss = 0
 
         for i in range(num_iters):
             batch = replay.get_minibatch(batch_size=batch_size)
-            state, loss_i, info_i = network.train_step(state, *batch, eval=True)
-
-            print(loss)
-            print(info_i)
+            state, loss_i, info_i = network.train_step(state, *batch, eval=False)
 
             loss += loss_i
             info[i] = info_i
