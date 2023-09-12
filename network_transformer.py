@@ -53,6 +53,85 @@ class RelativePostionalEncoding(nn.Module):
         return jnp.einsum('...qhd,...qkhd->...hqk', q, rel_x)
 
 
+class MultiHeadLinearAttentionWithCache(nn.Module):
+    num_heads: int
+    embed_dim: int
+
+    @nn.compact
+    def __call__(self, x, s, z):
+        head_dim = self.embed_dim // self.num_heads
+
+        v = nn.Dense(features=self.embed_dim)(x)  # [Head * Dim]
+        q = nn.Dense(features=self.embed_dim)(x)  # [Head * Dim]
+        k = nn.Dense(features=self.embed_dim)(x)  # [Head * Dim]
+
+        v = v.reshape(self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+        q = q.reshape(self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+        k = k.reshape(self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+
+        q = nn.elu(q) + 1
+        k = nn.elu(k) + 1
+
+        s += jnp.einsum('hd,hm->hdm', k, v)
+        z += k
+
+        qs = jnp.einsum('hd,hdm->hm', q, s)
+        qz = jnp.einsum('hd,hd->h', q, z).reshape(self.num_heads, 1)
+
+        values = qs / (qz + 1E-6)
+
+        values = values.reshape(self.num_heads * head_dim)  # [Batch, SeqLen, Head × Dim (=EmbedDim)]
+        out = nn.Dense(self.embed_dim)(values)
+
+        return out, s, z
+
+
+class MultiHeadLinearAttention(nn.Module):
+    num_heads: int
+    embed_dim: int
+
+    def test(self, i, v, q, k, s, z):
+        s += jnp.einsum('bhd,bhm->bhdm', k[:, i], v[:, i])
+        z += k[:, i]
+
+        q_i = q[:, i]
+
+        qs = jnp.einsum('bhd,bhdm->bhm', q_i, s)
+        qz = jnp.einsum('bhd,bhd->bh', q_i, z).reshape(-1, self.num_heads, 1)
+
+        return (s, z), qs / (qz + 1E-6)
+
+    @nn.compact
+    def __call__(self, x, mask):
+        seq_len = x.shape[1]
+        head_dim = self.embed_dim // self.num_heads
+
+        v = nn.Dense(features=self.embed_dim)(x)  # [Batch, SeqLen, Head * Dim]
+        q = nn.Dense(features=self.embed_dim)(x)  # [Batch, SeqLen, Head * Dim]
+        k = nn.Dense(features=self.embed_dim)(x)  # [Batch, SeqLen, Head * Dim]
+
+        v = v.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+        q = q.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+        k = k.reshape(-1, seq_len, self.num_heads, head_dim)  # [Batch, SeqLen, Head, Dim]
+
+        q = nn.elu(q) + 1
+        k = nn.elu(k) + 1
+
+        s = jnp.zeros((x.shape[0], self.num_heads, head_dim, head_dim))
+        z = jnp.zeros((x.shape[0], self.num_heads, head_dim))
+
+        (s, z), values = jax.lax.scan(lambda t, i: self.test(i, v, q, k, *t),
+                                      init=(s, z),
+                                      xs=jnp.arange(seq_len))
+
+        values = values.transpose(1, 0, 2, 3)
+
+        values = values.reshape(-1, seq_len, self.num_heads * head_dim)  # [Batch, SeqLen, Head × Dim (=EmbedDim)]
+        out = nn.Dense(self.embed_dim)(values)
+
+        return out
+
+
 class MultiHeadAttention(nn.Module):
     num_heads: int
     embed_dim: int
@@ -89,33 +168,32 @@ class MultiHeadAttentionWithCache(nn.Module):
 
     @nn.compact
     def __call__(self, x, v, k):
-        # x: [Batch, SeqLen q, EmbedDim]
-        # v: [Batch, SeqLen k, Head, Dim]
-        # k: [Batch, SeqLen k, Head, Dim]
+        # x: [EmbedDim]
+        # v: [SeqLen k, Head, Dim]
+        # k: [SeqLen k, Head, Dim]
         head_dim = self.embed_dim // self.num_heads
-        seq_len_q = x.shape[1]
 
-        # [Batch, 1, Head, Dim]
-        v_i = nn.Dense(features=self.embed_dim)(x).reshape(-1, seq_len_q, self.num_heads, head_dim)
-        q_i = nn.Dense(features=self.embed_dim)(x).reshape(-1, seq_len_q, self.num_heads, head_dim)
-        k_i = nn.Dense(features=self.embed_dim)(x).reshape(-1, seq_len_q, self.num_heads, head_dim)
+        # [1, Head, Dim]
+        v_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
+        q_i = nn.Dense(features=self.embed_dim)(x).reshape(self.num_heads, head_dim)
+        k_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
 
-        # [Batch, SeqLen k + SeqLen q, Head, Dim]
-        v = jnp.concatenate((v, v_i), axis=1)
-        k = jnp.concatenate((k, k_i), axis=1)
+        # [SeqLen k + 1, Head, Dim]
+        v = jnp.concatenate((v, v_i), axis=0)
+        k = jnp.concatenate((k, k_i), axis=0)
 
-        # [Batch, Head, SeqLen q, SeqLen k + SeqLen q]
-        attention = jnp.einsum('...qhd,...khd->...hqk', q_i, k) / jnp.sqrt(head_dim)
+        # [Head, SeqLen k + SeqLen q]
+        attention = jnp.einsum('hd,khd->hk', q_i, k) / jnp.sqrt(head_dim)
         attention = nn.softmax(attention, axis=-1)
 
-        # [Batch, SeqLen q, Head, Dim]
-        values = jnp.einsum('...hqk,...khd->...qhd', attention, v)
-        # [Batch, SeqLen q, EmbedDim]
-        values = values.reshape(-1, seq_len_q, self.embed_dim)
-        # [Batch, SeqLen q, EmbedDim]
+        # [Head, Dim]
+        values = jnp.einsum('hk,khd->hd', attention, v)
+        # [EmbedDim]
+        values = values.reshape(self.embed_dim)
+        # [EmbedDim]
         out_i = nn.Dense(self.embed_dim)(values)
 
-        return v, k, out_i
+        return out_i, v, k
 
 
 class FeedForward(nn.Module):
@@ -136,9 +214,8 @@ class TransformerBlock(nn.Module):
     embed_dim: int
 
     def setup(self):
-        self.attention = MultiHeadAttention(
-            num_heads=self.num_heads,
-            embed_dim=self.embed_dim)
+        # self.attention = MultiHeadAttention(self.num_heads, self.embed_dim)
+        self.attention = MultiHeadLinearAttention(self.num_heads, self.embed_dim)
 
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
@@ -156,24 +233,30 @@ class TransformerBlock(nn.Module):
 class TransformerBlockWithCache(nn.Module):
     num_heads: int
     embed_dim: int
+    is_linear: bool
 
     def setup(self):
-        self.attention = MultiHeadAttentionWithCache(
-            num_heads=self.num_heads,
-            embed_dim=self.embed_dim)
+        if self.is_linear:
+            self.attention = MultiHeadLinearAttentionWithCache(
+                num_heads=self.num_heads,
+                embed_dim=self.embed_dim)
+        else:
+            self.attention = MultiHeadAttentionWithCache(
+                num_heads=self.num_heads,
+                embed_dim=self.embed_dim)
 
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
     @nn.compact
-    def __call__(self, x, v, k, eval):
-        v, k, out = self.attention(x, v, k)
+    def __call__(self, x, cache1, cache2, eval):
+        out, cache1, cache2 = self.attention(x, cache1, cache2)
 
         x = x + out
         x = nn.LayerNorm()(x)
         x = x + self.feed_forward(x, eval)
         x = nn.LayerNorm()(x)
 
-        return x, v, k
+        return x, cache1, cache2
 
 
 NUM_ACTIONS = 32
@@ -212,33 +295,45 @@ class TransformerDecoderWithCache(nn.Module):
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
+    is_linear_attention: bool
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
-        self.layers = [TransformerBlockWithCache(num_heads=self.num_heads, embed_dim=self.embed_dim)
+        self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
 
-    def create_cache(self, batch_size, seq_len):
+    def create_cache(self, seq_len):
         head_dim = self.embed_dim // self.num_heads
 
         # [Batch, Layer, SeqLen, Head, HeadDim]
-        v = jnp.zeros((self.num_hidden_layers, batch_size, seq_len, self.num_heads, head_dim))
-        k = jnp.zeros((self.num_hidden_layers, batch_size, seq_len, self.num_heads, head_dim))
+        v = jnp.zeros((self.num_hidden_layers, seq_len, self.num_heads, head_dim))
+        k = jnp.zeros((self.num_hidden_layers, seq_len, self.num_heads, head_dim))
 
         return v, k
 
+    def create_linear_cache(self):
+        head_dim = self.embed_dim // self.num_heads
+
+        s = jnp.zeros((self.num_hidden_layers, self.num_heads, head_dim, head_dim))
+        z = jnp.zeros((self.num_hidden_layers, self.num_heads, head_dim))
+
+        return s, z
+
     @nn.compact
-    def __call__(self, x, v, k, eval=True):
+    def __call__(self, x, cache1, cache2, eval=True):
         x = self.embeddings(x, eval)
 
-        next_v, next_k = self.create_cache(x.shape[0], v.shape[2] + x.shape[1])
+        if not self.is_linear_attention:
+            next_cache1, next_cache2 = self.create_cache(cache1.shape[1] + 1)
+        else:
+            next_cache1, next_cache2 = cache1, cache2
 
         i = 0
         for layer in self.layers:
-            x, v_i, k_i = layer(x, v[i], k[i], eval=eval)
+            x, cache1_i, cache2_i = layer(x, cache1[i], cache2[i], eval=eval)
 
-            next_v = next_v.at[i].set(v_i)
-            next_k = next_k.at[i].set(k_i)
+            next_cache1 = next_cache1.at[i].set(cache1_i)
+            next_cache2 = next_cache2.at[i].set(cache2_i)
 
             i += 1
 
@@ -248,7 +343,7 @@ class TransformerDecoderWithCache(nn.Module):
         logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
-        return logits_pi, logits_v, logits_color, next_v, next_k
+        return logits_pi, logits_v, logits_color, next_cache1, next_cache2
 
 
 @partial(jax.jit, static_argnames=['eval'])
@@ -256,17 +351,10 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
                                   rngs={'dropout': dropout_rng})
 
-    # print("isnan")
-    # print(jnp.isnan(pi).any(axis=(1, 2)))
-    # print("nan tokens")
-    # print(x[jnp.isnan(pi).any(axis=(1, 2))])
-
-    # jnp.save("nan_tokens", x[jnp.isnan(pi).any(axis=(1, 2))])
-
-    # [Batch, SeqLen, 144]
-    y_pi = y_pi.reshape((-1, x.shape[1])) % 32
-    y_v = y_v.reshape((-1, 1)) % 7
-    y_color = y_color.reshape((-1, 1, 8))
+    # [Batch, SeqLen, 32]
+    y_pi = y_pi.reshape(-1, x.shape[1])
+    y_v = y_v.reshape(-1, 1)
+    y_color = y_color.reshape(-1, 1, 8)
 
     loss_pi = mask * optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
     loss_v = mask * optax.softmax_cross_entropy_with_integer_labels(v, y_v)
@@ -303,8 +391,8 @@ def train_step(state, x, mask, y_pi, y_v, y_color, eval):
 
 def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
-    for x, y_pi, y_v, y_color in zip(*data_batched):
-        state, loss, info = train_step(state, x, 1, y_pi, y_v, y_color, eval)
+    for x, mask, y_pi, y_v, y_color in zip(*data_batched):
+        state, loss, info = train_step(state, x, mask, y_pi, y_v, y_color, eval)
         # print(loss, info)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
@@ -361,6 +449,61 @@ def fit(state, ckpt_dir, prefix, train_data, test_data, epochs, batch_size):
 class TrainState(train_state.TrainState):
     epoch: int
     dropout_rng: Any
+
+
+@partial(jax.jit, device=jax.devices("cpu")[0])
+def predict(state, x, cache1, cache2):
+    return state.apply_fn({'params': state.params}, x, cache1, cache2)
+
+
+def main_test_performance(data):
+    is_linear = False
+
+    ckpt_dir = './checkpoints/'
+    prefix = 'geister_linear_' if is_linear else 'geister_'
+    ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
+
+    model = TransformerDecoderWithCache(num_heads=8,
+                                        embed_dim=128,
+                                        num_hidden_layers=3,
+                                        is_linear_attention=is_linear)
+
+    state = TrainState.create(
+        apply_fn=model.apply,
+        params=ckpt['params'],
+        tx=optax.adam(learning_rate=0.0005),
+        dropout_rng=ckpt['dropout_rng'],
+        epoch=0)
+
+    def test(data_index):
+        if is_linear:
+            cache1, cache2 = model.create_linear_cache()
+        else:
+            cache1, cache2 = model.create_cache(0)
+
+        v_history = np.zeros(200)
+
+        start = time.perf_counter()
+
+        for i in range(100):
+            pi, v, color, cache1, cache2 = predict(state, data[0][data_index, i], cache1, cache2)
+            v_history[i] = jnp.sum(nn.softmax(v) * jnp.array([-1, -1, -1, 0, 1, 1, 1]))
+
+            if data_index == 0:
+                print(i)
+
+        return v_history, time.perf_counter() - start
+
+    time_history = []
+    v_mean_history = np.zeros(100)
+
+    for i in range(100):
+        v_history, t = test(i)
+        v_mean_history[i] = v_history.mean()
+        time_history.append(t)
+
+    print(v_mean_history)
+    print(np.mean(time_history[1:]))
 
 
 def main_train(model, state, data):
@@ -424,11 +567,14 @@ def main_test(model, state, data):
 
 def main():
     if True:
-        tokens_buffer = np.load('replay_buffer/tokens.npy')
-        policy_buffer = np.load('replay_buffer/policy.npy')
-        reward_buffer = np.load('replay_buffer/reward.npy') + 3
-        pieces_buffer = np.load('replay_buffer/pieces.npy')
-        data = tokens_buffer, policy_buffer, reward_buffer, pieces_buffer
+        dir_name = 'replay_buffer_1'
+
+        tokens_buffer = np.load(f'{dir_name}/tokens.npy')
+        mask_buffer = np.load(f'{dir_name}/mask.npy')
+        policy_buffer = np.load(f'{dir_name}/policy.npy')
+        reward_buffer = np.load(f'{dir_name}/reward.npy')
+        pieces_buffer = np.load(f'{dir_name}/pieces.npy')
+        data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
     else:
         data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
@@ -442,7 +588,7 @@ def main():
     state = TrainState.create(
         apply_fn=model.apply,
         params=variables['params'],
-        tx=optax.adam(learning_rate=0.00005),
+        tx=optax.adam(learning_rate=0.0005),
         dropout_rng=key2,
         epoch=0)
 
@@ -453,7 +599,8 @@ def main():
 
     # state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=state)
 
-    main_train(model, state, data)
+    main_test_performance(data)
+    # main_train(model, state, data)
     # main_test(model, state, data)
 
 

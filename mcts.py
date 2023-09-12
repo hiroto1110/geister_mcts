@@ -1,6 +1,5 @@
 from functools import partial
 from typing import List, Any, Callable
-import time
 
 import numpy as np
 import jax
@@ -463,6 +462,50 @@ class PlayerMCTS:
         self.tokens += tokens
 
 
+def play_test_game(pred_state: PredictState,
+                   model: TransformerDecoderWithCache,
+                   num_mcts_sim: int,
+                   dirichlet_alpha: float,
+                   game_length: int = 200,
+                   print_board: bool = True):
+    player = 1
+
+    state1, state2 = game.get_initial_state_pair()
+    node, _ = create_root_node(state1, pred_state, model, 1)
+
+    pieces_history = np.zeros((100, 8), dtype=np.int8)
+
+    for i in range(game_length):
+        if player == 1:
+            pieces_history[i // 2] = state1.pieces_p
+
+            action = select_action_with_mcts(node, state1, pieces_history,
+                                             pred_state, num_mcts_sim, dirichlet_alpha)
+        else:
+            actions = game.get_valid_actions(state1, -1)
+            action = np.random.choice(actions)
+
+        node, _ = apply_action(node, state1, action, player, state2.color_p, pred_state)
+
+        if print_board:
+            board = np.zeros(36, dtype=np.int8)
+
+            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 1)]] = 1
+            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 0)]] = 2
+            board[state1.pieces_o[(state1.pieces_o >= 0) & (state2.color_p == 1)]] = -1
+            board[state1.pieces_o[(state1.pieces_o >= 0) & (state2.color_p == 0)]] = -2
+
+            print(str(board.reshape((6, 6))).replace('0', ' '))
+            print(i)
+
+        if state1.is_done or state2.is_done:
+            break
+
+        player = -player
+
+    return state1.winner, state1.win_type
+
+
 def play_game(pred_state: PredictState,
               model: TransformerDecoderWithCache,
               num_mcts_sim1: int, num_mcts_sim2: int,
@@ -535,6 +578,9 @@ def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
         _, _, _, cv, ck = predict(state, data[0][:1, t:t+1], cv, ck)
 
 
+should_do_visibilize_node_graph = False
+
+
 def test():
     # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
@@ -551,32 +597,18 @@ def test():
 
     np.random.seed(13)
 
-    for i in range(1):
-        start = time.perf_counter()
+    win_count = np.zeros(7)
 
-        tokens_ls, actions, reward, color = play_game(pred_state,
-                                                      model_with_cache,
-                                                      100, 100, 0.3,
-                                                      record_player=1,
-                                                      game_length=200,
-                                                      print_board=True)
+    for i in range(100):
+        # play_game(pred_state, model_with_cache, 100, 100, 0.3,
+        #           record_player=1, game_length=200, print_board=True)
 
-        elapsed = time.perf_counter() - start
-        print(f"time: {elapsed} s")
+        winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
 
-        tokens = np.zeros((200, 5), dtype=np.uint8)
-        tokens[:min(200, len(tokens_ls))] = tokens_ls[:200]
+        index = int(winner * win_type.value) + 3
+        win_count[index] += 1
 
-        mask = np.zeros(200, dtype=np.uint8)
-        mask[:len(tokens_ls)] = 1
-
-        actions = actions[tokens[:, 4]]
-
-        print(tokens)
-        print(mask)
-        print(actions)
-        print(reward + 3)
-        print(color)
+        print(win_count)
 
 
 if __name__ == "__main__":
