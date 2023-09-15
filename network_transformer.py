@@ -198,7 +198,7 @@ class MultiHeadAttentionWithCache(nn.Module):
 
 class FeedForward(nn.Module):
     embed_dim: int
-    intermediate_size: int = 2048
+    intermediate_size: int = 128
 
     @nn.compact
     def __call__(self, x, eval):
@@ -214,8 +214,8 @@ class TransformerBlock(nn.Module):
     embed_dim: int
 
     def setup(self):
-        # self.attention = MultiHeadAttention(self.num_heads, self.embed_dim)
-        self.attention = MultiHeadLinearAttention(self.num_heads, self.embed_dim)
+        self.attention = MultiHeadAttention(self.num_heads, self.embed_dim)
+        # self.attention = MultiHeadLinearAttention(self.num_heads, self.embed_dim)
 
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
@@ -295,7 +295,7 @@ class TransformerDecoderWithCache(nn.Module):
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
-    is_linear_attention: bool
+    is_linear_attention: bool = False
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
@@ -356,19 +356,17 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
     y_v = y_v.reshape(-1, 1)
     y_color = y_color.reshape(-1, 1, 8)
 
-    loss_pi = mask * optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
-    loss_v = mask * optax.softmax_cross_entropy_with_integer_labels(v, y_v)
-    loss_color = mask * optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=2)
+    loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
+    loss_v = optax.softmax_cross_entropy_with_integer_labels(v, y_v)
+    loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=2)
 
-    loss = jnp.mean(0.5 * loss_pi + loss_v + loss_color)
+    loss_pi = jnp.average(loss_pi, weights=mask)
+    loss_v = jnp.average(loss_v, weights=mask)
+    loss_color = jnp.average(loss_color, weights=mask)
 
-    loss_pi = loss_pi.mean(axis=0)
-    loss_v = loss_v.mean(axis=0)
-    loss_color = loss_color.mean(axis=0)
+    loss = loss_pi + loss_v + loss_color
 
-    acc_piece = jnp.mean((color > 0) == y_color, axis=(0, 2))
-
-    info = jnp.stack([loss_pi, loss_v, loss_color, acc_piece], axis=0)
+    info = jnp.array([loss_pi, loss_v, loss_color])
 
     return loss, info
 
@@ -393,10 +391,9 @@ def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
     for x, mask, y_pi, y_v, y_color in zip(*data_batched):
         state, loss, info = train_step(state, x, mask, y_pi, y_v, y_color, eval)
-        # print(loss, info)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
-    return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=(0, 2))
+    return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
 
 
 def create_batches(data, batch_size):
@@ -406,44 +403,28 @@ def create_batches(data, batch_size):
 
 
 def fit(state, ckpt_dir, prefix, train_data, test_data, epochs, batch_size):
-    # state = checkpoints.restore_checkpoint(
-    #    ckpt_dir=ckpt_dir, prefix=prefix, target=state)
-
     train_data_batched = [create_batches(data, batch_size) for data in train_data]
     test_data_batched = [create_batches(data, batch_size) for data in test_data]
-
-    loss_history_train, acc_history_train = [], []
-    loss_history_test, acc_history_test = [], []
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         # Training
         state, loss_train, info_train = train_epoch(state, train_data_batched, eval=False)
-        loss_history_train.append(loss_train)
-        acc_history_train.append(info_train)
 
         # Evaluation
         _, loss_test, info_test = train_epoch(state, test_data_batched, eval=True)
-        loss_history_test.append(loss_test)
-        acc_history_test.append(info_test)
 
         print(f'Epoch: {epoch}, ', end='')
         print(f'Loss: ({loss_train:.3f}, {loss_test:.3f}), ', end='')
         print(f'Pi: ({info_train[0]:.3f}, {info_test[0]:.3f}), ', end='')
         print(f'V: ({info_train[1]:.3f}, {info_test[1]:.3f}), ', end='')
-        print(f'Color: ({info_train[2]:.3f}, {info_test[2]:.3f}), ', end='')
-        print(f'Acc Color: ({info_train[3]:.3f}, {info_test[3]:.3f})')
+        print(f'Color: ({info_train[2]:.3f}, {info_test[2]:.3f})')
 
         state = state.replace(epoch=state.epoch + 1)
         checkpoints.save_checkpoint(
             ckpt_dir=ckpt_dir, prefix=prefix,
             target=state, step=state.epoch, overwrite=True, keep=5)
 
-    history = {'loss_train': loss_history_train,
-               'acc_train': acc_history_train,
-               'loss_test': loss_history_test,
-               'acc_test': acc_history_test}
-
-    return state, history
+    return state
 
 
 class TrainState(train_state.TrainState):
@@ -465,7 +446,7 @@ def main_test_performance(data):
 
     model = TransformerDecoderWithCache(num_heads=8,
                                         embed_dim=128,
-                                        num_hidden_layers=3,
+                                        num_hidden_layers=2,
                                         is_linear_attention=is_linear)
 
     state = TrainState.create(
@@ -513,7 +494,7 @@ def main_train(model, state, data):
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'geister_'
+    prefix = 'geister_test_'
 
     checkpoints.save_checkpoint(
         ckpt_dir=ckpt_dir, prefix=prefix,
@@ -521,10 +502,10 @@ def main_train(model, state, data):
 
     start = time.perf_counter()
 
-    state, history = fit(state, ckpt_dir, prefix,
-                         train_data=train_data,
-                         test_data=test_data,
-                         epochs=8, batch_size=32)
+    state = fit(state, ckpt_dir, prefix,
+                train_data=train_data,
+                test_data=test_data,
+                epochs=8, batch_size=32)
 
     end = time.perf_counter()
     print(end - start)
@@ -566,21 +547,18 @@ def main_test(model, state, data):
 
 
 def main():
-    if True:
-        dir_name = 'replay_buffer_1'
+    dir_name = 'replay_buffer_1'
 
-        tokens_buffer = np.load(f'{dir_name}/tokens.npy')
-        mask_buffer = np.load(f'{dir_name}/mask.npy')
-        policy_buffer = np.load(f'{dir_name}/policy.npy')
-        reward_buffer = np.load(f'{dir_name}/reward.npy')
-        pieces_buffer = np.load(f'{dir_name}/pieces.npy')
-        data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
-    else:
-        data = [jnp.load(f"data_{i}.npy") for i in range(4)]
+    tokens_buffer = np.load(f'{dir_name}/tokens.npy')
+    mask_buffer = np.load(f'{dir_name}/mask.npy')
+    policy_buffer = np.load(f'{dir_name}/policy.npy')
+    reward_buffer = np.load(f'{dir_name}/reward.npy')
+    pieces_buffer = np.load(f'{dir_name}/pieces.npy')
+    data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
 
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=3)
+    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
@@ -599,8 +577,8 @@ def main():
 
     # state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=state)
 
-    main_test_performance(data)
-    # main_train(model, state, data)
+    # main_test_performance(data)
+    main_train(model, state, data)
     # main_test(model, state, data)
 
 

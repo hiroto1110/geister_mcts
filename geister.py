@@ -109,8 +109,6 @@ class SimulationState:
                 pos // 6,
                 self.n_ply
             ]]
-        else:
-            print("This isn't a afterstate")
 
     def undo_step_afterstate(self, info: AfterstateInfo):
         self.color_o[info.piece_id] = UNCERTAIN_PIECE

@@ -25,9 +25,8 @@ class PredictState(struct.PyTreeNode):
 def predict(state: PredictState, tokens, cache_v, cache_k):
     pi, v, c, cv, ck = state.apply_fn({'params': state.params}, tokens, cache_v, cache_k, eval=True)
 
-    pi = pi[0, 0]
-    v = nn.softmax(v[0, 0])
-    c = nn.sigmoid(c[0, 0])
+    v = nn.softmax(v)
+    c = nn.sigmoid(c)
 
     return pi, v, c, cv, ck
 
@@ -221,8 +220,7 @@ def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck):
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
     for i in range(tokens.shape[0]):
-        token = tokens[i].reshape(1, 1, game.TOKEN_SIZE)
-        pi, v, c, cv, ck = predict(pred_state, token, cv, ck)
+        pi, v, c, cv, ck = predict(pred_state, tokens[i], cv, ck)
 
     if np.isnan(c).any():
         c = np.full(shape=8, fill_value=0.5)
@@ -414,7 +412,7 @@ def create_root_node(state: game.SimulationState,
                      model: TransformerDecoderWithCache,
                      player: int) -> Node:
     node = Node(player)
-    cv, ck = model.create_cache(1, 0)
+    cv, ck = model.create_cache(0)
 
     tokens = state.create_init_tokens()
 
@@ -571,20 +569,20 @@ def play_game(pred_state: PredictState,
 
 
 def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
-    cv, ck = model.create_cache(1, 0)
+    cv, ck = model.create_cache(0)
 
     for t in range(100):
         print(t)
-        _, _, _, cv, ck = predict(state, data[0][:1, t:t+1], cv, ck)
+        _, _, _, cv, ck = predict(state, data[0][0, t], cv, ck)
 
 
-should_do_visibilize_node_graph = False
+# should_do_visibilize_node_graph = False
 
 
 def test():
     # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
-    model_with_cache = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=3)
+    model_with_cache = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
     ckpt_dir = './checkpoints/'
     prefix = 'geister_'
@@ -599,14 +597,14 @@ def test():
 
     win_count = np.zeros(7)
 
-    for i in range(100):
-        # play_game(pred_state, model_with_cache, 100, 100, 0.3,
-        #           record_player=1, game_length=200, print_board=True)
+    for i in range(1):
+        play_game(pred_state, model_with_cache, 50, 50, 0.3,
+                  record_player=1, game_length=200, print_board=True)
 
-        winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
+        # winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
 
-        index = int(winner * win_type.value) + 3
-        win_count[index] += 1
+        # index = int(winner * win_type.value) + 3
+        # win_count[index] += 1
 
         print(win_count)
 

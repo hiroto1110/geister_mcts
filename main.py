@@ -47,7 +47,8 @@ def selfplay(pred_state: mcts.PredictState,
     record_player = np.random.choice([1, -1])
 
     tokens_ls, actions, reward, color = mcts.play_game(pred_state, model,
-                                                       num_mcts_sim1, num_mcts_sim2, dirichlet_alpha,
+                                                       num_mcts_sim1, num_mcts_sim2,
+                                                       dirichlet_alpha,
                                                        record_player)
 
     tokens = np.zeros((200, 5), dtype=np.uint8)
@@ -63,17 +64,17 @@ def selfplay(pred_state: mcts.PredictState,
 
 
 CKPT_DIR = './checkpoints/'
+CKPT_100_DIR = './checkpoints_100/'
 PREFIX = 'geister_'
 
 
 def create_model():
-    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=3)
+    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
 
 def main(n_clients=30,
          buffer_size=100000,
-         batch_size=128,
-         epochs_per_update=1,
+         batch_size=256,
          update_period=400,
          num_mcts_sim=50,
          dirichlet_alpha=0.3):
@@ -81,7 +82,7 @@ def main(n_clients=30,
     wandb.init(project="geister-zero",
                config={"dirichlet_alpha": dirichlet_alpha})
 
-    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=3)
+    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
     state = network.TrainState.create(
@@ -96,14 +97,14 @@ def main(n_clients=30,
 
     for i in range(n_clients):
         sender = pipe.get_sender(i)
-        seed = np.random.randint(0, 1000)
+        seed = np.random.randint(0, 10000)
         args = sender, n_updates, seed, num_mcts_sim, dirichlet_alpha
 
         process = mp.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    replay = ReplayBuffer(buffer_size=buffer_size, seq_length=game.MAX_TOKEN_LENGTH)
-    replay.load('replay_buffer')
+    replay_buffer = ReplayBuffer(buffer_size=buffer_size, seq_length=game.MAX_TOKEN_LENGTH)
+    # replay_buffer.load('replay_buffer')
 
     while True:
         for i in tqdm(range(update_period)):
@@ -111,47 +112,75 @@ def main(n_clients=30,
                 pass
 
             sample = pipe.recv()
-            replay.add_sample(sample)
+            replay_buffer.add_sample(sample)
 
-        replay.save('replay_buffer')
+        replay_buffer.save('replay_buffer')
 
-        num_iters = epochs_per_update * (len(replay) // batch_size) // 2
-        if num_iters <= 0:
-            continue
+        state = train_and_log(state, replay_buffer, batch_size, update_period)
 
-        info = np.zeros((num_iters, 4, game.MAX_TOKEN_LENGTH))
-        loss = 0
+        save_checkpoint(state)
 
-        for i in range(num_iters):
-            batch = replay.get_minibatch(batch_size=batch_size)
-            state, loss_i, info_i = network.train_step(state, *batch, eval=False)
+        n_updates.value += 1
 
-            loss += loss_i
-            info[i] = info_i
 
-        n_div = 4
-        info = info.reshape(num_iters, 4, n_div, -1)
-        info = info.mean(axis=(0, 3))
+def train_and_log(state: network.TrainState,
+                  buffer: ReplayBuffer,
+                  train_batch_size: int,
+                  test_batch_size: int):
 
-        log_dict = {"loss": loss / num_iters,
-                    "value": wandb.Histogram(replay.reward_buffer[replay.index - update_period: replay.index]),
-                    "n_ply": replay.tokens_buffer[replay.index - update_period: replay.index, :, 4].max(axis=1).mean(),
-                    "num updates": n_updates.value}
+    num_iters = (len(buffer) // train_batch_size) // 4
+    if num_iters <= 0:
+        return
 
-        for i in range(n_div):
-            log_dict.update({f"{i}/loss policy": info[0, i],
-                             f"{i}/loss value": info[1, i],
-                             f"{i}/loss color": info[2, i],
-                             f"{i}/acc color": info[3, i]})
+    info = np.zeros((num_iters, 3))
+    loss = 0
 
-        wandb.log(log_dict)
+    for i in range(num_iters):
+        train_batch = buffer.get_minibatch(batch_size=train_batch_size)
+        state, loss_i, info_i = network.train_step(state, *train_batch.astuple(), eval=False)
 
-        state = state.replace(epoch=state.epoch + 1)
-        checkpoints.save_checkpoint(
+        loss += loss_i
+        info[i] = info_i
+
+    info = info.mean(axis=0)
+
+    test_batch = buffer.get_last__minibatch(batch_size=test_batch_size)
+    _, test_loss, test_info = network.train_step(state, *test_batch.astuple(), eval=True)
+
+    n_ply = test_batch.tokens[:, :, game.Token.T].max(axis=1)
+
+    log_dict = {"train/loss": loss / num_iters,
+                "train/loss policy": info[0],
+                "train/loss value": info[1],
+                "train/loss color": info[2],
+
+                "test/loss": test_loss,
+                "test/loss policy": test_info[0],
+                "test/loss value": test_info[1],
+                "test/loss color": test_info[2],
+
+                "n_ply": n_ply.mean(),
+                "n_ply histgram": wandb.Histogram(n_ply, num_bins=200)}
+
+    value = test_batch.reward.flatten()
+    value_count = np.bincount(np.abs(value - 3), minlength=4)
+
+    log_dict.update({f'value/{i}': value_count[i] for i in range(4)})
+
+    wandb.log(log_dict)
+
+    return state.replace(epoch=state.epoch + 1)
+
+
+def save_checkpoint(state: network.TrainState):
+    checkpoints.save_checkpoint(
             ckpt_dir=CKPT_DIR, prefix=PREFIX,
             target=state, step=state.epoch, overwrite=True, keep=50)
 
-        n_updates.value += 1
+    if state.epoch % 100 == 0:
+        checkpoints.save_checkpoint(
+            kpt_dir=CKPT_100_DIR, prefix=PREFIX,
+            target=state, step=state.epoch, overwrite=True, keep=500)
 
 
 if __name__ == "__main__":

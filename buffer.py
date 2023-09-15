@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, astuple
 import numpy as np
 import geister as game
 
@@ -10,6 +10,18 @@ class Sample:
     policy: np.ndarray
     reward: int
     pieces: np.ndarray
+
+
+@dataclass
+class Batch:
+    tokens: np.ndarray
+    mask: np.ndarray
+    policy: np.ndarray
+    reward: np.ndarray
+    pieces: np.ndarray
+
+    def astuple(self):
+        return astuple(self)
 
 
 class ReplayBuffer:
@@ -27,6 +39,17 @@ class ReplayBuffer:
     def __len__(self):
         return self.n_samples
 
+    def get_last__minibatch(self, batch_size):
+        i = (self.index - batch_size) % self.buffer_size
+
+        tokens = self.tokens_buffer[i: i+batch_size]
+        mask = self.mask_buffer[i: i+batch_size]
+        policy = self.policy_buffer[i: i+batch_size]
+        reward = self.reward_buffer[i: i+batch_size]
+        pieces = self.pieces_buffer[i: i+batch_size]
+
+        return Batch(tokens, mask, policy, reward, pieces)
+
     def get_minibatch(self, batch_size):
         indices = np.random.choice(range(self.n_samples), size=batch_size)
 
@@ -36,7 +59,7 @@ class ReplayBuffer:
         reward = self.reward_buffer[indices]
         pieces = self.pieces_buffer[indices]
 
-        return tokens, mask, policy, reward, pieces
+        return Batch(tokens, mask, policy, reward, pieces)
 
     def add_sample(self, sample: Sample):
         self.tokens_buffer[self.index] = sample.tokens
