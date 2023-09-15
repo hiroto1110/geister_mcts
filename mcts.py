@@ -504,18 +504,19 @@ def play_test_game(pred_state: PredictState,
     return state1.winner, state1.win_type
 
 
-def play_game(pred_state: PredictState,
-              model: TransformerDecoderWithCache,
+def play_game(model: TransformerDecoderWithCache,
+              params1, params2,
               num_mcts_sim1: int, num_mcts_sim2: int,
               dirichlet_alpha: float,
               record_player: int,
               game_length: int = 200,
               print_board: bool = False):
-    player = 1
+    pred_state1 = PredictState(model.apply, params1)
+    pred_state2 = PredictState(model.apply, params2)
 
     state1, state2 = game.get_initial_state_pair()
-    node1, tokens1 = create_root_node(state1, pred_state, model, 1)
-    node2, tokens2 = create_root_node(state2, pred_state, model, -1)
+    node1, tokens1 = create_root_node(state1, pred_state1, model, 1)
+    node2, tokens2 = create_root_node(state2, pred_state2, model, -1)
 
     tokens = tokens1 if record_player == 1 else tokens2
 
@@ -524,20 +525,22 @@ def play_game(pred_state: PredictState,
     pieces_history1 = np.zeros((100, 8), dtype=np.int8)
     pieces_history2 = np.zeros((100, 8), dtype=np.int8)
 
+    player = 1
+
     for i in range(game_length):
         if player == 1:
             pieces_history1[i // 2] = state1.pieces_p
 
             action = select_action_with_mcts(node1, state1, pieces_history1,
-                                             pred_state, num_mcts_sim1, dirichlet_alpha)
+                                             pred_state1, num_mcts_sim1, dirichlet_alpha)
         else:
             pieces_history2[i // 2] = state2.pieces_p
 
             action = select_action_with_mcts(node2, state2, pieces_history2,
-                                             pred_state, num_mcts_sim2, dirichlet_alpha)
+                                             pred_state2, num_mcts_sim2, dirichlet_alpha)
 
-        node1, tokens1_i = apply_action(node1, state1, action, player, state2.color_p, pred_state)
-        node2, tokens2_i = apply_action(node2, state2, action, player, state1.color_p, pred_state)
+        node1, tokens1_i = apply_action(node1, state1, action, player, state2.color_p, pred_state1)
+        node2, tokens2_i = apply_action(node2, state2, action, player, state1.color_p, pred_state2)
 
         if record_player == 1:
             tokens += tokens1_i

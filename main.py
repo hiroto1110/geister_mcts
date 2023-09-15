@@ -22,31 +22,32 @@ def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, diri
         model = create_model()
 
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
-        pred_state = mcts.PredictState(model.apply, ckpt['params'])
+        params = ckpt['params']
 
         last_n_updates = n_updates.value
 
         while True:
             # num_mcts_simu1, num_mcts_simu2 = np.random.randint(num_mcts_sim // 2, num_mcts_sim, size=2)
-            sample = selfplay(pred_state, model, num_mcts_sim, num_mcts_sim, dirichlet_alpha)
+            sample = selfplay(model, params, params, num_mcts_sim, num_mcts_sim, dirichlet_alpha)
 
             sender.send(sample)
 
             if last_n_updates != n_updates.value:
                 ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
-                pred_state = mcts.PredictState(model.apply, ckpt['params'])
+                params = ckpt['params']
 
                 last_n_updates = n_updates.value
 
 
-def selfplay(pred_state: mcts.PredictState,
-             model: network.TransformerDecoderWithCache,
+def selfplay(model: network.TransformerDecoderWithCache,
+             params1, params2,
              num_mcts_sim1: int, num_mcts_sim2: int,
              dirichlet_alpha):
 
     record_player = np.random.choice([1, -1])
 
-    tokens_ls, actions, reward, color = mcts.play_game(pred_state, model,
+    tokens_ls, actions, reward, color = mcts.play_game(model,
+                                                       params1, params2,
                                                        num_mcts_sim1, num_mcts_sim2,
                                                        dirichlet_alpha,
                                                        record_player)
@@ -130,7 +131,7 @@ def train_and_log(state: network.TrainState,
 
     num_iters = (len(buffer) // train_batch_size) // 4
     if num_iters <= 0:
-        return
+        return state
 
     info = np.zeros((num_iters, 3))
     loss = 0
@@ -179,7 +180,7 @@ def save_checkpoint(state: network.TrainState):
 
     if state.epoch % 100 == 0:
         checkpoints.save_checkpoint(
-            kpt_dir=CKPT_100_DIR, prefix=PREFIX,
+            ckpt_dir=CKPT_100_DIR, prefix=PREFIX,
             target=state, step=state.epoch, overwrite=True, keep=500)
 
 

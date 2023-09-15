@@ -3,9 +3,12 @@ __pycache__/
 build/
 cython/
 checkpoints/
+checkpoints_100/
+log_gat/
 graph/
 log/
-*.npy
 log.txt
+*.npy
+*.png
 *.so
 *.lprof
