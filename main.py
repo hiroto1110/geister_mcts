@@ -64,9 +64,36 @@ def selfplay(model: network.TransformerDecoderWithCache,
     return Sample(tokens, mask, actions, reward, color)
 
 
+def start_testplay_process(queue: mp.Queue, num_games, num_mcts_sim, dirichlet_alpha):
+    with jax.default_device(jax.devices("cpu")[0]):
+        model = create_model()
+
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
+        params = ckpt['params']
+
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX_BEST, target=None)
+        best_params = ckpt['params']
+
+        win_count = 0
+
+        for i in range(num_games):
+            if i % 2 == 0:
+                _, _, reward, _ = mcts.play_game(model, params, best_params,
+                                                 num_mcts_sim, num_mcts_sim, dirichlet_alpha, 1)
+            else:
+                _, _, reward, _ = mcts.play_game(model, best_params, params,
+                                                 num_mcts_sim, num_mcts_sim, dirichlet_alpha, -1)
+
+            if reward > 0:
+                win_count += 1
+
+        queue.put(win_count / num_games)
+
+
 CKPT_DIR = './checkpoints/'
-CKPT_100_DIR = './checkpoints_100/'
 PREFIX = 'geister_'
+PREFIX_BEST = 'geister_best_'
+PREFIX_BACKUP = 'geister_backup_'
 
 
 def create_model():
@@ -93,6 +120,7 @@ def main(n_clients=30,
         dropout_rng=ckpt['dropout_rng'],
         epoch=ckpt['epoch'])
 
+    result_testplay_queue = mp.Queue()
     pipe = MultiSenderPipe(n_clients)
     n_updates = mp.Value('i', 0)
 
@@ -120,6 +148,21 @@ def main(n_clients=30,
         state = train_and_log(state, replay_buffer, batch_size, update_period)
 
         save_checkpoint(state)
+
+        if (n_updates.value % 10 == 0) and not result_testplay_queue.empty():
+            result = result_testplay_queue.get()
+
+            wandb.log({"step": state.epoch,
+                       "test_play": result})
+
+            if result > 0.55:
+                checkpoints.save_checkpoint(
+                    ckpt_dir=CKPT_DIR, prefix=PREFIX_BEST,
+                    target=state, step=state.epoch, overwrite=True, keep=1000)
+
+            args = result_testplay_queue, 100, num_mcts_sim, dirichlet_alpha
+            process = mp.Process(target=start_testplay_process, args=args)
+            process.start()
 
         n_updates.value += 1
 
@@ -150,7 +193,8 @@ def train_and_log(state: network.TrainState,
 
     n_ply = test_batch.tokens[:, :, game.Token.T].max(axis=1)
 
-    log_dict = {"train/loss": loss / num_iters,
+    log_dict = {"step": state.epoch,
+                "train/loss": loss / num_iters,
                 "train/loss policy": info[0],
                 "train/loss value": info[1],
                 "train/loss color": info[2],
@@ -180,7 +224,7 @@ def save_checkpoint(state: network.TrainState):
 
     if state.epoch % 100 == 0:
         checkpoints.save_checkpoint(
-            ckpt_dir=CKPT_100_DIR, prefix=PREFIX,
+            ckpt_dir=CKPT_DIR, prefix=PREFIX_BACKUP,
             target=state, step=state.epoch, overwrite=True, keep=500)
 
 

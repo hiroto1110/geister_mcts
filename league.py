@@ -12,7 +12,7 @@ from tqdm import tqdm
 from multiprocessing_util import MultiSenderPipe
 import network_transformer as network
 import mcts
-from main import CKPT_100_DIR, PREFIX
+from main import PREFIX
 
 
 @dataclass
@@ -26,7 +26,7 @@ def load_params(steps):
     params_list = []
 
     for step in steps:
-        ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_100_DIR, prefix=PREFIX, step=step, target=None)
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints_100/', prefix=PREFIX, step=step, target=None)
         params_list.append(ckpt['params'])
 
     return params_list
@@ -53,12 +53,12 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
             result_sender.send(replace(next_game, reward=reward))
 
 
-# PARAMS_STEPS = [i * 100 for i in range(5)] + [3010]
-PARAMS_STEPS = [100, 200, 300, 400, 500, 600, 700, 3010]
+PARAMS_STEPS = [i * 100 for i in range(17)]
+# PARAMS_STEPS = [100, 200, 300, 400, 500, 600, 700, 3010]
 
 
-def main(n_clients=10,
-         num_games_per_combination=20,
+def main(n_clients=30,
+         num_games_per_combination=100,
          num_mcts_sim=50,
          dirichlet_alpha=0.3):
 
@@ -73,7 +73,7 @@ def main(n_clients=10,
         np.random.shuffle(combinations)
 
         for agent1, agent2 in combinations:
-            if np.random.random() > 0.5:
+            if i % 2 == 0:
                 league_queue.put(GameResult(agent1, agent2, 0))
             else:
                 league_queue.put(GameResult(agent2, agent1, 0))
@@ -101,21 +101,25 @@ def main(n_clients=10,
         result_table[result.agent1, result.agent2, result.reward + 3] += 1
         result_table[result.agent2, result.agent1, -result.reward + 3] += 1
 
+    np.save("league_result.npy", result_table)
+
     n_games = result_table.sum(axis=(2))
     n_games[n_games == 0] = 1
 
     win_ratio = result_table * np.array([0, 0, 0, 0.5, 1, 1, 1]).reshape(1, 1, -1)
     win_ratio = win_ratio.sum(axis=(2)) / n_games
 
+    win_ratio[range(win_ratio.shape[0]), range(win_ratio.shape[1])] = 0.5
+
     print(win_ratio)
     print()
     print(win_ratio.mean(axis=1))
 
     fig, ax = plt.subplots()
-    ax.pcolor(win_ratio, cmap=plt.cm.Blues)
+    ax.pcolor(win_ratio, cmap='bwr')
 
     plt.savefig("league_result.png")
-    plt.show()
+    # plt.show()
 
 
 if __name__ == "__main__":
