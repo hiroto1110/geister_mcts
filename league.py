@@ -6,6 +6,7 @@ from flax.training import checkpoints
 import jax
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from tqdm import tqdm
 
@@ -41,24 +42,26 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
 
         params_list = load_params(PARAMS_STEPS)
 
+        def params_to_player(params):
+            return mcts.PlayerMCTS(params, model, num_mcts_sim, dirichlet_alpha)
+
+        players = [params_to_player(params) for params in params_list]
+
         while not league_queue.empty():
             next_game = league_queue.get()
 
-            _, _, reward, _ = mcts.play_game(model,
-                                             params_list[next_game.agent1],
-                                             params_list[next_game.agent2],
-                                             num_mcts_sim, num_mcts_sim,
-                                             dirichlet_alpha, record_player=1)
+            actions, _, color2 = mcts.play_game(players[next_game.agent1], players[next_game.agent2])
+            sample = players[next_game.agent1].create_sample(actions, color2)
 
-            result_sender.send(replace(next_game, reward=reward))
+            result_sender.send(replace(next_game, reward=sample.reward))
 
 
-PARAMS_STEPS = [i * 100 for i in range(17)]
+PARAMS_STEPS = [2350] + [i * 100 for i in range(17)]
 # PARAMS_STEPS = [100, 200, 300, 400, 500, 600, 700, 3010]
 
 
 def main(n_clients=30,
-         num_games_per_combination=100,
+         num_games_per_combination=20,
          num_mcts_sim=50,
          dirichlet_alpha=0.3):
 
@@ -66,7 +69,8 @@ def main(n_clients=30,
 
     league_queue = mp.Queue()
 
-    combinations = itertools.combinations(range(num_agents), 2)
+    # combinations = itertools.combinations(range(num_agents), 2)
+    combinations = [(0, i + 1) for i in range(len(PARAMS_STEPS) - 1)]
     combinations = np.array(list(combinations))
 
     for i in range(num_games_per_combination):
@@ -111,16 +115,51 @@ def main(n_clients=30,
 
     win_ratio[range(win_ratio.shape[0]), range(win_ratio.shape[1])] = 0.5
 
-    print(win_ratio)
-    print()
-    print(win_ratio.mean(axis=1))
+    win_ratio_mean = win_ratio.mean(axis=1).reshape(-1, 1)
 
-    fig, ax = plt.subplots()
-    ax.pcolor(win_ratio, cmap='bwr')
+    win_ratio = np.concatenate([win_ratio, win_ratio_mean], axis=1)
+
+    y_label = [i // 100 for i in PARAMS_STEPS]
+    x_label = y_label + ['total']
+
+    plt.figure(figsize=(12, 8))
+    ax = sns.heatmap(win_ratio, annot=True, fmt='.2f', cmap='bwr', square=True,
+                     vmin=0, vmax=1,
+                     xticklabels=x_label,
+                     yticklabels=y_label)
+    ax.xaxis.tick_top()
 
     plt.savefig("league_result.png")
     # plt.show()
 
 
+def visiblize():
+    result_table = np.load('league_result.npy')
+
+    n_games = result_table.sum(axis=(2))
+    n_games[n_games == 0] = 1
+
+    win_ratio = result_table * np.array([0, 0, 0, 0.5, 1, 1, 1]).reshape(1, 1, -1)
+    win_ratio = win_ratio.sum(axis=(2)) / n_games
+
+    win_ratio[range(win_ratio.shape[0]), range(win_ratio.shape[1])] = 0.5
+
+    win_ratio_mean = win_ratio.mean(axis=1).reshape(-1, 1)
+
+    win_ratio = np.concatenate([win_ratio, win_ratio_mean], axis=1)
+
+    y_label = [i // 100 for i in PARAMS_STEPS]
+    x_label = y_label + ['total']
+
+    plt.figure(figsize=(12, 8))
+    ax = sns.heatmap(win_ratio, annot=True, fmt='.2f', cmap='bwr', square=True,
+                     vmin=0, vmax=1,
+                     xticklabels=x_label,
+                     yticklabels=y_label)
+    ax.xaxis.tick_top()
+    plt.show()
+
+
 if __name__ == "__main__":
+    # visiblize()
     main()

@@ -481,7 +481,7 @@ class PlayerMCTS:
         self.node, tokens = apply_action(self.node, self.state, action, player, true_color_o, self.pred_state)
         self.tokens += tokens
 
-    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray):
+    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Sample:
         tokens = np.zeros((200, 5), dtype=np.uint8)
         tokens[:min(200, len(self.tokens))] = self.tokens[:200]
 
