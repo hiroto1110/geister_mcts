@@ -11,6 +11,7 @@ from flax.training import checkpoints
 import geister as game
 import geister_lib
 from network_transformer import TransformerDecoderWithCache
+from buffer import Sample
 
 from graphviz import Digraph
 from line_profiler import profile
@@ -35,8 +36,9 @@ should_do_visibilize_node_graph = __name__ == '__main__'
 
 
 class Node:
-    def __init__(self, root_player: int) -> None:
+    def __init__(self, root_player: int, weight_v: np.ndarray) -> None:
         self.root_player = root_player
+        self.weight_v = weight_v
         self.is_afterstate = False
         self.winner = 0
 
@@ -66,8 +68,7 @@ class Node:
 
         # self.valid_actions = np.where(self.valid_actions_mask)[0]
 
-        self.p = np.where(self.valid_actions_mask, self.p, -np.inf)
-        self.p = np.array(nn.softmax(self.p))
+        self.p = np.where(self.valid_actions_mask, self.p, 0)
 
     def setup_valid_actions(self, state, player):
         if self.valid_actions_mask is not None:
@@ -96,9 +97,15 @@ class Node:
         return self.n / self.n.sum()
 
 
+class CheckmateNode:
+    def __init__(self) -> None:
+        pass
+
+
 class AfterStateNode:
-    def __init__(self, root_player: int) -> None:
+    def __init__(self, root_player: int, weight_v: np.ndarray) -> None:
         self.root_player = root_player
+        self.weight_v = weight_v
         self.is_afterstate = True
         self.winner = 0
 
@@ -178,7 +185,7 @@ def expand_afterstate(node: Node,
                       info: game.AfterstateInfo,
                       state: game.SimulationState,
                       pred_state: PredictState):
-    next_node = AfterStateNode(node.root_player)
+    next_node = AfterStateNode(node.root_player, node.weight_v)
     next_node.piece_id = info.piece_id
 
     v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
@@ -198,8 +205,11 @@ def expand(node: Node,
            state: game.SimulationState,
            pred_state: PredictState):
 
-    next_node = Node(node.root_player)
+    next_node = Node(node.root_player, node.weight_v)
     next_node.winner = state.winner
+
+    if find_checkmate(state, depth=4) != -1:
+        next_node.winner = 1
 
     if next_node.winner != 0:
         if should_do_visibilize_node_graph:
@@ -230,7 +240,7 @@ def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck):
     node.cache_v = cv
     node.cache_k = ck
 
-    v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
+    v = np.sum(v * node.weight_v)
 
     return jax.device_get(v), jax.device_get(pi)
 
@@ -344,11 +354,12 @@ def create_invalid_actions(actions, state: game.SimulationState, pieces_history:
 @profile
 def select_action_with_mcts(node: Node,
                             state: game.SimulationState,
-                            pieces_history: np.ndarray,
                             pred_state: PredictState,
                             num_sim: int,
                             alpha: float = None,
-                            eps: float = 0.25):
+                            eps=0.25,
+                            is_select_by_argmax=True,
+                            pieces_history: np.ndarray = None):
 
     if should_do_visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0])
@@ -361,8 +372,10 @@ def select_action_with_mcts(node: Node,
 
     else:
         node.setup_valid_actions(state, 1)
-        node.invalid_actions = create_invalid_actions(node.valid_actions, state, pieces_history)
-        node.apply_invalid_actions()
+
+        if pieces_history is not None:
+            node.invalid_actions = create_invalid_actions(node.valid_actions, state, pieces_history)
+            node.apply_invalid_actions()
 
         if alpha is not None:
             dirichlet_noise = np.random.dirichlet(alpha=[alpha]*len(node.valid_actions))
@@ -374,7 +387,10 @@ def select_action_with_mcts(node: Node,
             simulate(node, state, 1, pred_state)
 
         policy = node.get_policy()
-        action = np.argmax(policy)
+        if is_select_by_argmax:
+            action = np.argmax(policy)
+        else:
+            action = np.random.choice(range(len(policy)), p=policy)
 
         if should_do_visibilize_node_graph:
             dg = Digraph(format='png')
@@ -410,8 +426,8 @@ def apply_action(node: Node,
 def create_root_node(state: game.SimulationState,
                      pred_state: PredictState,
                      model: TransformerDecoderWithCache,
-                     player: int) -> Node:
-    node = Node(player)
+                     weight_v=np.array([-1, -1, -1, 0, 1, 1, 1])) -> Node:
+    node = Node(state.root_player, weight_v)
     cv, ck = model.create_cache(0)
 
     tokens = state.create_init_tokens()
@@ -423,41 +439,59 @@ def create_root_node(state: game.SimulationState,
 
 class PlayerMCTS:
     def __init__(self,
-                 pred_state: PredictState,
+                 params,
                  model: TransformerDecoderWithCache,
                  num_mcts_sim: int,
                  dirichlet_alpha: float) -> None:
 
-        self.pred_state = pred_state
+        self.pred_state = PredictState(model.apply, params)
         self.model = model
         self.num_mcts_sim = num_mcts_sim
         self.dirichlet_alpha = dirichlet_alpha
-
+        self.n_ply_to_apply_noise = 30
         self.tokens = []
 
-    def init_state(self, color: np.ndarray, player: int):
-        self.player = player
-        self.state = game.SimulationState(color, player)
-        self.node = create_root_node(self.state, self.pred_state, self.model, self.player)
+        self.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
 
-        self.pieces_history = np.zeros((110, 8), dtype=np.int8)
+    def update_params(self, params):
+        self.pred_state = PredictState(self.model.apply, params)
 
-    def decide_next_move(self, true_color_o: np.ndarray):
+    def init_state(self, state: game.SimulationState):
+        self.state = state
+        self.pieces_history = np.zeros((100, 8), dtype=np.int8)
+        self.tokens = []
+
+        self.node, tokens = create_root_node(state, self.pred_state, self.model, self.weight_v)
+        self.tokens += tokens
+
+    def select_next_action(self) -> int:
         self.pieces_history[self.state.n_ply // 2] = self.state.pieces_p
 
-        action = select_action_with_mcts(self.node, self.state, self.pieces_history,
-                                         self.pred_state, self.num_mcts_sim, self.dirichlet_alpha)
+        is_select_by_argmax = self.state.n_ply > self.n_ply_to_apply_noise
 
-        self.node, tokens = apply_action(self.node, self.state, action, self.player, true_color_o, self.pred_state)
-
-        self.tokens += tokens
+        action = select_action_with_mcts(self.node, self.state, self.pred_state,
+                                         num_sim=self.num_mcts_sim,
+                                         alpha=self.dirichlet_alpha,
+                                         is_select_by_argmax=is_select_by_argmax,
+                                         pieces_history=self.pieces_history)
 
         return action
 
-    def recieve_opponent_move(self, action: int, true_color_o: np.ndarray):
-        self.node, tokens = apply_action(self.node, self.state, action, -self.player, true_color_o, self.pred_state)
-
+    def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
+        self.node, tokens = apply_action(self.node, self.state, action, player, true_color_o, self.pred_state)
         self.tokens += tokens
+
+    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray):
+        tokens = np.zeros((200, 5), dtype=np.uint8)
+        tokens[:min(200, len(self.tokens))] = self.tokens[:200]
+
+        mask = np.zeros(200, dtype=np.uint8)
+        mask[:len(self.tokens)] = 1
+
+        actions = actions[tokens[:, 4]]
+        reward = 3 + int(self.state.winner * self.state.win_type.value)
+
+        return Sample(tokens, mask, actions, reward, true_color_o)
 
 
 def play_test_game(pred_state: PredictState,
@@ -477,8 +511,8 @@ def play_test_game(pred_state: PredictState,
         if player == 1:
             pieces_history[i // 2] = state1.pieces_p
 
-            action = select_action_with_mcts(node, state1, pieces_history,
-                                             pred_state, num_mcts_sim, dirichlet_alpha)
+            action = select_action_with_mcts(node, state1, pred_state,
+                                             num_mcts_sim, dirichlet_alpha, pieces_history)
         else:
             actions = game.get_valid_actions(state1, -1)
             action = np.random.choice(actions)
@@ -504,48 +538,23 @@ def play_test_game(pred_state: PredictState,
     return state1.winner, state1.win_type
 
 
-def play_game(model: TransformerDecoderWithCache,
-              params1, params2,
-              num_mcts_sim1: int, num_mcts_sim2: int,
-              dirichlet_alpha: float,
-              record_player: int,
-              game_length: int = 200,
-              print_board: bool = False):
-    pred_state1 = PredictState(model.apply, params1)
-    pred_state2 = PredictState(model.apply, params2)
-
+def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
     state1, state2 = game.get_initial_state_pair()
-    node1, tokens1 = create_root_node(state1, pred_state1, model, 1)
-    node2, tokens2 = create_root_node(state2, pred_state2, model, -1)
-
-    tokens = tokens1 if record_player == 1 else tokens2
+    player1.init_state(state1)
+    player2.init_state(state2)
 
     action_history = np.zeros(game_length + 1, dtype=np.int16)
-
-    pieces_history1 = np.zeros((100, 8), dtype=np.int8)
-    pieces_history2 = np.zeros((100, 8), dtype=np.int8)
 
     player = 1
 
     for i in range(game_length):
         if player == 1:
-            pieces_history1[i // 2] = state1.pieces_p
-
-            action = select_action_with_mcts(node1, state1, pieces_history1,
-                                             pred_state1, num_mcts_sim1, dirichlet_alpha)
+            action = player1.select_next_action()
         else:
-            pieces_history2[i // 2] = state2.pieces_p
+            action = player2.select_next_action()
 
-            action = select_action_with_mcts(node2, state2, pieces_history2,
-                                             pred_state2, num_mcts_sim2, dirichlet_alpha)
-
-        node1, tokens1_i = apply_action(node1, state1, action, player, state2.color_p, pred_state1)
-        node2, tokens2_i = apply_action(node2, state2, action, player, state1.color_p, pred_state2)
-
-        if record_player == 1:
-            tokens += tokens1_i
-        else:
-            tokens += tokens2_i
+        player1.apply_action(action, player, state2.color_p)
+        player2.apply_action(action, player, state1.color_p)
 
         action_history[i] = action
 
@@ -565,10 +574,7 @@ def play_game(model: TransformerDecoderWithCache,
 
         player = -player
 
-    reward = int(state1.winner * state1.win_type.value * record_player)
-    color = state2.color_p if record_player == 1 else state1.color_p
-
-    return tokens, action_history, reward, color
+    return action_history, state1.color_p, state2.color_p
 
 
 def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
@@ -591,8 +597,6 @@ def test():
     prefix = 'geister_'
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
-    pred_state = PredictState(apply_fn=model_with_cache.apply,
-                              params=ckpt['params'])
 
     # init_jit(pred_state, model_with_cache, data)
 
@@ -600,9 +604,14 @@ def test():
 
     win_count = np.zeros(7)
 
-    for i in range(1):
-        play_game(pred_state, model_with_cache, 50, 50, 0.3,
-                  record_player=1, game_length=200, print_board=True)
+    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=200, dirichlet_alpha=0.3)
+    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=200, dirichlet_alpha=0.3)
+
+    player1.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
+    player2.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
+
+    for i in range(2):
+        play_game(player1, player2, game_length=200, print_board=True)
 
         # winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
 

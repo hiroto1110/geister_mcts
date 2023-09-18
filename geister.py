@@ -279,15 +279,17 @@ class SimulationState:
         self.winner = 0
 
 
+def create_random_color() -> np.ndarray:
+    blue = np.random.choice(np.arange(8), 4, replace=False)
+    color = np.zeros(8, dtype=np.int16)
+    color[blue] = BLUE
+
+    return color
+
+
 def get_initial_state_pair() -> Tuple[SimulationState, SimulationState]:
-    blue_p = np.random.choice(np.arange(8), 4, replace=False)
-    blue_o = np.random.choice(np.arange(8), 4, replace=False)
-
-    color_p = np.zeros(8, dtype=np.int16)
-    color_p[blue_p] = 1
-
-    color_o = np.zeros(8, dtype=np.int16)
-    color_o[blue_o] = 1
+    color_p = create_random_color()
+    color_o = create_random_color()
 
     state_p = SimulationState(color_p, 1)
     state_o = SimulationState(color_o, -1)

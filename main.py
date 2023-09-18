@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 import wandb
 
-from buffer import ReplayBuffer, Sample
+from buffer import ReplayBuffer
 from multiprocessing_util import MultiSenderPipe
 import network_transformer as network
 import geister as game
@@ -22,46 +22,39 @@ def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, diri
         model = create_model()
 
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
-        params = ckpt['params']
 
         last_n_updates = n_updates.value
 
-        while True:
-            # num_mcts_simu1, num_mcts_simu2 = np.random.randint(num_mcts_sim // 2, num_mcts_sim, size=2)
-            sample = selfplay(model, params, params, num_mcts_sim, num_mcts_sim, dirichlet_alpha)
+        player1 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
+        player2 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
 
-            sender.send(sample)
+        # weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
+
+        while True:
+            # player1.weight_v = np.random.normal(weight_v_default, scale=0.3)
+            # player2.weight_v = np.random.normal(weight_v_default, scale=0.3)
+
+            sample1, sample2 = selfplay(player1, player2)
+
+            sender.send(sample1)
+            sender.send(sample2)
 
             if last_n_updates != n_updates.value:
                 ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
-                params = ckpt['params']
+
+                player1.update_params(ckpt['params'])
+                player2.update_params(ckpt['params'])
 
                 last_n_updates = n_updates.value
 
 
-def selfplay(model: network.TransformerDecoderWithCache,
-             params1, params2,
-             num_mcts_sim1: int, num_mcts_sim2: int,
-             dirichlet_alpha):
+def selfplay(player1: mcts.PlayerMCTS, player2: mcts.PlayerMCTS):
+    actions, color1, color2 = mcts.play_game(player1, player2)
 
-    record_player = np.random.choice([1, -1])
+    sample1 = player1.create_sample(actions, color2)
+    sample2 = player2.create_sample(actions, color1)
 
-    tokens_ls, actions, reward, color = mcts.play_game(model,
-                                                       params1, params2,
-                                                       num_mcts_sim1, num_mcts_sim2,
-                                                       dirichlet_alpha,
-                                                       record_player)
-
-    tokens = np.zeros((200, 5), dtype=np.uint8)
-    tokens[:min(200, len(tokens_ls))] = tokens_ls[:200]
-
-    mask = np.zeros(200, dtype=np.uint8)
-    mask[:len(tokens_ls)] = 1
-
-    actions = actions[tokens[:, 4]]
-    reward = reward + 3
-
-    return Sample(tokens, mask, actions, reward, color)
+    return sample1, sample2
 
 
 def start_testplay_process(queue: mp.Queue, num_games, num_mcts_sim, dirichlet_alpha):
@@ -104,7 +97,7 @@ def main(n_clients=30,
          buffer_size=100000,
          batch_size=256,
          update_period=400,
-         num_mcts_sim=50,
+         num_mcts_sim=200,
          dirichlet_alpha=0.3):
 
     wandb.init(project="geister-zero",
@@ -133,7 +126,7 @@ def main(n_clients=30,
         process.start()
 
     replay_buffer = ReplayBuffer(buffer_size=buffer_size, seq_length=game.MAX_TOKEN_LENGTH)
-    # replay_buffer.load('replay_buffer')
+    replay_buffer.load('replay_buffer')
 
     while True:
         for i in tqdm(range(update_period)):
@@ -149,11 +142,10 @@ def main(n_clients=30,
 
         save_checkpoint(state)
 
-        if (n_updates.value % 10 == 0) and not result_testplay_queue.empty():
+        if False and (n_updates.value % 10 == 0) and not result_testplay_queue.empty():
             result = result_testplay_queue.get()
 
-            wandb.log({"step": state.epoch,
-                       "test_play": result})
+            wandb.log({"step": state.epoch, "test_play": result})
 
             if result > 0.55:
                 checkpoints.save_checkpoint(
