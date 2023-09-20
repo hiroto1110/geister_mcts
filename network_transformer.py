@@ -547,7 +547,7 @@ def main_test(model, state, data):
 
 
 def main():
-    dir_name = 'replay_buffer_1'
+    dir_name = 'replay_buffer'
 
     tokens_buffer = np.load(f'{dir_name}/tokens.npy')
     mask_buffer = np.load(f'{dir_name}/mask.npy')

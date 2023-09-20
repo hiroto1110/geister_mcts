@@ -82,29 +82,29 @@ class SimulationState:
     def create_init_tokens(self):
         return [[self.color_p[i], i, self.pieces_p[i] % 6, self.pieces_p[i] // 6, 0] for i in range(8)]
 
-    def step_afterstate(self, info: AfterstateInfo, color: int) -> List[List[int]]:
-        self.color_o[info.piece_id] = color
+    def step_afterstate(self, afterstate: AfterstateInfo, color: int) -> List[List[int]]:
+        self.color_o[afterstate.piece_id] = color
 
-        if info.type == AfterstateType.CAPTURING:
+        if afterstate.type == AfterstateType.CAPTURING:
             self.update_is_done_caused_by_capturing()
 
             return [[
                 color + 2,
-                info.piece_id + 8,
+                afterstate.piece_id + 8,
                 6, 6, self.n_ply
             ]]
 
-        elif info.type == AfterstateType.ESCAPING:
+        elif afterstate.type == AfterstateType.ESCAPING:
             if color == BLUE:
                 self.is_done = True
                 self.winner = -1
                 self.win_type = WinType.ESCAPE
 
-            pos = self.pieces_o[info.piece_id]
+            pos = self.pieces_o[afterstate.piece_id]
 
             return [[
                 color + 2,
-                info.piece_id + 8,
+                afterstate.piece_id + 8,
                 pos % 6,
                 pos // 6,
                 self.n_ply

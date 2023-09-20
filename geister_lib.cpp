@@ -1,5 +1,6 @@
 ﻿#include <iostream>
 #include <vector>
+#include <sstream>
 #include <chrono>
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -9,13 +10,38 @@ namespace py = pybind11;
 #define ulong unsigned long long
 
 #define popcount __builtin_popcountll
+// #define popcount __popcnt64
 #define x_to_bit(x) (1ULL << (x))
 
 ulong first_bit(ulong b) {
 	return b & (~b + 1);
 }
 
+ulong tzcnt(ulong n)
+{
+	return(popcount(~n & (n - 1)));
+}
+
 using namespace std;
+
+int index_of(vector<int>* v, int element) {
+	for (int i = 0; i < 8; i++) {
+		if (v->at(i) == element)
+			return i;
+	}
+	return -1;
+}
+
+string vector_to_string(vector<int>* vec) {
+	std::stringstream ss;
+	for (auto it = vec->begin(); it != vec->end(); it++) {
+		if (it != vec->begin()) {
+			ss << " ";
+		}
+		ss << *it;
+	}
+	return ss.str();
+}
 
 struct Board {
 	ulong pb, pr, o;
@@ -133,18 +159,62 @@ const int WIN_BLUE4 = 2;
 const int WIN_RED4 = 3;
 
 struct SearchParam {
+	vector<int> pos_p, pos_o;
 	int n_cap_ob;
 	ulong escape_mask_p, escape_mask_o;
 
-	SearchParam(int n_cap_ob, ulong escape_mask_p, ulong escape_mask_o) {
+	SearchParam(vector<int> pos_p, vector<int> pos_o, int n_cap_ob, ulong escape_mask_p, ulong escape_mask_o) {
+		this->pos_p = pos_p;
+		this->pos_o = pos_o;
+
 		this->n_cap_ob = n_cap_ob;
 		
 		this->escape_mask_p = escape_mask_p;
 		this->escape_mask_o = escape_mask_o;
 	}
+
+	void apply_move(ulong move, int d, int player) {
+		vector<int>* pos_v = player == 1 ? &this->pos_p : &this->pos_o;
+		int pos = tzcnt(move);
+
+		//cout << vector_to_string(pos_v) << ", " << pos << ", " << d << ": do" << endl;
+		int id = index_of(pos_v, pos);
+
+		pos_v->at(id) = pos + DIRECTIONS[d];
+	}
+
+	void undo_apply_move(ulong move, int d, int player) {
+		vector<int>* pos_v = player == 1 ? &this->pos_p : &this->pos_o;
+		int pos = tzcnt(move);
+
+		//cout << vector_to_string(pos_v) << ", " << pos << ", " << d << ": undo" << endl;
+		int id = index_of(pos_v, pos + DIRECTIONS[d]);
+		if (id == -1) {
+			//cout << vector_to_string(pos_v) << ", " << pos << ", " << d << ": undo" << endl;
+		}
+
+		pos_v->at(id) = pos;
+	}
 };
 
-bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type) {
+struct SolveResult
+{
+	int eval;
+	int escaped_id;
+
+	SolveResult(int eval, int escaped_id) {
+		this->eval = eval;
+		this->escaped_id = escaped_id;
+	}
+};
+
+SolveResult get_max_result(SolveResult r1, SolveResult r2, int player) {
+	return r1.eval * player > r2.eval * player ? r1 : r2;
+}
+
+SolveResult SOLVE_RESULT_NONE = {0, -1};
+
+bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type, int* escaped_id) {
 	if (b->pb == 0) {
 		*winner = -1;
 		*type = WIN_BLUE4;
@@ -171,9 +241,12 @@ bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type) 
 		}
 	}
 	else {
-		if ((b->o & search->escape_mask_o) != 0) {
+		ulong escaped = b->o & search->escape_mask_o;
+
+		if (escaped != 0) {
 			*winner = -1;
 			*type = WIN_ESCAPE;
+			*escaped_id = index_of(&search->pos_o, tzcnt(escaped));
 			return true;
 		}
 	}
@@ -182,20 +255,21 @@ bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type) 
 	return false;
 }
 
-int solve(SearchParam* search, Board* board, int alpha, int beta, int player, int depth) {
+SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int player, int depth) {
 	int winner = 0;
 	int type = 0;
+	int escaped_id = -1;
 
-	if (is_done(search, board, player, &winner, &type))
-		return winner * player * (depth + 1);
+	if (is_done(search, board, player, &winner, &type, &escaped_id))
+		return { winner * (depth + 1),  escaped_id };
 
 	if (depth <= 0)
-		return 0;
+		return SOLVE_RESULT_NONE;
 
 	vector<ulong> moves = get_moves(board, player);
 
 	Board* next_board = new Board(0, 0, 0);
-	int max_e = -1000000;
+	SolveResult max_result = {-1000000 * player, -1};
 	ulong move;
 
 	for (int d = 0; d < 4; d++)
@@ -206,28 +280,28 @@ int solve(SearchParam* search, Board* board, int alpha, int beta, int player, in
 		{
 			moves_d = moves_d ^ move;
 
-			//cout << static_cast<std::bitset<36>>(move) << ", " << d << endl;
-			step(board, next_board, move, d);
-			//cout << b_to_string(board);
-			//cout << b_to_string(next_board);
-			int e = -solve(search, next_board, -beta, -alpha, -player, depth - 1);
+			search->apply_move(move, d, player);
 
-			max_e = max(max_e, e);
-			alpha = max(alpha, e);
+			step(board, next_board, move, d);
+			SolveResult result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
+
+			search->undo_apply_move(move, d, player);
+
+			max_result = get_max_result(max_result, result, player);
+			alpha = max(alpha, result.eval * player);
 
 			if (alpha >= beta)
 			{
 				delete next_board;
-				return max_e;
+				return max_result;
 			}
 		}
 	}
 	delete next_board;
-
-	return max_e;
+	return max_result;
 }
 
-int solve_root(SearchParam* search, Board* board, int alpha, int beta, int player, int depth, ulong* max_move, int* max_d) {
+int solve_root(SearchParam* search, Board* board, int alpha, int beta, int player, int depth, ulong* max_move, int* max_d, int* escaped_id) {
 	vector<ulong> moves = get_moves(board, player);
 
 	Board* next_board = new Board(0, 0, 0);
@@ -242,35 +316,40 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 		{
 			moves_d = moves_d ^ move;
 
-			step(board, next_board, move, d);
-			int e = -solve(search, next_board, -beta, -alpha, -player, depth - 1);
+			search->apply_move(move, d, player);
 
-			if (e > max_e) {
-				max_e = e;
+			step(board, next_board, move, d);
+			SolveResult result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
+
+			search->undo_apply_move(move, d, player);
+
+			if (result.eval * player > max_e) {
+				max_e = result.eval * player;
 				*max_d = d;
 				*max_move = move;
+				*escaped_id = result.escaped_id;
 			}
-			alpha = max(alpha, e);
+			alpha = max(alpha, result.eval * player);
 		}
 	}
 	delete next_board;
 
-	return max_e;
+	return max_e * player;
 }
 
-ulong tzcnt(ulong n)
-{
-	return(popcount(~n & (n - 1)));
-}
-
-int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::array_t<int> pieces_o, int n_cap_ob, int player, int depth) {
+py::tuple find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::array_t<int> pieces_o, int n_cap_ob, int turn_player, int player, int depth) {
 	ulong pb = 0;
 	ulong pr = 0;
 	ulong o = 0;
 
+	vector<int> pos_p;
+	vector<int> pos_o;
+
 	for (int i = 0; i < 8; i++) {
 		int p_i = *pieces_p.data(i);
 		int c_i = *colors_p.data(i);
+
+		pos_p.push_back(p_i);
 
 		if (p_i >= 0) {
 			if (c_i == 1)
@@ -280,6 +359,8 @@ int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::arr
 		}
 
 		int o_i = *pieces_o.data(i);
+		pos_o.push_back(o_i);
+
 		if (o_i >= 0)
 			o |= x_to_bit(o_i);
 	}
@@ -287,24 +368,25 @@ int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::arr
 	SearchParam* search;
 
 	if (player == 1) {
-		search = new SearchParam(n_cap_ob, ESCAPE_MASK_P, ESCAPE_MASK_O);
+		search = new SearchParam(pos_p, pos_o, n_cap_ob, ESCAPE_MASK_P, ESCAPE_MASK_O);
 	}
 	else {
-		search = new SearchParam(n_cap_ob, ESCAPE_MASK_O, ESCAPE_MASK_P);
+		search = new SearchParam(pos_p, pos_o, n_cap_ob, ESCAPE_MASK_O, ESCAPE_MASK_P);
 	}
 
 	Board* board = new Board(pb, pr, o);
 
 	ulong max_move;
 	int max_d;
+	int escaped_id;
 
-	int e = solve_root(search, board, -100, 100, 1, depth, &max_move, &max_d);
+	int e = solve_root(search, board, -100, 100, turn_player, depth, &max_move, &max_d, &escaped_id);
 
 	delete search;
 	delete board;
 
-	if (e <= 0)
-		return -1;
+	if (e == 0)
+		return py::make_tuple(-1, e, -1);
 
 	int pos = tzcnt(max_move);
 
@@ -312,36 +394,44 @@ int find_checkmate(py::array_t<int> pieces_p, py::array_t<int> colors_p, py::arr
 		int p_i = *pieces_p.data(i);
 
 		if (p_i == pos)
-			return i * 4 + max_d;
+		{
+			int action = i * 4 + max_d;
+			return py::make_tuple(action, e, escaped_id);
+		}
 	}
-
-	return -1;
+	return py::make_tuple(-1, e, -1);
 }
 
 PYBIND11_MODULE(geister_lib, m) {
-	m.doc() = "pybind11 example";
 	m.def("find_checkmate", &find_checkmate);
 }
 
-/*int main()
+/*
+int main()
 {
 	ulong pb = 0b000000'100000'000000'010000'000000'000000ULL;
 	ulong pr = 0b000000'010000'000000'100000'000000'000000ULL;
-	ulong o = 0b010001'000011'000001'000000'000000'000000ULL;
-	Board* board = new Board(pb, pr, o);
+	ulong ob = 0b010001'000011'000000'000000'000000'000000ULL;
+	ulong o_r = 0b000000'000000'000001'000000'000000'000000ULL;
+	// Board* board = new Board(pb, pr, ob | o_r);
+	Board* board = new Board(ob, o_r, pb | pr);
 	cout << b_to_string(board) << endl;
 
-	SearchParam* search = new SearchParam(3, 0, 0);
+	vector<int> pos_o = vector<int>{16, 17, 28, 29};
+	vector<int> pos_p = vector<int>{18, 24, 25, 30, 34};
+	SearchParam* search = new SearchParam(pos_p, pos_o, 3, ESCAPE_MASK_O, ESCAPE_MASK_P);
 
 	auto start = std::chrono::system_clock::now();
 
-	int e = solve(search, board, 0, 100, 1, 7);
+	SolveResult result = solve(search, board, -100, 100, 1, 7);
 
 	auto end = std::chrono::system_clock::now();
 	double time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0);
 
-	cout << "Eval : " << e << endl;
+	cout << "Eval : " << result.eval << endl;
+	cout << "Escaped ID : " << result.escaped_id << endl;
 	cout << "Time : " << time << "\r\n";
 
 	return 0;
-}*/
+}
+*/

@@ -47,6 +47,9 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
 
         players = [params_to_player(params) for params in params_list]
 
+        for player in players:
+            player.n_ply_to_apply_noise = 0
+
         while not league_queue.empty():
             next_game = league_queue.get()
 
@@ -102,8 +105,8 @@ def main(n_clients=30,
 
         result = pipe.recv()
 
-        result_table[result.agent1, result.agent2, result.reward + 3] += 1
-        result_table[result.agent2, result.agent1, -result.reward + 3] += 1
+        result_table[result.agent1, result.agent2, result.reward] += 1
+        result_table[result.agent2, result.agent1, 6 - result.reward] += 1
 
     np.save("league_result.npy", result_table)
 
@@ -135,6 +138,9 @@ def main(n_clients=30,
 
 def visiblize():
     result_table = np.load('league_result.npy')
+
+    print(result_table[0])
+    return
 
     n_games = result_table.sum(axis=(2))
     n_games[n_games == 0] = 1
