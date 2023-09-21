@@ -67,7 +67,7 @@ def create_model():
 
 
 def main(n_clients=30,
-         buffer_size=100000,
+         buffer_size=200000,
          batch_size=128,
          num_batches=40,
          update_period=200,

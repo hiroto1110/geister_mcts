@@ -362,12 +362,10 @@ def simulate(node: Node,
 
 
 def find_checkmate(state: game.SimulationState, player: int, depth: int):
-    n_cap_ob = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
-
     return geister_lib.find_checkmate(state.pieces_p,
                                       state.color_p,
                                       state.pieces_o,
-                                      n_cap_ob,
+                                      state.color_o,
                                       player,
                                       state.root_player,
                                       depth)
@@ -413,11 +411,12 @@ def select_action_with_mcts(node: Node,
     action, e, escaped_id = find_checkmate(state, 1, depth=7)
 
     if e < 0:
-        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        #print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        pass
 
     if e > 0:
         pass
-        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        #print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
     else:
         node.setup_valid_actions(state, 1)
@@ -498,7 +497,7 @@ class PlayerMCTS:
         self.model = model
         self.num_mcts_sim = num_mcts_sim
         self.dirichlet_alpha = dirichlet_alpha
-        self.n_ply_to_apply_noise = 30
+        self.n_ply_to_apply_noise = 20
         self.tokens = []
 
         self.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
@@ -654,13 +653,16 @@ def test():
 
     win_count = np.zeros(7)
 
-    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.3)
-    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.3)
+    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1)
+    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1)
+
+    player1.n_ply_to_apply_noise = 0
+    player2.n_ply_to_apply_noise = 0
 
     player1.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
     player2.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
 
-    for i in range(2):
+    for i in range(1):
         play_game(player1, player2, game_length=200, print_board=True)
 
         # winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
