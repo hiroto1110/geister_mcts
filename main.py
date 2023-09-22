@@ -28,11 +28,11 @@ def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, diri
         player1 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
         player2 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
 
-        # weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
+        weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
 
         while True:
-            # player1.weight_v = np.random.normal(weight_v_default, scale=0.3)
-            # player2.weight_v = np.random.normal(weight_v_default, scale=0.3)
+            player1.weight_v = np.random.normal(weight_v_default, scale=0.3)
+            player2.weight_v = np.random.normal(weight_v_default, scale=0.3)
 
             sample1, sample2 = selfplay(player1, player2)
 
@@ -63,7 +63,7 @@ PREFIX = 'geister_'
 
 
 def create_model():
-    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=4)
 
 
 def main(n_clients=30,
@@ -77,13 +77,13 @@ def main(n_clients=30,
     wandb.init(project="geister-zero",
                config={"dirichlet_alpha": dirichlet_alpha})
 
-    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    model = network.TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=4)
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=CKPT_DIR, prefix=PREFIX, target=None)
     state = network.TrainState.create(
         apply_fn=model.apply,
         params=ckpt['params'],
-        tx=optax.adam(learning_rate=0.005),
+        tx=optax.adam(learning_rate=0.0005),
         dropout_rng=ckpt['dropout_rng'],
         epoch=ckpt['epoch'])
 
@@ -109,24 +109,43 @@ def main(n_clients=30,
             sample = pipe.recv()
             replay_buffer.add_sample(sample)
 
-        state = train_and_log(state, replay_buffer, batch_size, num_batches, update_period)
+        if state.epoch % (buffer_size // update_period) == 0:
+            replay_buffer.save('replay_buffer', append=n_updates.value > 0)
+
+        log_dict = {"step": state.epoch}
+
+        log_games(replay_buffer, update_period, log_dict)
+        state = train_and_log(state, replay_buffer, batch_size, num_batches, log_dict)
+
+        wandb.log(log_dict)
 
         save_checkpoint(state)
 
         n_updates.value += 1
 
-        replay_buffer.save('replay_buffer')
+
+def log_games(buffer: ReplayBuffer, num_games: int, log_dict):
+    batch = buffer.get_last__minibatch(batch_size=num_games)
+
+    n_ply = batch.tokens[:, :, game.Token.T].max(axis=1)
+
+    log_dict["n_ply"] = n_ply.mean()
+    log_dict["n_ply histgram"] = wandb.Histogram(n_ply, num_bins=50)
+
+    value = batch.reward.flatten()
+    value_count = np.bincount(np.abs(value - 3), minlength=4)
+
+    for i in range(4):
+        log_dict[f'value/{i}'] = value_count[i] / num_games
 
 
 def train_and_log(state: network.TrainState,
                   buffer: ReplayBuffer,
                   train_batch_size: int,
                   num_batches: int,
-                  test_batch_size: int):
+                  log_dict: dict):
 
-    num_batches = min(num_batches, len(buffer) // train_batch_size)
-
-    if num_batches <= 0:
+    if len(buffer) < num_batches * train_batch_size:
         return state
 
     info = np.zeros((num_batches, 3))
@@ -142,31 +161,10 @@ def train_and_log(state: network.TrainState,
     info = info.mean(axis=0)
     loss /= num_batches
 
-    test_batch = buffer.get_last__minibatch(batch_size=test_batch_size)
-    _, test_loss, test_info = network.train_step(state, *test_batch.astuple(), eval=True)
-
-    n_ply = test_batch.tokens[:, :, game.Token.T].max(axis=1)
-
-    log_dict = {"step": state.epoch,
-                "train/loss": loss,
-                "train/loss policy": info[0],
-                "train/loss value": info[1],
-                "train/loss color": info[2],
-
-                "test/loss": test_loss,
-                "test/loss policy": test_info[0],
-                "test/loss value": test_info[1],
-                "test/loss color": test_info[2],
-
-                "n_ply": n_ply.mean(),
-                "n_ply histgram": wandb.Histogram(n_ply, num_bins=50)}
-
-    value = test_batch.reward.flatten()
-    value_count = np.bincount(np.abs(value - 3), minlength=4)
-
-    log_dict.update({f'value/{i}': value_count[i] / test_batch_size for i in range(4)})
-
-    wandb.log(log_dict)
+    log_dict["train/loss"] = loss
+    log_dict["train/loss policy"] = info[0]
+    log_dict["train/loss value"] = info[1]
+    log_dict["train/loss color"] = info[2]
 
     return state.replace(epoch=state.epoch + 1)
 

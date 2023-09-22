@@ -415,9 +415,9 @@ def fit(state, ckpt_dir, prefix, train_data, test_data, epochs, batch_size):
 
         print(f'Epoch: {epoch}, ', end='')
         print(f'Loss: ({loss_train:.3f}, {loss_test:.3f}), ', end='')
-        print(f'Pi: ({info_train[0]:.3f}, {info_test[0]:.3f}), ', end='')
+        print(f'P: ({info_train[0]:.3f}, {info_test[0]:.3f}), ', end='')
         print(f'V: ({info_train[1]:.3f}, {info_test[1]:.3f}), ', end='')
-        print(f'Color: ({info_train[2]:.3f}, {info_test[2]:.3f})')
+        print(f'C: ({info_train[2]:.3f}, {info_test[2]:.3f})')
 
         state = state.replace(epoch=state.epoch + 1)
         checkpoints.save_checkpoint(
@@ -490,11 +490,11 @@ def main_test_performance(data):
 def main_train(model, state, data):
     train_n = int(len(data[0]) * 0.8)
 
-    train_data = [d[:train_n] for d in data]
+    train_data = [d[20000:train_n] for d in data]
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'geister_test_'
+    prefix = 'test_'
 
     checkpoints.save_checkpoint(
         ckpt_dir=ckpt_dir, prefix=prefix,
@@ -505,7 +505,7 @@ def main_train(model, state, data):
     state = fit(state, ckpt_dir, prefix,
                 train_data=train_data,
                 test_data=test_data,
-                epochs=8, batch_size=32)
+                epochs=16, batch_size=128)
 
     end = time.perf_counter()
     print(end - start)
@@ -554,11 +554,19 @@ def main():
     policy_buffer = np.load(f'{dir_name}/policy.npy')
     reward_buffer = np.load(f'{dir_name}/reward.npy')
     pieces_buffer = np.load(f'{dir_name}/pieces.npy')
-    data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
 
+    indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
+    np.random.shuffle(indices)
+    tokens_buffer = tokens_buffer[indices]
+    mask_buffer = mask_buffer[indices]
+    policy_buffer = policy_buffer[indices]
+    reward_buffer = reward_buffer[indices]
+    pieces_buffer = pieces_buffer[indices]
+
+    data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=4)
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 

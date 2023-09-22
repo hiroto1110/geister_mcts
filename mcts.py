@@ -411,12 +411,12 @@ def select_action_with_mcts(node: Node,
     action, e, escaped_id = find_checkmate(state, 1, depth=7)
 
     if e < 0:
-        #print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
         pass
 
     if e > 0:
         pass
-        #print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
     else:
         node.setup_valid_actions(state, 1)
@@ -507,7 +507,7 @@ class PlayerMCTS:
 
     def init_state(self, state: game.SimulationState):
         self.state = state
-        self.pieces_history = np.zeros((100, 8), dtype=np.int8)
+        self.pieces_history = np.zeros((101, 8), dtype=np.int8)
         self.tokens = []
 
         self.node, tokens = create_root_node(state, self.pred_state, self.model, self.weight_v)
@@ -554,7 +554,7 @@ def play_test_game(pred_state: PredictState,
     state1, state2 = game.get_initial_state_pair()
     node, _ = create_root_node(state1, pred_state, model, 1)
 
-    pieces_history = np.zeros((100, 8), dtype=np.int8)
+    pieces_history = np.zeros((101, 8), dtype=np.int8)
 
     for i in range(game_length):
         if player == 1:

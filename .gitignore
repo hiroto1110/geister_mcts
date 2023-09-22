@@ -1,9 +1,7 @@
 __pycache__/
 .venv/
 build/
-cython/
-checkpoints/
-checkpoints_100/
+checkpoints*/
 log_gat/
 graph/
 log/

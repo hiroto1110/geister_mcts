@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, astuple
 import numpy as np
 import geister as game
@@ -71,12 +72,32 @@ class ReplayBuffer:
         self.n_samples = max(self.n_samples, self.index + 1)
         self.index = (self.index + 1) % self.buffer_size
 
-    def save(self, save_dir):
-        np.save(save_dir + '/tokens.npy', self.tokens_buffer)
-        np.save(save_dir + '/mask.npy', self.mask_buffer)
-        np.save(save_dir + '/policy.npy', self.policy_buffer)
-        np.save(save_dir + '/reward.npy', self.reward_buffer)
-        np.save(save_dir + '/pieces.npy', self.pieces_buffer)
+    def save(self, save_dir: str, append=False):
+        if append and os.path.isfile(save_dir + '/tokens.npy'):
+
+            tokens_buffer = np.load(save_dir + '/tokens.npy')
+            mask_buffer = np.load(save_dir + '/mask.npy')
+            policy_buffer = np.load(save_dir + '/policy.npy')
+            reward_buffer = np.load(save_dir + '/reward.npy')
+            pieces_buffer = np.load(save_dir + '/pieces.npy')
+
+            tokens_buffer = np.concatenate([tokens_buffer, self.tokens_buffer], axis=0)
+            mask_buffer = np.concatenate([mask_buffer, self.mask_buffer], axis=0)
+            policy_buffer = np.concatenate([policy_buffer, self.policy_buffer], axis=0)
+            reward_buffer = np.concatenate([reward_buffer, self.reward_buffer], axis=0)
+            pieces_buffer = np.concatenate([pieces_buffer, self.pieces_buffer], axis=0)
+        else:
+            tokens_buffer = self.tokens_buffer
+            mask_buffer = self.mask_buffer
+            policy_buffer = self.policy_buffer
+            reward_buffer = self.reward_buffer
+            pieces_buffer = self.pieces_buffer
+
+        np.save(save_dir + '/tokens.npy', tokens_buffer)
+        np.save(save_dir + '/mask.npy', mask_buffer)
+        np.save(save_dir + '/policy.npy', policy_buffer)
+        np.save(save_dir + '/reward.npy', reward_buffer)
+        np.save(save_dir + '/pieces.npy', pieces_buffer)
 
     def load(self, save_dir):
         self.tokens_buffer = np.load(save_dir + '/tokens.npy')

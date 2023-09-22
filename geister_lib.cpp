@@ -295,8 +295,12 @@ SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int pl
 	int type = 0;
 	int escaped_id = -1;
 
-	if (is_done(search, board, player, &winner, &type, &escaped_id))
-		return { winner * (depth + 1),  escaped_id };
+	if (is_done(search, board, player, &winner, &type, &escaped_id)) {
+		if(type == WIN_ESCAPE)
+			return {winner * (depth + 1),  escaped_id};
+		else
+			return {0, -1};
+	}
 
 	if (depth <= 0)
 		return SOLVE_RESULT_NONE;
