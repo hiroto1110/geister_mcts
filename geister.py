@@ -85,14 +85,25 @@ class SimulationState:
     def step_afterstate(self, afterstate: AfterstateInfo, color: int) -> List[List[int]]:
         self.color_o[afterstate.piece_id] = color
 
+        if np.sum(self.color_o == RED) == 4:
+            tokens = [(3, i + 8,
+                       self.pieces_o[i] % 6,
+                       self.pieces_o[i] // 6,
+                       self.n_ply)
+                      for i, color in enumerate(self.color_o) if color == UNCERTAIN_PIECE]
+
+            self.color_o[self.color_o == UNCERTAIN_PIECE] = BLUE
+        else:
+            tokens = []
+
         if afterstate.type == AfterstateType.CAPTURING:
             self.update_is_done_caused_by_capturing()
 
-            return [[
+            return [(
                 color + 2,
                 afterstate.piece_id + 8,
                 6, 6, self.n_ply
-            ]]
+            )] + tokens
 
         elif afterstate.type == AfterstateType.ESCAPING:
             if color == BLUE:
@@ -102,20 +113,26 @@ class SimulationState:
 
             pos = self.pieces_o[afterstate.piece_id]
 
-            return [[
+            return [(
                 color + 2,
                 afterstate.piece_id + 8,
                 pos % 6,
                 pos // 6,
                 self.n_ply
-            ]]
+            )] + tokens
 
-    def undo_step_afterstate(self, info: AfterstateInfo):
+    def undo_step_afterstate(self, info: AfterstateInfo, tokens: List[List[int]]):
         self.color_o[info.piece_id] = UNCERTAIN_PIECE
 
         self.is_done = False
         self.win_type = WinType.DRAW
         self.winner = 0
+
+        if len(tokens) == 1:
+            return
+
+        for token in tokens[1:]:
+            self.color_o[token[Token.ID - 8]] = UNCERTAIN_PIECE
 
     def step(self, action: int, player: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
         if player == 1:
@@ -160,12 +177,18 @@ class SimulationState:
         self.update_is_done_caused_by_capturing()
 
         escaped = (self.pieces_o == self.escape_pos_o[0]) | (self.pieces_o == self.escape_pos_o[1])
-        escaped = escaped & (self.color_o == UNCERTAIN_PIECE)
-        escaped_id = np.where(escaped)[0]
+        escaped_u = escaped & (self.color_o == UNCERTAIN_PIECE)
+        escaped_u_id = np.where(escaped_u)[0]
 
-        if len(escaped_id) > 0:
-            escaped_id = escaped_id[0]
-            info.append(AfterstateInfo(AfterstateType.ESCAPING, escaped_id))
+        if len(escaped_u_id) > 0:
+            escaped_u_id = escaped_u_id[0]
+            info.append(AfterstateInfo(AfterstateType.ESCAPING, escaped_u_id))
+
+        escaped_b = escaped & (self.color_o == BLUE)
+        if np.any(escaped_b):
+            self.is_done = True
+            self.winner = -1
+            self.win_type = WinType.ESCAPE
 
         return tokens, info
 

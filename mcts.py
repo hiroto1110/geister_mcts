@@ -230,7 +230,7 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    action, e, escaped_id = find_checkmate(state, player, depth=6)
+    action, e, escaped_id = find_checkmate(state, player, depth=4)
 
     if e > 0:
         next_node = Node(node.root_player, node.weight_v)
@@ -308,7 +308,7 @@ def simulate_afterstate(node: AfterStateNode,
         else:
             v = simulate(child, state, player, pred_state)
 
-    state.undo_step_afterstate(node.afterstate)
+    state.undo_step_afterstate(node.afterstate, tokens)
 
     node.n[color] += 1
     node.w[color] += v
@@ -404,12 +404,13 @@ def select_action_with_mcts(node: Node,
                             eps=0.25,
                             is_select_by_argmax=True,
                             pieces_history: np.ndarray = None,
-                            max_duplicates=0):
+                            max_duplicates=0,
+                            checkmate_search_depth=7):
 
     if should_do_visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0])
 
-    action, e, escaped_id = find_checkmate(state, 1, depth=10)
+    action, e, escaped_id = find_checkmate(state, 1, depth=checkmate_search_depth)
 
     if e < 0:
         # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
