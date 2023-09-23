@@ -150,12 +150,10 @@ class SimulationState:
             if color == UNCERTAIN_PIECE:
                 info.append(AfterstateInfo(AfterstateType.CAPTURING, p_cap_id))
 
-            elif color == RED:
+            elif color == RED or color == BLUE:
                 tokens.append([
                     color + 2, p_cap_id + 8,
                     6, 6, self.n_ply])
-            else:
-                print(f"CERTAIN_PIECE can't be BLUE: {color}")
 
         self.pieces_p[p_id] = pos_next
 

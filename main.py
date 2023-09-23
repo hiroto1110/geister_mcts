@@ -25,8 +25,8 @@ def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, diri
 
         last_n_updates = n_updates.value
 
-        player1 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
-        player2 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha)
+        player1 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
+        player2 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
 
         weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
 

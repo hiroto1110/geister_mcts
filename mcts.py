@@ -230,7 +230,7 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    action, e, escaped_id = find_checkmate(state, player, depth=4)
+    action, e, escaped_id = find_checkmate(state, player, depth=6)
 
     if e > 0:
         next_node = Node(node.root_player, node.weight_v)
@@ -371,7 +371,7 @@ def find_checkmate(state: game.SimulationState, player: int, depth: int):
                                       depth)
 
 
-def create_invalid_actions(actions, state: game.SimulationState, pieces_history: np.ndarray):
+def create_invalid_actions(actions, state: game.SimulationState, pieces_history: np.ndarray, max_duplicates=0):
     invalid_actions = []
     exist_valid_action = False
 
@@ -383,7 +383,7 @@ def create_invalid_actions(actions, state: game.SimulationState, pieces_history:
 
         state.undo_step(a, 1, tokens, info)
 
-        if np.any(is_equals):
+        if np.sum(is_equals) > max_duplicates:
             invalid_actions.append(a)
         else:
             exist_valid_action = True
@@ -403,12 +403,13 @@ def select_action_with_mcts(node: Node,
                             alpha: float = None,
                             eps=0.25,
                             is_select_by_argmax=True,
-                            pieces_history: np.ndarray = None):
+                            pieces_history: np.ndarray = None,
+                            max_duplicates=0):
 
     if should_do_visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0])
 
-    action, e, escaped_id = find_checkmate(state, 1, depth=7)
+    action, e, escaped_id = find_checkmate(state, 1, depth=10)
 
     if e < 0:
         # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
@@ -422,7 +423,7 @@ def select_action_with_mcts(node: Node,
         node.setup_valid_actions(state, 1)
 
         if pieces_history is not None:
-            node.invalid_actions = create_invalid_actions(node.valid_actions, state, pieces_history)
+            node.invalid_actions = create_invalid_actions(node.valid_actions, state, pieces_history, max_duplicates)
             node.apply_invalid_actions()
 
         if alpha is not None:
@@ -491,13 +492,16 @@ class PlayerMCTS:
                  params,
                  model: TransformerDecoderWithCache,
                  num_mcts_sim: int,
-                 dirichlet_alpha: float) -> None:
+                 dirichlet_alpha: float,
+                 n_ply_to_apply_noise: int,
+                 max_duplicates: int) -> None:
 
         self.pred_state = PredictState(model.apply, params)
         self.model = model
         self.num_mcts_sim = num_mcts_sim
         self.dirichlet_alpha = dirichlet_alpha
-        self.n_ply_to_apply_noise = 20
+        self.n_ply_to_apply_noise = n_ply_to_apply_noise
+        self.max_duplicates = max_duplicates
         self.tokens = []
 
         self.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
@@ -522,7 +526,8 @@ class PlayerMCTS:
                                          num_sim=self.num_mcts_sim,
                                          alpha=self.dirichlet_alpha,
                                          is_select_by_argmax=is_select_by_argmax,
-                                         pieces_history=self.pieces_history)
+                                         pieces_history=self.pieces_history,
+                                         max_duplicates=self.max_duplicates)
 
         return action
 
@@ -642,7 +647,7 @@ def test():
 
     model_with_cache = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
 
-    ckpt_dir = './checkpoints/'
+    ckpt_dir = './checkpoints_backup_193/'
     prefix = 'geister_'
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)

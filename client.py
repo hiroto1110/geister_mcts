@@ -14,15 +14,14 @@ DIRECTION_NAMES = ['N', 'W', 'E', 'S']
 
 
 class Client:
-    def __init__(self, ip, port, params, num_sim: int, alpha: float) -> None:
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((ip, port))
-
-        self.model = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    def __init__(self, params, num_sim: int, alpha: float) -> None:
+        self.model = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=4)
         self.pred_state = mcts.PredictState(self.model.apply, params)
 
         self.num_sim = num_sim
         self.alpha = alpha
+
+        self.win_count = [0, 0, 0]
 
     def send(self, s: str):
         self.socket.send(s.encode())
@@ -35,16 +34,32 @@ class Client:
         self.node, _ = mcts.create_root_node(self.state, self.pred_state, self.model)
 
     def select_next_action(self):
-        action = mcts.select_action_with_mcts(self.node, self.state, self.pred_state, self.num_sim, self.alpha)
+        if not self.state.is_done:
+            return mcts.select_action_with_mcts(self.node, self.state, self.pred_state, self.num_sim, self.alpha)
 
-        return action
+        assert self.state.win_type == game.WinType.ESCAPE
+
+        for i in range(2):
+            escaping_pos = self.state.escape_pos_p[i]
+            d_id = 1 if escaping_pos % 6 == 0 else 2
+
+            escaped = escaping_pos == self.state.pieces_p
+            if escaped.any():
+                p_id = np.where(escaped)[0][0]
+                action = p_id * 4 + d_id
+                return action
+
+        assert False
 
     def apply_player_action(self, action, color):
         tokens, info = self.state.step(action, 1)
 
+        if self.state.is_done:
+            return
+
         if len(info) > 0:
             for i in range(len(info)):
-                child_afterstate, _ = mcts.expand_afterstate(self.node, tokens, info[i], self.state, self.pred_state)
+                child_afterstate, _ = mcts.expand_afterstate(self.node, tokens, info[i:], self.state, self.pred_state)
                 tokens_afterstate = self.state.step_afterstate(info[i], color)
                 tokens += tokens_afterstate
 
@@ -71,7 +86,10 @@ class Client:
         board[self.state.pieces_o[self.state.pieces_o >= 0]] = -3
         print(str(board.reshape((6, 6))).replace('0', ' '))
 
-    def start(self):
+    def start(self, ip, port):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((ip, port))
+
         set_msg = self.recv()
         print('RECV:', set_msg)
 
@@ -82,15 +100,10 @@ class Client:
         responce = self.recv()
         print('RECV:', responce)
 
+        board_msg = self.recv()
+        print('RECV:', board_msg)
+
         while True:
-            board_msg = self.recv()
-            print('RECV:', board_msg)
-
-            is_done, winner = is_done_message(board_msg)
-
-            if is_done:
-                break
-
             pieces_o, _ = parse_board_str(board_msg)
             action_o = self.calc_opponent_action(pieces_o)
             self.apply_opponent_action(action_o)
@@ -106,12 +119,21 @@ class Client:
             action_responce = self.recv()
             print('RECV:', action_responce)
 
+            board_msg = self.recv()
+            print('RECV:', board_msg)
+
+            is_done, winner = is_done_message(board_msg)
+
+            if is_done:
+                self.win_count[winner + 1] += 1
+                break
+
             color = parse_action_ack(action_responce)
             self.apply_player_action(action, color)
 
             self.print_board()
 
-        print(f'Winner: {winner}')
+        self.socket.close()
 
 
 def format_set_message(color: np.ndarray) -> str:
@@ -180,15 +202,21 @@ def parse_board_str(s: str):
 
 def main(ip='127.0.0.1',
          port=10001,
-         num_sim=100,
+         num_sim=400,
          alpha=0.2):
 
-    ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints/', prefix='geister_', target=None)
-    client = Client(ip, port, ckpt['params'], num_sim, alpha)
+    ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints_backup_193/', prefix='geister_', target=None)
+    client = Client(ckpt['params'], num_sim, alpha)
 
-    for i in range(20):
-        client.init_state(game.create_random_color())
-        client.start()
+    for i in range(100):
+        try:
+            client.init_state(np.array([0, 0, 0, 0, 1, 1, 1, 1]))
+            client.start(ip, port)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        finally:
+            print(client.win_count)
 
 
 if __name__ == '__main__':

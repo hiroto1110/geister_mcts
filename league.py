@@ -13,7 +13,7 @@ from tqdm import tqdm
 from multiprocessing_util import MultiSenderPipe
 import network_transformer as network
 import mcts
-from main import PREFIX, CKPT_BACKUP_DIR
+from main import PREFIX
 
 
 @dataclass
@@ -26,9 +26,10 @@ class GameResult:
 def load_params(steps):
     params_list = []
 
-    for ckpt_dir, step in steps:
+    for ckpt_dir, n, step in steps:
+        model = network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=n)
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=PREFIX, step=step, target=None)
-        params_list.append(ckpt['params'])
+        params_list.append((model, ckpt['params']))
 
     return params_list
 
@@ -38,17 +39,12 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
     np.random.seed(seed)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        model = network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
-
         params_list = load_params(PARAMS_STEPS)
 
-        def params_to_player(params):
-            return mcts.PlayerMCTS(params, model, num_mcts_sim, dirichlet_alpha)
+        def params_to_player(model, params):
+            return mcts.PlayerMCTS(params, model, num_mcts_sim, dirichlet_alpha, 10, 1)
 
-        players = [params_to_player(params) for params in params_list]
-
-        for player in players:
-            player.n_ply_to_apply_noise = 0
+        players = [params_to_player(model, params) for model, params in params_list]
 
         while not league_queue.empty():
             next_game = league_queue.get()
@@ -59,12 +55,12 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
             result_sender.send(replace(next_game, reward=sample.reward))
 
 
-PARAMS_STEPS = [(CKPT_BACKUP_DIR, i * 100) for i in range(1, 31, 3)]
-# PARAMS_STEPS = [(CKPT_BACKUP_DIR, 1200), (CKPT_BACKUP_DIR, 1300), (CKPT_BACKUP_DIR, 1700)]
-# PARAMS_STEPS += [('checkpoints_100/', 1100), ('checkpoints_100/', 1400), ('checkpoints_100/', 1600)]
+# PARAMS_STEPS = [(CKPT_BACKUP_DIR, i * 100) for i in range(1, 31, 3)]
+PARAMS_STEPS = [('checkpoints_backup_193/', 4, i * 100) for i in range(1, 20, 2)]
+# PARAMS_STEPS += [('checkpoints_backup_189/', 2, 2800 + i * 100) for i in range(3)]
 
 
-def main(n_clients=14,
+def main(n_clients=6,
          num_games_per_combination=10,
          num_mcts_sim=50,
          dirichlet_alpha=0.1):
@@ -125,7 +121,7 @@ def main(n_clients=14,
 
     win_ratio = np.concatenate([win_ratio, win_ratio_mean], axis=1)
 
-    y_label = [i // 100 for _, i in PARAMS_STEPS]
+    y_label = [i // 100 for _, _, i in PARAMS_STEPS]
     x_label = y_label + ['total']
 
     plt.figure(figsize=(12, 8))
