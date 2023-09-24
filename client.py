@@ -35,7 +35,9 @@ class Client:
 
     def select_next_action(self):
         if not self.state.is_done:
-            return mcts.select_action_with_mcts(self.node, self.state, self.pred_state, self.num_sim, self.alpha)
+            return mcts.select_action_with_mcts(self.node, self.state, self.pred_state,
+                                                self.num_sim, self.alpha,
+                                                checkmate_search_depth=10)
 
         assert self.state.win_type == game.WinType.ESCAPE
 
@@ -52,18 +54,21 @@ class Client:
         assert False
 
     def apply_player_action(self, action, color):
-        tokens, info = self.state.step(action, 1)
+        tokens, afterstates = self.state.step(action, 1)
 
         if self.state.is_done:
             return
 
-        if len(info) > 0:
-            for i in range(len(info)):
-                child_afterstate, _ = mcts.expand_afterstate(self.node, tokens, info[i:], self.state, self.pred_state)
-                tokens_afterstate = self.state.step_afterstate(info[i], color)
+        if len(afterstates) > 0:
+            for i in range(len(afterstates)):
+                afterstate = afterstates[i]
+                color_i = color if afterstate.type == game.AfterstateType.CAPTURING else 0
+
+                child, _ = mcts.expand_afterstate(self.node, tokens, afterstates[i:], self.state, self.pred_state)
+                tokens_afterstate = self.state.step_afterstate(afterstate, color_i)
                 tokens += tokens_afterstate
 
-            self.node, _ = mcts.expand(child_afterstate, tokens_afterstate, self.state, self.pred_state)
+            self.node, _ = mcts.expand(child, tokens_afterstate, self.state, self.pred_state)
         else:
             self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state)
 
@@ -83,7 +88,9 @@ class Client:
         board = np.zeros(36, dtype=np.int8)
         board[self.state.pieces_p[(self.state.pieces_p >= 0) & (self.state.color_p == 1)]] = 1
         board[self.state.pieces_p[(self.state.pieces_p >= 0) & (self.state.color_p == 0)]] = 2
-        board[self.state.pieces_o[self.state.pieces_o >= 0]] = -3
+        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 1)]] = -1
+        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 0)]] = -2
+        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 2)]] = -3
         print(str(board.reshape((6, 6))).replace('0', ' '))
 
     def start(self, ip, port):
@@ -212,9 +219,8 @@ def main(ip='127.0.0.1',
         try:
             client.init_state(np.array([0, 0, 0, 0, 1, 1, 1, 1]))
             client.start(ip, port)
-        except Exception:
-            import traceback
-            traceback.print_exc()
+        except Exception as e:
+            raise e
         finally:
             print(client.win_count)
 

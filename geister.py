@@ -46,7 +46,7 @@ class AfterstateType(Enum):
 
 
 @dataclass
-class AfterstateInfo:
+class Afterstate:
     type: AfterstateType
     piece_id: int
 
@@ -54,7 +54,7 @@ class AfterstateInfo:
         return self.type != AfterstateType.NONE
 
 
-AFTERSTATE_INFO_NONE = AfterstateInfo(AfterstateType.NONE, -1)
+AFTERSTATE_INFO_NONE = Afterstate(AfterstateType.NONE, -1)
 
 
 class SimulationState:
@@ -82,19 +82,21 @@ class SimulationState:
     def create_init_tokens(self):
         return [[self.color_p[i], i, self.pieces_p[i] % 6, self.pieces_p[i] // 6, 0] for i in range(8)]
 
-    def step_afterstate(self, afterstate: AfterstateInfo, color: int) -> List[List[int]]:
+    def step_afterstate(self, afterstate: Afterstate, color: int) -> List[List[int]]:
         self.color_o[afterstate.piece_id] = color
+        tokens = []
 
         if np.sum(self.color_o == RED) == 4:
-            tokens = [(3, i + 8,
-                       self.pieces_o[i] % 6,
-                       self.pieces_o[i] // 6,
-                       self.n_ply)
-                      for i, color in enumerate(self.color_o) if color == UNCERTAIN_PIECE]
+            for i in range(8):
+                if self.color_o[i] != UNCERTAIN_PIECE:
+                    continue
 
-            self.color_o[self.color_o == UNCERTAIN_PIECE] = BLUE
-        else:
-            tokens = []
+                self.color_o[i] = BLUE
+
+                tokens.append((3, i + 8,
+                               self.pieces_o[i] % 6,
+                               self.pieces_o[i] // 6,
+                               self.n_ply))
 
         if afterstate.type == AfterstateType.CAPTURING:
             self.update_is_done_caused_by_capturing()
@@ -121,26 +123,21 @@ class SimulationState:
                 self.n_ply
             )] + tokens
 
-    def undo_step_afterstate(self, info: AfterstateInfo, tokens: List[List[int]]):
-        self.color_o[info.piece_id] = UNCERTAIN_PIECE
+    def undo_step_afterstate(self, info: Afterstate, tokens: List[List[int]]):
+        for token in tokens:
+            self.color_o[token[Token.ID] - 8] = UNCERTAIN_PIECE
 
         self.is_done = False
         self.win_type = WinType.DRAW
         self.winner = 0
 
-        if len(tokens) == 1:
-            return
-
-        for token in tokens[1:]:
-            self.color_o[token[Token.ID - 8]] = UNCERTAIN_PIECE
-
-    def step(self, action: int, player: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
+    def step(self, action: int, player: int) -> Tuple[List[List[int]], List[Afterstate]]:
         if player == 1:
             return self.step_p(action)
         else:
             return self.step_o(action)
 
-    def step_p(self, action: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
+    def step_p(self, action: int) -> Tuple[List[List[int]], List[Afterstate]]:
         self.n_ply += 1
 
         p_id, d = action_to_id(action)
@@ -150,7 +147,7 @@ class SimulationState:
 
         p_cap_id = np.where(self.pieces_o == pos_next)[0]
 
-        info = []
+        afterstates = []
 
         tokens = [[
             self.color_p[p_id],
@@ -165,7 +162,7 @@ class SimulationState:
             color = self.color_o[p_cap_id]
 
             if color == UNCERTAIN_PIECE:
-                info.append(AfterstateInfo(AfterstateType.CAPTURING, p_cap_id))
+                afterstates.append(Afterstate(AfterstateType.CAPTURING, p_cap_id))
 
             elif color == RED or color == BLUE:
                 tokens.append([
@@ -178,11 +175,10 @@ class SimulationState:
 
         escaped = (self.pieces_o == self.escape_pos_o[0]) | (self.pieces_o == self.escape_pos_o[1])
         escaped_u = escaped & (self.color_o == UNCERTAIN_PIECE)
-        escaped_u_id = np.where(escaped_u)[0]
 
-        if len(escaped_u_id) > 0:
-            escaped_u_id = escaped_u_id[0]
-            info.append(AfterstateInfo(AfterstateType.ESCAPING, escaped_u_id))
+        if np.any(escaped_u):
+            escaped_u_id = np.where(escaped_u)[0][0]
+            afterstates.append(Afterstate(AfterstateType.ESCAPING, escaped_u_id))
 
         escaped_b = escaped & (self.color_o == BLUE)
         if np.any(escaped_b):
@@ -190,9 +186,9 @@ class SimulationState:
             self.winner = -1
             self.win_type = WinType.ESCAPE
 
-        return tokens, info
+        return tokens, afterstates
 
-    def step_o(self, action: int) -> Tuple[List[List[int]], List[AfterstateInfo]]:
+    def step_o(self, action: int) -> Tuple[List[List[int]], List[Afterstate]]:
         self.n_ply += 1
 
         p_id, d = action_to_id(action)
@@ -261,14 +257,14 @@ class SimulationState:
 
     def undo_step(self, action: int, player: int,
                   tokens: List[List[int]],
-                  info: AfterstateInfo):
+                  info: Afterstate):
 
         if player == 1:
             self.undo_step_p(action, tokens, info)
         else:
             self.undo_step_o(action, tokens)
 
-    def undo_step_p(self, action: int, tokens: List[List[int]], info: List[AfterstateInfo]):
+    def undo_step_p(self, action: int, tokens: List[List[int]], info: List[Afterstate]):
         p_id, d = action_to_id(action)
 
         pos_next = self.pieces_p[p_id]

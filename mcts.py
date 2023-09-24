@@ -104,7 +104,7 @@ class CheckmateNode:
 
 
 class AfterStateNode:
-    def __init__(self, root_player: int, weight_v: np.ndarray, afterstates: List[game.AfterstateInfo]):
+    def __init__(self, root_player: int, weight_v: np.ndarray, afterstates: List[game.Afterstate]):
         self.root_player = root_player
         self.weight_v = weight_v
 
@@ -185,7 +185,7 @@ def sim_state_to_str(state: game.SimulationState, predicted_v):
 @profile
 def expand_afterstate(node: Node,
                       tokens: List[List[int]],
-                      afterstates: List[game.AfterstateInfo],
+                      afterstates: List[game.Afterstate],
                       state: game.SimulationState,
                       pred_state: PredictState):
     next_node = AfterStateNode(node.root_player, node.weight_v, afterstates)
@@ -230,7 +230,7 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    action, e, escaped_id = find_checkmate(state, player, depth=4)
+    action, e, escaped_id = find_checkmate(state, player, depth=6)
 
     if e > 0:
         next_node = Node(node.root_player, node.weight_v)
@@ -244,7 +244,19 @@ def try_expand_checkmate(node: Node,
     if e == 0 or escaped_id == -1:
         return False, None, 0
 
-    afterstate = game.AfterstateInfo(game.AfterstateType.ESCAPING, escaped_id)
+    if state.color_o[escaped_id] == game.RED:
+        return False, None, 0
+
+    if state.color_o[escaped_id] == game.BLUE:
+        next_node = Node(node.root_player, node.weight_v)
+        next_node.winner = -1
+
+        if should_do_visibilize_node_graph:
+            next_node.state_str = sim_state_to_str(state, [100])
+
+        return True, next_node, -1
+
+    afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
     next_node = AfterStateNode(node.root_player, node.weight_v, [afterstate])
 
     v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
@@ -289,15 +301,15 @@ def simulate_afterstate(node: AfterStateNode,
 
     if node.children[color] is None:
         if len(node.remaining_afterstates) > 0:
-            child, v = expand_afterstate(node, tokens, node.remaining_afterstates, state, pred_state)
+            child, v = expand_afterstate(node, tokens[:1], node.remaining_afterstates, state, pred_state)
 
         elif not state.is_done:
-            exists_checkmate, child, v = try_expand_checkmate(node, tokens, state, player, pred_state)
+            exists_checkmate, child, v = try_expand_checkmate(node, tokens[:1], state, player, pred_state)
 
             if not exists_checkmate:
-                child, v = expand(node, tokens, state, pred_state)
+                child, v = expand(node, tokens[:1], state, pred_state)
         else:
-            child, v = expand(node, tokens, state, pred_state)
+            child, v = expand(node, tokens[:1], state, pred_state)
 
         node.children[color] = child
     else:

@@ -193,7 +193,9 @@ struct SearchParam {
 			if(id != -1) {
 				int color = this->color_o[id];
 				this->pos_o.at(id) = -1;
-				this->color_o.at(id) = 0;
+
+				if(this->color_o.at(id) == 2)
+					this->color_o.at(id) = 0;
 				return {id, color};
 			}
 		}
