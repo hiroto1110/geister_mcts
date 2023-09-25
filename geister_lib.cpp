@@ -3,7 +3,6 @@
 #include <sstream>
 #include <chrono>
 #include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 
 namespace py = pybind11;
@@ -169,7 +168,7 @@ struct MoveResult {
 };
 
 struct SearchParam {
-	vector<int> pos_o, color_o, captured_ids;
+	vector<int> pos_o, color_o;
 	ulong escape_mask_p, escape_mask_o;
 
 	SearchParam() {
@@ -184,7 +183,7 @@ struct SearchParam {
 		this->escape_mask_o = escape_mask_o;
 	}
 
-	int apply_move(ulong move, int d, int player) {
+	MoveResult apply_move(ulong move, int d, int player) {
 		int pos = tzcnt(move);
 
 		//cout << vector_to_string(pos_v) << ", " << pos << ", " << d << ": do" << endl;
@@ -192,11 +191,10 @@ struct SearchParam {
 			int id = index_of(&this->pos_o, pos + DIRECTIONS[d]);
 
 			if(id != -1) {
-				if(this->color_o.at(id) == 2)
-					this->captured_ids.push_back(id);
-
+				int color = this->color_o[id];
 				this->pos_o.at(id) = -1;
-				return id;
+				this->color_o.at(id) = 0;
+				return {id, color};
 			}
 		}
 		else {
@@ -204,18 +202,16 @@ struct SearchParam {
 			this->pos_o.at(id) = pos + DIRECTIONS[d];
 		}
 
-		return -1;
+		return {-1, -1};
 	}
 
-	void undo_apply_move(ulong move, int d, int player, int captured_id) {
+	void undo_apply_move(ulong move, int d, int player, MoveResult result) {
 		int pos = tzcnt(move);
 
 		if(player == 1) {
-			if(captured_id != -1) {
-				if(this->color_o.at(captured_id) == 2)
-					this->captured_ids.pop_back();
-
-				this->pos_o.at(captured_id) = pos + DIRECTIONS[d];
+			if(result.id != -1) {
+				this->pos_o.at(result.id) = pos + DIRECTIONS[d];
+				this->color_o.at(result.id) = result.color;
 			}
 		}
 		else {
@@ -241,45 +237,38 @@ SolveResult get_max_result(SolveResult r1, SolveResult r2, int player) {
 	return r1.eval * player > r2.eval * player ? r1 : r2;
 }
 
-const SolveResult SOLVE_RESULT_NONE = {0, -1};
+SolveResult SOLVE_RESULT_NONE = {0, -1};
 
-int is_done(SearchParam* search, Board* b, int player, int* winner, int* escaped_id) {
+bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type, int* escaped_id) {
 	if (b->pb == 0) {
 		*winner = -1;
-		return WIN_BLUE4;
+		*type = WIN_BLUE4;
+		return true;
 	}
 
 	if (b->pr == 0) {
 		*winner = 1;
-		return WIN_RED4;
+		*type = WIN_RED4;
+		return true;
 	}
 
-	int n_cap_blue = 0;
 	int n_cap_red = 0;
 	for(int i = 0; i < 8; i++) {
-		if(search->pos_o[i] != -1)
-			continue;
-
-		if(search->color_o[i] == 0 || search->color_o[i] == 2)
+		if(search->pos_o[i] == -1 && search->color_o[i] == 0)
 			n_cap_red++;
-		else if(search->color_o[i] == 1)
-			n_cap_blue++;
-	}
-
-	if (n_cap_blue >= 4) {
-		*winner = 1;
-		return WIN_BLUE4;
 	}
 
 	if (n_cap_red >= 4) {
 		*winner = -1;
-		return WIN_RED4;
+		*type = WIN_RED4;
+		return true;
 	}
 
 	if (player == 1) {
 		if ((b->pb & search->escape_mask_p) != 0) {
 			*winner = 1;
-			return WIN_ESCAPE;
+			*type = WIN_ESCAPE;
+			return true;
 		}
 	}
 	else {
@@ -290,38 +279,27 @@ int is_done(SearchParam* search, Board* b, int player, int* winner, int* escaped
 
 			if(search->color_o[id] != 0) {
 				*winner = -1;
+				*type = WIN_ESCAPE;
 				*escaped_id = index_of(&search->pos_o, tzcnt(escaped));
-				return WIN_ESCAPE;
+				return true;
 			}
 		}
 	}
 	*winner = 0;
-	return WIN_NONE;
-}
-
-int eval(int winner, int depth) {
-	return winner * (depth + 1);
+	*type = WIN_NONE;
+	return false;
 }
 
 SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int player, int depth) {
 	int winner = 0;
+	int type = 0;
 	int escaped_id = -1;
 
-	int type = is_done(search, board, player, &winner, &escaped_id);
-
-	switch(type) {
-		case WIN_NONE:
-			break;
-
-		case WIN_ESCAPE:
-			if(winner == -1)
-				return {eval(winner, depth), escaped_id};
-			else
-				return {eval(winner, depth), -1};
-
-		case WIN_BLUE4:
-		case WIN_RED4:
-			return SOLVE_RESULT_NONE;
+	if (is_done(search, board, player, &winner, &type, &escaped_id)) {
+		if(type == WIN_ESCAPE)
+			return {winner * (depth + 1),  escaped_id};
+		else
+			return {0, -1};
 	}
 
 	if (depth <= 0)
@@ -339,12 +317,12 @@ SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int pl
 		while ((move = first_bit(moves_d)) != 0) {
 			moves_d = moves_d ^ move;
 
-			int captured_id = search->apply_move(move, d, player);
+			MoveResult m_result = search->apply_move(move, d, player);
 
 			step(board, next_board, move, d);
 			SolveResult result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
 
-			search->undo_apply_move(move, d, player, captured_id);
+			search->undo_apply_move(move, d, player, m_result);
 
 			max_result = get_max_result(max_result, result, player);
 			alpha = max(alpha, result.eval * player);
@@ -372,12 +350,12 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 		while ((move = first_bit(moves_d)) != 0) {
 			moves_d = moves_d ^ move;
 
-			int captured_id = search->apply_move(move, d, player);
+			MoveResult m_result = search->apply_move(move, d, player);
 
 			step(board, next_board, move, d);
 			SolveResult result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
 
-			search->undo_apply_move(move, d, player, captured_id);
+			search->undo_apply_move(move, d, player, m_result);
 
 			if (result.eval * player > max_e) {
 				max_e = result.eval * player;

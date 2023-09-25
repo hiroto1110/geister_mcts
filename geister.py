@@ -78,19 +78,6 @@ class SimulationState:
 
     def step_afterstate(self, afterstate: Afterstate, color: int) -> List[List[int]]:
         self.color_o[afterstate.piece_id] = color
-        tokens = []
-
-        if np.sum(self.color_o == RED) == 4:
-            for i in range(8):
-                if self.color_o[i] != UNCERTAIN_PIECE:
-                    continue
-
-                self.color_o[i] = BLUE
-
-                tokens.append((3, i + 8,
-                               self.pieces_o[i] % 6,
-                               self.pieces_o[i] // 6,
-                               self.n_ply))
 
         if afterstate.type == AfterstateType.CAPTURING:
             self.update_is_done_caused_by_capturing()
@@ -99,7 +86,7 @@ class SimulationState:
                 color + 2,
                 afterstate.piece_id + 8,
                 6, 6, self.n_ply
-            )] + tokens
+            )]
 
         elif afterstate.type == AfterstateType.ESCAPING:
             if color == BLUE:
@@ -115,11 +102,10 @@ class SimulationState:
                 pos % 6,
                 pos // 6,
                 self.n_ply
-            )] + tokens
+            )]
 
-    def undo_step_afterstate(self, info: Afterstate, tokens: List[List[int]]):
-        for token in tokens:
-            self.color_o[token[Token.ID] - 8] = UNCERTAIN_PIECE
+    def undo_step_afterstate(self, afterstate: Afterstate):
+        self.color_o[afterstate.piece_id] = UNCERTAIN_PIECE
 
         self.is_done = False
         self.win_type = WinType.DRAW

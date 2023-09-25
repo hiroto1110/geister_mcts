@@ -216,8 +216,11 @@ class MultiHeadAttentionWithCache2(nn.Module):
         v = jnp.concatenate((v[1:], v_i), axis=0)
         k = jnp.concatenate((k[1:], k_i), axis=0)
 
+        mask = jnp.any(v != 0, axis=(1, 2))
+
         # [Head, SeqLen k]
         attention = jnp.einsum('hd,khd->hk', q_i, k) / jnp.sqrt(head_dim)
+        attention = jnp.where(mask, attention, -jnp.inf)
         attention = nn.softmax(attention, axis=-1)
 
         # [Head, Dim]
@@ -361,16 +364,18 @@ class TransformerDecoderWithCache(nn.Module):
     def __call__(self, x, cache1, cache2, eval=True):
         x = self.embeddings(x, eval)
 
-        # mask = jnp.any(cache1 != 0, axis=(0, 2, 3))
-        # mask |= jnp.roll(mask, shift=-1)
-        # mask = mask.reshape(1, -1)
+        # if not self.is_linear_attention:
+        if False:
+            next_cache1, next_cache2 = self.create_cache(cache1.shape[1] + 1)
+        else:
+            next_cache1, next_cache2 = cache1, cache2
 
         i = 0
         for layer in self.layers:
             x, cache1_i, cache2_i = layer(x, cache1[i], cache2[i], eval=eval)
 
-            cache1 = cache1.at[i].set(cache1_i)
-            cache2 = cache2.at[i].set(cache2_i)
+            next_cache1 = next_cache1.at[i].set(cache1_i)
+            next_cache2 = next_cache2.at[i].set(cache2_i)
 
             i += 1
 
@@ -380,7 +385,7 @@ class TransformerDecoderWithCache(nn.Module):
         logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
-        return logits_pi, logits_v, logits_color, cache1, cache2
+        return logits_pi, logits_v, logits_color, next_cache1, next_cache2
 
 
 @partial(jax.jit, static_argnames=['eval'])

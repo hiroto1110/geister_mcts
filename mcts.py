@@ -230,33 +230,30 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    _, e, escaped_id = find_checkmate(state, player, depth=6)
-
-    if e == 0:
-        return False, None, 0
-
-    if e < 0 and state.color_o[escaped_id] == game.RED:
-        return False, None, 0
-
-    winner = 0
-    if e < 0 and state.color_o[escaped_id] == game.BLUE:
-        winner = -1
+    action, e, escaped_id = find_checkmate(state, player, depth=6)
 
     if e > 0:
-        winner = 1
-
-    if winner != 0:
         next_node = Node(node.root_player, node.weight_v)
-        next_node.winner = winner
+        next_node.winner = 1
 
         if should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [1])
+            next_node.state_str = sim_state_to_str(state, [100])
 
-        return True, next_node, winner
+        return True, next_node, 1
+
+    if e == 0 or escaped_id == -1:
+        return False, None, 0
 
     afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
+    next_node = AfterStateNode(node.root_player, node.weight_v, [afterstate])
 
-    next_node, v = expand_afterstate(node, tokens, [afterstate], state, pred_state)
+    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
+
+    if should_do_visibilize_node_graph:
+        next_node.state_str = sim_state_to_str(state, next_node.predicted_v)
+
+    next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
+    next_node.p[0] = 1 - next_node.p[1]
 
     return True, next_node, v
 
@@ -311,7 +308,7 @@ def simulate_afterstate(node: AfterStateNode,
         else:
             v = simulate(child, state, player, pred_state)
 
-    state.undo_step_afterstate(node.afterstate, tokens)
+    state.undo_step_afterstate(node.afterstate)
 
     node.n[color] += 1
     node.w[color] += v

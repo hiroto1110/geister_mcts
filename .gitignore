@@ -10,3 +10,4 @@ log.txt
 *.png
 *.so
 *.lprof
+*.json
