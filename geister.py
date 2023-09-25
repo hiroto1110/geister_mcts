@@ -50,12 +50,6 @@ class Afterstate:
     type: AfterstateType
     piece_id: int
 
-    def is_afterstate(self):
-        return self.type != AfterstateType.NONE
-
-
-AFTERSTATE_INFO_NONE = Afterstate(AfterstateType.NONE, -1)
-
 
 class SimulationState:
     def __init__(self, color, root_player: int):

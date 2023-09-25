@@ -27,8 +27,9 @@ def load_params(steps):
     params_list = []
 
     for ckpt_dir, n, step in steps:
-        model = network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=n)
-        ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=PREFIX, step=step, target=None)
+        model = network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=n,
+                                                    is_linear_attention=True)
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix="geister_linear_", step=step, target=None)
         params_list.append((model, ckpt['params']))
 
     return params_list
@@ -56,12 +57,12 @@ def start_league_process(league_queue: mp.Queue, result_sender, seed: int,
 
 
 # PARAMS_STEPS = [(CKPT_BACKUP_DIR, i * 100) for i in range(1, 31, 3)]
-PARAMS_STEPS = [('checkpoints_backup_193/', 4, i * 100) for i in range(1, 20, 2)]
+PARAMS_STEPS = [('checkpoints_backup_195/', 4, i * 100) for i in range(1, 24)]
 # PARAMS_STEPS += [('checkpoints_backup_189/', 2, 2800 + i * 100) for i in range(3)]
 
 
-def main(n_clients=6,
-         num_games_per_combination=10,
+def main(n_clients=30,
+         num_games_per_combination=50,
          num_mcts_sim=50,
          dirichlet_alpha=0.1):
 

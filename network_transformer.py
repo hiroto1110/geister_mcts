@@ -80,7 +80,7 @@ class MultiHeadLinearAttentionWithCache(nn.Module):
 
         values = qs / (qz + 1E-6)
 
-        values = values.reshape(self.num_heads * head_dim)  # [Batch, SeqLen, Head × Dim (=EmbedDim)]
+        values = values.reshape(self.num_heads * head_dim)  # [Head × Dim (=EmbedDim)]
         out = nn.Dense(self.embed_dim)(values)
 
         return out, s, z
@@ -196,6 +196,40 @@ class MultiHeadAttentionWithCache(nn.Module):
         return out_i, v, k
 
 
+class MultiHeadAttentionWithCache2(nn.Module):
+    num_heads: int
+    embed_dim: int
+
+    @nn.compact
+    def __call__(self, x, v, k):
+        # x: [EmbedDim]
+        # v: [SeqLen k, Head, Dim]
+        # k: [SeqLen k, Head, Dim]
+        head_dim = self.embed_dim // self.num_heads
+
+        # [1, Head, Dim]
+        v_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
+        q_i = nn.Dense(features=self.embed_dim)(x).reshape(self.num_heads, head_dim)
+        k_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
+
+        # [SeqLen k, Head, Dim]
+        v = jnp.concatenate((v[1:], v_i), axis=0)
+        k = jnp.concatenate((k[1:], k_i), axis=0)
+
+        # [Head, SeqLen k]
+        attention = jnp.einsum('hd,khd->hk', q_i, k) / jnp.sqrt(head_dim)
+        attention = nn.softmax(attention, axis=-1)
+
+        # [Head, Dim]
+        values = jnp.einsum('hk,khd->hd', attention, v)
+        # [EmbedDim]
+        values = values.reshape(self.embed_dim)
+        # [EmbedDim]
+        out_i = nn.Dense(self.embed_dim)(values)
+
+        return out_i, v, k
+
+
 class FeedForward(nn.Module):
     embed_dim: int
     intermediate_size: int = 128
@@ -212,10 +246,13 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     num_heads: int
     embed_dim: int
+    is_linear: bool
 
     def setup(self):
-        self.attention = MultiHeadAttention(self.num_heads, self.embed_dim)
-        # self.attention = MultiHeadLinearAttention(self.num_heads, self.embed_dim)
+        if self.is_linear:
+            self.attention = MultiHeadLinearAttention(self.num_heads, self.embed_dim)
+        else:
+            self.attention = MultiHeadAttention(self.num_heads, self.embed_dim)
 
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
@@ -241,7 +278,7 @@ class TransformerBlockWithCache(nn.Module):
                 num_heads=self.num_heads,
                 embed_dim=self.embed_dim)
         else:
-            self.attention = MultiHeadAttentionWithCache(
+            self.attention = MultiHeadAttentionWithCache2(
                 num_heads=self.num_heads,
                 embed_dim=self.embed_dim)
 
@@ -267,11 +304,12 @@ class TransformerDecoder(nn.Module):
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
+    is_linear_attention: bool
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
 
-        self.layers = [TransformerBlock(num_heads=self.num_heads, embed_dim=self.embed_dim)
+        self.layers = [TransformerBlock(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
 
     @nn.compact
@@ -323,17 +361,16 @@ class TransformerDecoderWithCache(nn.Module):
     def __call__(self, x, cache1, cache2, eval=True):
         x = self.embeddings(x, eval)
 
-        if not self.is_linear_attention:
-            next_cache1, next_cache2 = self.create_cache(cache1.shape[1] + 1)
-        else:
-            next_cache1, next_cache2 = cache1, cache2
+        # mask = jnp.any(cache1 != 0, axis=(0, 2, 3))
+        # mask |= jnp.roll(mask, shift=-1)
+        # mask = mask.reshape(1, -1)
 
         i = 0
         for layer in self.layers:
             x, cache1_i, cache2_i = layer(x, cache1[i], cache2[i], eval=eval)
 
-            next_cache1 = next_cache1.at[i].set(cache1_i)
-            next_cache2 = next_cache2.at[i].set(cache2_i)
+            cache1 = cache1.at[i].set(cache1_i)
+            cache2 = cache2.at[i].set(cache2_i)
 
             i += 1
 
@@ -343,7 +380,7 @@ class TransformerDecoderWithCache(nn.Module):
         logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
-        return logits_pi, logits_v, logits_color, next_cache1, next_cache2
+        return logits_pi, logits_v, logits_color, cache1, cache2
 
 
 @partial(jax.jit, static_argnames=['eval'])
@@ -446,7 +483,7 @@ def main_test_performance(data):
 
     model = TransformerDecoderWithCache(num_heads=8,
                                         embed_dim=128,
-                                        num_hidden_layers=2,
+                                        num_hidden_layers=4,
                                         is_linear_attention=is_linear)
 
     state = TrainState.create(
@@ -460,41 +497,38 @@ def main_test_performance(data):
         if is_linear:
             cache1, cache2 = model.create_linear_cache()
         else:
-            cache1, cache2 = model.create_cache(0)
+            cache1, cache2 = model.create_cache(200)
 
         v_history = np.zeros(200)
-
-        start = time.perf_counter()
 
         for i in range(100):
             pi, v, color, cache1, cache2 = predict(state, data[0][data_index, i], cache1, cache2)
             v_history[i] = jnp.sum(nn.softmax(v) * jnp.array([-1, -1, -1, 0, 1, 1, 1]))
 
-            if data_index == 0:
-                print(i)
+        return v_history
 
-        return v_history, time.perf_counter() - start
+    start = time.perf_counter()
 
-    time_history = []
     v_mean_history = np.zeros(100)
 
-    for i in range(100):
-        v_history, t = test(i)
+    for i in range(v_mean_history.shape[0]):
+        v_history = test(i)
         v_mean_history[i] = v_history.mean()
-        time_history.append(t)
 
     print(v_mean_history)
-    print(np.mean(time_history[1:]))
+
+    t = time.perf_counter() - start
+    print(t / v_mean_history.shape[0])
 
 
 def main_train(model, state, data):
     train_n = int(len(data[0]) * 0.8)
 
-    train_data = [d[20000:train_n] for d in data]
+    train_data = [d[:train_n] for d in data]
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'test_'
+    prefix = 'test_linear_'
 
     checkpoints.save_checkpoint(
         ckpt_dir=ckpt_dir, prefix=prefix,
@@ -505,7 +539,7 @@ def main_train(model, state, data):
     state = fit(state, ckpt_dir, prefix,
                 train_data=train_data,
                 test_data=test_data,
-                epochs=16, batch_size=128)
+                epochs=8, batch_size=128)
 
     end = time.perf_counter()
     print(end - start)
@@ -574,7 +608,7 @@ def main():
     state = TrainState.create(
         apply_fn=model.apply,
         params=variables['params'],
-        tx=optax.adam(learning_rate=0.0005),
+        tx=optax.adam(learning_rate=0.001),
         dropout_rng=key2,
         epoch=0)
 
@@ -585,8 +619,8 @@ def main():
 
     # state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=state)
 
-    # main_test_performance(data)
-    main_train(model, state, data)
+    main_test_performance(data)
+    # main_train(model, state, data)
     # main_test(model, state, data)
 
 

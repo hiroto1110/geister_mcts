@@ -28,11 +28,11 @@ def start_selfplay_process(sender, n_updates, seed: int, num_mcts_sim: int, diri
         player1 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
         player2 = mcts.PlayerMCTS(ckpt['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
 
-        weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
+        # weight_v_default = np.array([-1, -1, -1, 0, 1, 1, 1])
 
         while True:
-            player1.weight_v = np.random.normal(weight_v_default, scale=0.3)
-            player2.weight_v = np.random.normal(weight_v_default, scale=0.3)
+            # player1.weight_v = np.random.normal(weight_v_default, scale=0.3)
+            # player2.weight_v = np.random.normal(weight_v_default, scale=0.3)
 
             sample1, sample2 = selfplay(player1, player2)
 
@@ -59,11 +59,12 @@ def selfplay(player1: mcts.PlayerMCTS, player2: mcts.PlayerMCTS):
 
 CKPT_DIR = './checkpoints/'
 CKPT_BACKUP_DIR = './checkpoints_backup/'
-PREFIX = 'geister_'
+PREFIX = 'geister_linear_'
 
 
 def create_model():
-    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=4)
+    return network.TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=4,
+                                               is_linear_attention=True)
 
 
 def main(n_clients=30,

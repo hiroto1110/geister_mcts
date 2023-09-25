@@ -230,42 +230,33 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    action, e, escaped_id = find_checkmate(state, player, depth=6)
+    _, e, escaped_id = find_checkmate(state, player, depth=6)
+
+    if e == 0:
+        return False, None, 0
+
+    if e < 0 and state.color_o[escaped_id] == game.RED:
+        return False, None, 0
+
+    winner = 0
+    if e < 0 and state.color_o[escaped_id] == game.BLUE:
+        winner = -1
 
     if e > 0:
+        winner = 1
+
+    if winner != 0:
         next_node = Node(node.root_player, node.weight_v)
-        next_node.winner = 1
+        next_node.winner = winner
 
         if should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [100])
+            next_node.state_str = sim_state_to_str(state, [1])
 
-        return True, next_node, 1
-
-    if e == 0 or escaped_id == -1:
-        return False, None, 0
-
-    if state.color_o[escaped_id] == game.RED:
-        return False, None, 0
-
-    if state.color_o[escaped_id] == game.BLUE:
-        next_node = Node(node.root_player, node.weight_v)
-        next_node.winner = -1
-
-        if should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [100])
-
-        return True, next_node, -1
+        return True, next_node, winner
 
     afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
-    next_node = AfterStateNode(node.root_player, node.weight_v, [afterstate])
 
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
-
-    if should_do_visibilize_node_graph:
-        next_node.state_str = sim_state_to_str(state, next_node.predicted_v)
-
-    next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
-    next_node.p[0] = 1 - next_node.p[1]
+    next_node, v = expand_afterstate(node, tokens, [afterstate], state, pred_state)
 
     return True, next_node, v
 
@@ -301,15 +292,15 @@ def simulate_afterstate(node: AfterStateNode,
 
     if node.children[color] is None:
         if len(node.remaining_afterstates) > 0:
-            child, v = expand_afterstate(node, tokens[:1], node.remaining_afterstates, state, pred_state)
+            child, v = expand_afterstate(node, tokens, node.remaining_afterstates, state, pred_state)
 
         elif not state.is_done:
-            exists_checkmate, child, v = try_expand_checkmate(node, tokens[:1], state, player, pred_state)
+            exists_checkmate, child, v = try_expand_checkmate(node, tokens, state, player, pred_state)
 
             if not exists_checkmate:
-                child, v = expand(node, tokens[:1], state, pred_state)
+                child, v = expand(node, tokens, state, pred_state)
         else:
-            child, v = expand(node, tokens[:1], state, pred_state)
+            child, v = expand(node, tokens, state, pred_state)
 
         node.children[color] = child
     else:
@@ -425,12 +416,12 @@ def select_action_with_mcts(node: Node,
     action, e, escaped_id = find_checkmate(state, 1, depth=checkmate_search_depth)
 
     if e < 0:
-        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
         pass
 
     if e > 0:
         pass
-        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
     else:
         node.setup_valid_actions(state, 1)
@@ -491,7 +482,10 @@ def create_root_node(state: game.SimulationState,
                      model: TransformerDecoderWithCache,
                      weight_v=np.array([-1, -1, -1, 0, 1, 1, 1])) -> Node:
     node = Node(state.root_player, weight_v)
-    cv, ck = model.create_cache(0)
+    if model.is_linear_attention:
+        cv, ck = model.create_linear_cache()
+    else:
+        cv, ck = model.create_cache(200)
 
     tokens = state.create_init_tokens()
 
@@ -561,50 +555,6 @@ class PlayerMCTS:
         return Sample(tokens, mask, actions, reward, true_color_o)
 
 
-def play_test_game(pred_state: PredictState,
-                   model: TransformerDecoderWithCache,
-                   num_mcts_sim: int,
-                   dirichlet_alpha: float,
-                   game_length: int = 200,
-                   print_board: bool = True):
-    player = 1
-
-    state1, state2 = game.get_initial_state_pair()
-    node, _ = create_root_node(state1, pred_state, model, 1)
-
-    pieces_history = np.zeros((101, 8), dtype=np.int8)
-
-    for i in range(game_length):
-        if player == 1:
-            pieces_history[i // 2] = state1.pieces_p
-
-            action = select_action_with_mcts(node, state1, pred_state,
-                                             num_mcts_sim, dirichlet_alpha, pieces_history)
-        else:
-            actions = game.get_valid_actions(state1, -1)
-            action = np.random.choice(actions)
-
-        node, _ = apply_action(node, state1, action, player, state2.color_p, pred_state)
-
-        if print_board:
-            board = np.zeros(36, dtype=np.int8)
-
-            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 1)]] = 1
-            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 0)]] = 2
-            board[state1.pieces_o[(state1.pieces_o >= 0) & (state2.color_p == 1)]] = -1
-            board[state1.pieces_o[(state1.pieces_o >= 0) & (state2.color_p == 0)]] = -2
-
-            print(str(board.reshape((6, 6))).replace('0', ' '))
-            print(i)
-
-        if state1.is_done or state2.is_done:
-            break
-
-        player = -player
-
-    return state1.winner, state1.win_type
-
-
 def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
     state1, state2 = game.get_initial_state_pair()
     player1.init_state(state1)
@@ -658,21 +608,26 @@ def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
 def test():
     # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
 
-    model_with_cache = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=2)
+    model_with_cache = TransformerDecoderWithCache(num_heads=8,
+                                                   embed_dim=128,
+                                                   num_hidden_layers=4,
+                                                   is_linear_attention=True)
 
-    ckpt_dir = './checkpoints_backup_193/'
-    prefix = 'geister_'
+    ckpt_dir = './checkpoints_backup_195/'
+    prefix = 'geister_linear_'
 
     ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
 
     # init_jit(pred_state, model_with_cache, data)
 
-    np.random.seed(12)
+    np.random.seed(120)
 
     win_count = np.zeros(7)
 
-    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1)
-    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1)
+    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1,
+                         n_ply_to_apply_noise=0, max_duplicates=1)
+    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1,
+                         n_ply_to_apply_noise=0, max_duplicates=1)
 
     player1.n_ply_to_apply_noise = 0
     player2.n_ply_to_apply_noise = 0
