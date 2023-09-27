@@ -245,15 +245,7 @@ def try_expand_checkmate(node: Node,
         return False, None, 0
 
     afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
-    next_node = AfterStateNode(node.root_player, node.weight_v, [afterstate])
-
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
-
-    if should_do_visibilize_node_graph:
-        next_node.state_str = sim_state_to_str(state, next_node.predicted_v)
-
-    next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
-    next_node.p[0] = 1 - next_node.p[1]
+    next_node, v = expand_afterstate(node, tokens, [afterstate], state, pred_state)
 
     return True, next_node, v
 
@@ -413,12 +405,12 @@ def select_action_with_mcts(node: Node,
     action, e, escaped_id = find_checkmate(state, 1, depth=checkmate_search_depth)
 
     if e < 0:
-        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
         pass
 
     if e > 0:
         pass
-        print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
+        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
     else:
         node.setup_valid_actions(state, 1)
@@ -482,7 +474,7 @@ def create_root_node(state: game.SimulationState,
     if model.is_linear_attention:
         cv, ck = model.create_linear_cache()
     else:
-        cv, ck = model.create_cache(200)
+        cv, ck = model.create_cache(100)
 
     tokens = state.create_init_tokens()
 
@@ -543,13 +535,10 @@ class PlayerMCTS:
         tokens = np.zeros((200, 5), dtype=np.uint8)
         tokens[:min(200, len(self.tokens))] = self.tokens[:200]
 
-        mask = np.zeros(200, dtype=np.uint8)
-        mask[:len(self.tokens)] = 1
-
         actions = actions[tokens[:, 4]]
         reward = 3 + int(self.state.winner * self.state.win_type.value)
 
-        return Sample(tokens, mask, actions, reward, true_color_o)
+        return Sample(tokens, actions, reward, true_color_o)
 
 
 def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):

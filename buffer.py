@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass, astuple
 import numpy as np
 import geister as game
@@ -7,10 +6,9 @@ import geister as game
 @dataclass
 class Sample:
     tokens: np.ndarray
-    mask: np.ndarray
     policy: np.ndarray
     reward: int
-    pieces: np.ndarray
+    colors: np.ndarray
 
 
 @dataclass
@@ -19,23 +17,23 @@ class Batch:
     mask: np.ndarray
     policy: np.ndarray
     reward: np.ndarray
-    pieces: np.ndarray
+    colors: np.ndarray
 
     def astuple(self):
         return astuple(self)
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size, seq_length):
+    def __init__(self, buffer_size: int, seq_length: int, file_name: str):
         self.buffer_size = buffer_size
+        self.file_name = file_name
         self.index = 0
         self.n_samples = 0
 
         self.tokens_buffer = np.zeros((buffer_size, seq_length, game.TOKEN_SIZE), dtype=np.uint8)
-        self.mask_buffer = np.zeros((buffer_size, seq_length), dtype=np.uint8)
         self.policy_buffer = np.zeros((buffer_size, seq_length), dtype=np.uint8)
         self.reward_buffer = np.zeros((buffer_size, 1), dtype=np.int8)
-        self.pieces_buffer = np.zeros((buffer_size, 8), dtype=np.uint8)
+        self.colors_buffer = np.zeros((buffer_size, 8), dtype=np.uint8)
 
     def __len__(self):
         return self.n_samples
@@ -44,67 +42,75 @@ class ReplayBuffer:
         i = (self.index - batch_size) % self.buffer_size
 
         tokens = self.tokens_buffer[i: i+batch_size]
-        mask = self.mask_buffer[i: i+batch_size]
         policy = self.policy_buffer[i: i+batch_size]
         reward = self.reward_buffer[i: i+batch_size]
-        pieces = self.pieces_buffer[i: i+batch_size]
+        colors = self.colors_buffer[i: i+batch_size]
 
-        return Batch(tokens, mask, policy, reward, pieces)
+        mask = np.any(tokens != 0, axis=2)
+
+        return Batch(tokens, mask, policy, reward, colors)
 
     def get_minibatch(self, batch_size):
         indices = np.random.choice(range(self.n_samples), size=batch_size)
 
         tokens = self.tokens_buffer[indices]
-        mask = self.mask_buffer[indices]
         policy = self.policy_buffer[indices]
         reward = self.reward_buffer[indices]
-        pieces = self.pieces_buffer[indices]
+        colors = self.colors_buffer[indices]
 
-        return Batch(tokens, mask, policy, reward, pieces)
+        mask = np.any(tokens != 0, axis=2)
+
+        return Batch(tokens, mask, policy, reward, colors)
 
     def add_sample(self, sample: Sample):
         self.tokens_buffer[self.index] = sample.tokens
-        self.mask_buffer[self.index] = sample.mask
         self.policy_buffer[self.index] = sample.policy
         self.reward_buffer[self.index] = sample.reward
-        self.pieces_buffer[self.index] = sample.pieces
+        self.colors_buffer[self.index] = sample.colors
+
+        if self.index == 0:
+            self.save(self.file_name, append=True)
 
         self.n_samples = max(self.n_samples, self.index + 1)
         self.index = (self.index + 1) % self.buffer_size
 
-    def save(self, save_dir: str, append=False):
-        if append and os.path.isfile(save_dir + '/tokens.npy'):
+    def save(self, file_name: str, append: bool):
+        tokens = self.tokens_buffer
+        policy = self.policy_buffer
+        reward = self.reward_buffer
+        colors = self.colors_buffer
 
-            tokens_buffer = np.load(save_dir + '/tokens.npy')
-            mask_buffer = np.load(save_dir + '/mask.npy')
-            policy_buffer = np.load(save_dir + '/policy.npy')
-            reward_buffer = np.load(save_dir + '/reward.npy')
-            pieces_buffer = np.load(save_dir + '/pieces.npy')
+        if append:
+            with np.load(file_name) as data:
+                tokens = np.concatenate([data['t'], tokens])
+                policy = np.concatenate([data['p'], policy])
+                reward = np.concatenate([data['r'], reward])
+                colors = np.concatenate([data['c'], colors])
 
-            tokens_buffer = np.concatenate([tokens_buffer, self.tokens_buffer], axis=0)
-            mask_buffer = np.concatenate([mask_buffer, self.mask_buffer], axis=0)
-            policy_buffer = np.concatenate([policy_buffer, self.policy_buffer], axis=0)
-            reward_buffer = np.concatenate([reward_buffer, self.reward_buffer], axis=0)
-            pieces_buffer = np.concatenate([pieces_buffer, self.pieces_buffer], axis=0)
-        else:
-            tokens_buffer = self.tokens_buffer
-            mask_buffer = self.mask_buffer
-            policy_buffer = self.policy_buffer
-            reward_buffer = self.reward_buffer
-            pieces_buffer = self.pieces_buffer
+        save_dict = {
+            't': tokens,
+            'p': policy,
+            'r': reward,
+            'c': colors,
+        }
+        np.savez(file_name, **save_dict)
 
-        np.save(save_dir + '/tokens.npy', tokens_buffer)
-        np.save(save_dir + '/mask.npy', mask_buffer)
-        np.save(save_dir + '/policy.npy', policy_buffer)
-        np.save(save_dir + '/reward.npy', reward_buffer)
-        np.save(save_dir + '/pieces.npy', pieces_buffer)
+    def load(self, file_name: str):
+        assert file_name.endswith('.npz')
 
-    def load(self, save_dir):
-        self.tokens_buffer = np.load(save_dir + '/tokens.npy')
-        self.mask_buffer = np.load(save_dir + '/mask.npy')
-        self.policy_buffer = np.load(save_dir + '/policy.npy')
-        self.reward_buffer = np.load(save_dir + '/reward.npy')
-        self.pieces_buffer = np.load(save_dir + '/pieces.npy')
+        with np.load(file_name) as data:
+            tokens = data['t']
+            policy = data['p']
+            reward = data['r']
+            colors = data['c']
 
-        self.n_samples = int(np.sum(self.mask_buffer[:, 0]))
+        n_samples = np.sum(np.any(colors != 0, axis=1))
+        n_samples = np.min(n_samples, self.buffer_size)
+
+        self.tokens_buffer[:n_samples] = tokens[:n_samples]
+        self.policy_buffer[:n_samples] = policy[:n_samples]
+        self.reward_buffer[:n_samples] = reward[:n_samples]
+        self.colors_buffer[:n_samples] = colors[:n_samples]
+
+        self.n_samples = int(n_samples)
         self.index = int(self.n_samples % self.buffer_size)

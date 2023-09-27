@@ -1,12 +1,15 @@
 from typing import Any
-import time
 from functools import partial
+import time
+import dataclasses
 
 import numpy as np
 import jax
 from jax import random, numpy as jnp
 from flax import linen as nn
-from flax.training import train_state, checkpoints
+from flax.training import train_state
+import orbax.checkpoint
+from flax.training import orbax_utils
 import optax
 
 import matplotlib.pyplot as plt
@@ -239,7 +242,7 @@ class FeedForward(nn.Module):
 
     @nn.compact
     def __call__(self, x, eval):
-        x = nn.Dense(features=self.intermediate_size)(x)
+        x = nn.Dense(features=self.embed_dim)(x)
         x = nn.relu(x)
         x = nn.Dense(features=self.embed_dim)(x)
         x = nn.Dropout(0.1, deterministic=eval)(x)
@@ -444,7 +447,7 @@ def create_batches(data, batch_size):
     return data_batched
 
 
-def fit(state, ckpt_dir, prefix, train_data, test_data, epochs, batch_size):
+def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_size):
     train_data_batched = [create_batches(data, batch_size) for data in train_data]
     test_data_batched = [create_batches(data, batch_size) for data in test_data]
 
@@ -462,9 +465,7 @@ def fit(state, ckpt_dir, prefix, train_data, test_data, epochs, batch_size):
         print(f'C: ({info_train[2]:.3f}, {info_test[2]:.3f})')
 
         state = state.replace(epoch=state.epoch + 1)
-        checkpoints.save_checkpoint(
-            ckpt_dir=ckpt_dir, prefix=prefix,
-            target=state, step=state.epoch, overwrite=True, keep=5)
+        save_checkpoint(state, model, checkpoint_manager)
 
     return state
 
@@ -479,23 +480,35 @@ def predict(state, x, cache1, cache2):
     return state.apply_fn({'params': state.params}, x, cache1, cache2)
 
 
+def create_ckpt(state: TrainState, model: TransformerDecoder):
+    return {'state': state, 'model': dataclasses.asdict(model)}
+
+
+def save_checkpoint(state: TrainState,
+                    model: TransformerDecoder,
+                    checkpoint_manager: orbax.checkpoint.CheckpointManager):
+    ckpt = create_ckpt(state, model)
+    save_args = orbax_utils.save_args_from_target(ckpt)
+    checkpoint_manager.save(state.epoch, ckpt, save_kwargs={'save_args': save_args})
+
+
 def main_test_performance(data):
     is_linear = False
 
     ckpt_dir = './checkpoints/'
-    prefix = 'geister_linear_' if is_linear else 'geister_'
-    ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
 
-    model = TransformerDecoderWithCache(num_heads=8,
-                                        embed_dim=128,
-                                        num_hidden_layers=4,
-                                        is_linear_attention=is_linear)
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
+
+    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+
+    model = TransformerDecoderWithCache(**ckpt['model'])
 
     state = TrainState.create(
         apply_fn=model.apply,
-        params=ckpt['params'],
+        params=ckpt['state']['params'],
         tx=optax.adam(learning_rate=0.0005),
-        dropout_rng=ckpt['dropout_rng'],
+        dropout_rng=ckpt['state']['dropout_rng'],
         epoch=0)
 
     def test(data_index):
@@ -526,25 +539,31 @@ def main_test_performance(data):
     print(t / v_mean_history.shape[0])
 
 
-def main_train(model, state, data):
+def main_train(model: TransformerDecoder, state, data):
     train_n = int(len(data[0]) * 0.8)
 
     train_data = [d[:train_n] for d in data]
     test_data = [d[train_n:] for d in data]
 
     ckpt_dir = './checkpoints/'
-    prefix = 'test_linear_'
 
-    checkpoints.save_checkpoint(
-        ckpt_dir=ckpt_dir, prefix=prefix,
-        target=state, step=state.epoch, overwrite=True)
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    options = orbax.checkpoint.CheckpointManagerOptions(save_interval_steps=50, create=True)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
+
+    save_checkpoint(state, model, checkpoint_manager)
+
+    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+
+    print(ckpt['state'].keys())
+    return
 
     start = time.perf_counter()
 
-    state = fit(state, ckpt_dir, prefix,
+    state = fit(state, model, checkpoint_manager,
                 train_data=train_data,
                 test_data=test_data,
-                epochs=8, batch_size=128)
+                epochs=12, batch_size=256)
 
     end = time.perf_counter()
     print(end - start)
@@ -595,6 +614,7 @@ def main():
     pieces_buffer = np.load(f'{dir_name}/pieces.npy')
 
     indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
+    indices = indices[:600000]
     np.random.shuffle(indices)
     tokens_buffer = tokens_buffer[indices]
     mask_buffer = mask_buffer[indices]
@@ -605,7 +625,7 @@ def main():
     data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=128, num_hidden_layers=4)
+    model = TransformerDecoder(num_heads=8, embed_dim=256, num_hidden_layers=5, is_linear_attention=False)
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
@@ -613,19 +633,12 @@ def main():
     state = TrainState.create(
         apply_fn=model.apply,
         params=variables['params'],
-        tx=optax.adam(learning_rate=0.001),
+        tx=optax.adam(learning_rate=0.0005),
         dropout_rng=key2,
         epoch=0)
 
-    # ckpt_dir = './checkpoints/'
-    # prefix = 'geister_'
-
-    # print(variables['params'].keys())
-
-    # state = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=state)
-
-    main_test_performance(data)
-    # main_train(model, state, data)
+    # main_test_performance(data)
+    main_train(model, state, data)
     # main_test(model, state, data)
 
 
