@@ -1,6 +1,7 @@
 import socket
 import numpy as np
 from flax.training import checkpoints
+import orbax.checkpoint
 
 import mcts
 import geister as game
@@ -14,8 +15,8 @@ DIRECTION_NAMES = ['N', 'W', 'E', 'S']
 
 
 class Client:
-    def __init__(self, params, num_sim: int, alpha: float) -> None:
-        self.model = TransformerDecoderWithCache(num_heads=8, embed_dim=128, num_hidden_layers=4)
+    def __init__(self, model, params, num_sim: int, alpha: float) -> None:
+        self.model = model
         self.pred_state = mcts.PredictState(self.model.apply, params)
 
         self.num_sim = num_sim
@@ -24,10 +25,14 @@ class Client:
         self.win_count = [0, 0, 0]
 
     def send(self, s: str):
+        print(f'SEND:[{s.rstrip()}]')
         self.socket.send(s.encode())
 
     def recv(self) -> str:
-        return self.socket.recv(2**12).decode()
+        s = self.socket.recv(2**12).decode()
+        print(f'RECV:[{s.rstrip()}]')
+
+        return s
 
     def init_state(self, color: np.ndarray):
         self.state = game.SimulationState(color, -1)
@@ -98,39 +103,36 @@ class Client:
         self.socket.connect((ip, port))
 
         set_msg = self.recv()
-        print('RECV:', set_msg)
 
         set_msg = format_set_message(self.state.color_p)
-        print('SEND:', set_msg)
         self.send(set_msg)
 
-        responce = self.recv()
-        print('RECV:', responce)
-
+        self.recv()
         board_msg = self.recv()
-        print('RECV:', board_msg)
 
         while True:
             pieces_o, _ = parse_board_str(board_msg)
             action_o = self.calc_opponent_action(pieces_o)
             self.apply_opponent_action(action_o)
 
+            print()
             self.print_board()
 
             action = self.select_next_action()
 
             action_msg = format_action_message(action)
-            print('SEND:', action_msg)
             self.send(action_msg)
 
             action_responce = self.recv()
-            print('RECV:', action_responce)
+
+            is_done, winner = is_done_message(action_responce)
+            if is_done:
+                self.win_count[winner + 1] += 1
+                break
 
             board_msg = self.recv()
-            print('RECV:', board_msg)
 
             is_done, winner = is_done_message(board_msg)
-
             if is_done:
                 self.win_count[winner + 1] += 1
                 break
@@ -212,8 +214,25 @@ def main(ip='127.0.0.1',
          num_sim=400,
          alpha=0.2):
 
-    ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints_backup_193/', prefix='geister_', target=None)
-    client = Client(ckpt['params'], num_sim, alpha)
+    if False:
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints_backup_203/',
+                                              prefix='geister_5_256_', target=None)
+        params = ckpt['params']
+
+        model = TransformerDecoderWithCache(num_heads=8,
+                                            embed_dim=256,
+                                            num_hidden_layers=5,
+                                            is_linear_attention=False)
+    else:
+        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/driven-bird-204', orbax_checkpointer)
+
+        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+
+        params = ckpt['state']['params']
+        model = TransformerDecoderWithCache(**ckpt['model'])
+
+    client = Client(model, params, num_sim, alpha)
 
     for i in range(100):
         try:

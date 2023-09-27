@@ -1,35 +1,31 @@
+import os
 import multiprocessing as mp
 
-import os
-
-# Limit ourselves to single-threaded jax/xla operations to avoid thrashing. See
-# https://github.com/google/jax/issues/743.
-os.environ["XLA_FLAGS"] = ("--xla_cpu_multi_thread_eigen=false "
-                           "intra_op_parallelism_threads=1")
-from datetime import datetime
-
-import jax
-import numpy as np
-import optax
-import orbax.checkpoint
-from flax.training import orbax_utils
-
 from tqdm import tqdm
+
+import numpy as np
 import wandb
 
 from buffer import ReplayBuffer
-import network_transformer as network
 import geister as game
-import mcts
 
 
 def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_sim: int, dirichlet_alpha: float):
+    os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+    import jax
+    import orbax.checkpoint
+
+    import network_transformer as network
+    import mcts
+
+    jax.config.update('jax_platform_name', 'cpu')
+
     np.random.seed(seed)
 
     with jax.default_device(jax.devices("cpu")[0]):
-        # v = jax.numpy.zeros((6, 200, 256))
-        # print(v.shape)
-
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
@@ -43,7 +39,10 @@ def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_s
         player2 = mcts.PlayerMCTS(ckpt['state']['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
 
         while True:
-            sample1, sample2 = selfplay(player1, player2)
+            actions, color1, color2 = mcts.play_game(player1, player2)
+
+            sample1 = player1.create_sample(actions, color2)
+            sample2 = player2.create_sample(actions, color1)
 
             queue.put(sample1)
             queue.put(sample2)
@@ -57,15 +56,6 @@ def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_s
                 last_n_updates = checkpoint_manager.latest_step()
 
 
-def selfplay(player1: mcts.PlayerMCTS, player2: mcts.PlayerMCTS):
-    actions, color1, color2 = mcts.play_game(player1, player2)
-
-    sample1 = player1.create_sample(actions, color2)
-    sample2 = player2.create_sample(actions, color1)
-
-    return sample1, sample2
-
-
 def main(n_clients=30,
          buffer_size=200000,
          batch_size=256,
@@ -74,18 +64,14 @@ def main(n_clients=30,
          num_mcts_sim=50,
          dirichlet_alpha=0.3):
 
-    wandb.init(project="geister-zero",
-               config={"dirichlet_alpha": dirichlet_alpha})
+    import optax
+    import orbax.checkpoint
 
-    dt = datetime.now()
-    dt_str = dt.strftime('%Y-%m-%d-%H-%M')
+    from buffer import ReplayBuffer
+    import network_transformer as network
 
-    ckpt_dir = f'./checkpoints/{dt_str}/'
-
-    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    options = orbax.checkpoint.CheckpointManagerOptions(save_interval_steps=50, create=True)
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
-
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_4', checkpointer)
     ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
 
     model = network.TransformerDecoder(**ckpt['model'])
@@ -97,6 +83,29 @@ def main(n_clients=30,
         dropout_rng=ckpt['state']['dropout_rng'],
         epoch=ckpt['state']['epoch'])
 
+    run_config = {
+        "batch_size": batch_size,
+        "num_batches": num_batches,
+        "num_mcts_sim": num_mcts_sim,
+        "dirichlet_alpha": dirichlet_alpha,
+        }
+    run_config.update(ckpt['model'])
+
+    run = wandb.init(project="geister-zero", config=run_config)
+    name = run.name
+
+    replay_buffer = ReplayBuffer(buffer_size=buffer_size,
+                                 seq_length=game.MAX_TOKEN_LENGTH,
+                                 file_name=f'replay_buffer/{name}.npz')
+    replay_buffer.load('replay_buffer/189.npz')
+
+    ckpt_dir = f'./checkpoints/{name}/'
+
+    options = orbax.checkpoint.CheckpointManagerOptions(save_interval_steps=50, create=True)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
+
+    network.save_checkpoint(state, model, checkpoint_manager)
+
     ctx = mp.get_context('spawn')
     sample_queue = ctx.Queue()
 
@@ -106,11 +115,6 @@ def main(n_clients=30,
 
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
-
-    replay_buffer = ReplayBuffer(buffer_size=buffer_size,
-                                 seq_length=game.MAX_TOKEN_LENGTH,
-                                 file_name=f'replay_buffer/{dt_str}.npz')
-    # replay_buffer.load('replay_buffer')
 
     while True:
         for i in tqdm(range(update_period)):
@@ -145,11 +149,12 @@ def log_games(buffer: ReplayBuffer, num_games: int, log_dict):
         log_dict[f'value/{i}'] = value_count[i] / num_games
 
 
-def train_and_log(state: network.TrainState,
+def train_and_log(state,
                   buffer: ReplayBuffer,
                   train_batch_size: int,
                   num_batches: int,
                   log_dict: dict):
+    import network_transformer as network
 
     if len(buffer) < num_batches * train_batch_size:
         return state
@@ -181,5 +186,7 @@ if __name__ == "__main__":
 
     except Exception:
         import traceback
+        traceback.print_exc()
+
         with open('error.log', 'w') as f:
             traceback.print_exc(file=f)

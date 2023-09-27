@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 build/
 checkpoints*/
+replay_buffer/
 log_gat/
 graph/
 log/
@@ -11,3 +12,4 @@ log.txt
 *.so
 *.lprof
 *.json
+*.log

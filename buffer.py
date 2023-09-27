@@ -1,4 +1,6 @@
+import os
 from dataclasses import dataclass, astuple
+
 import numpy as np
 import geister as game
 
@@ -24,7 +26,7 @@ class Batch:
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size: int, seq_length: int, file_name: str):
+    def __init__(self, buffer_size: int, seq_length: int, file_name: str = None):
         self.buffer_size = buffer_size
         self.file_name = file_name
         self.index = 0
@@ -40,19 +42,23 @@ class ReplayBuffer:
 
     def get_last__minibatch(self, batch_size):
         i = (self.index - batch_size) % self.buffer_size
+        indices = np.arange(i, i + batch_size)
 
-        tokens = self.tokens_buffer[i: i+batch_size]
-        policy = self.policy_buffer[i: i+batch_size]
-        reward = self.reward_buffer[i: i+batch_size]
-        colors = self.colors_buffer[i: i+batch_size]
-
-        mask = np.any(tokens != 0, axis=2)
-
-        return Batch(tokens, mask, policy, reward, colors)
+        return self.create_batch_from_indices(indices)
 
     def get_minibatch(self, batch_size):
         indices = np.random.choice(range(self.n_samples), size=batch_size)
 
+        return self.create_batch_from_indices(indices)
+
+    def get_all_batch(self, shuffle: bool):
+        indices = np.arange(self.n_samples)
+        if shuffle:
+            np.random.shuffle(indices)
+
+        return self.create_batch_from_indices(indices)
+
+    def create_batch_from_indices(self, indices):
         tokens = self.tokens_buffer[indices]
         policy = self.policy_buffer[indices]
         reward = self.reward_buffer[indices]
@@ -68,7 +74,7 @@ class ReplayBuffer:
         self.reward_buffer[self.index] = sample.reward
         self.colors_buffer[self.index] = sample.colors
 
-        if self.index == 0:
+        if self.file_name is not None and self.index == 0:
             self.save(self.file_name, append=True)
 
         self.n_samples = max(self.n_samples, self.index + 1)
@@ -80,7 +86,7 @@ class ReplayBuffer:
         reward = self.reward_buffer
         colors = self.colors_buffer
 
-        if append:
+        if append and os.path.isfile(file_name):
             with np.load(file_name) as data:
                 tokens = np.concatenate([data['t'], tokens])
                 policy = np.concatenate([data['p'], policy])
@@ -104,13 +110,42 @@ class ReplayBuffer:
             reward = data['r']
             colors = data['c']
 
-        n_samples = np.sum(np.any(colors != 0, axis=1))
-        n_samples = np.min(n_samples, self.buffer_size)
+        n_samples = int(np.sum(np.any(colors != 0, axis=1)))
+        n_samples = min(n_samples, self.buffer_size)
 
         self.tokens_buffer[:n_samples] = tokens[:n_samples]
         self.policy_buffer[:n_samples] = policy[:n_samples]
         self.reward_buffer[:n_samples] = reward[:n_samples]
         self.colors_buffer[:n_samples] = colors[:n_samples]
 
-        self.n_samples = int(n_samples)
-        self.index = int(self.n_samples % self.buffer_size)
+        self.n_samples = n_samples
+        self.index = self.n_samples % self.buffer_size
+
+
+def main():
+    dir_name = 'replay_buffer'
+
+    tokens_buffer = np.load(f'{dir_name}/tokens.npy')
+    mask_buffer = np.load(f'{dir_name}/mask.npy')
+    policy_buffer = np.load(f'{dir_name}/policy.npy')
+    reward_buffer = np.load(f'{dir_name}/reward.npy')
+    pieces_buffer = np.load(f'{dir_name}/pieces.npy')
+
+    indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
+    indices = indices[:600000]
+    tokens_buffer = tokens_buffer[indices]
+    policy_buffer = policy_buffer[indices]
+    reward_buffer = reward_buffer[indices]
+    pieces_buffer = pieces_buffer[indices]
+
+    save_dict = {
+        't': tokens_buffer,
+        'p': policy_buffer,
+        'r': reward_buffer,
+        'c': pieces_buffer,
+    }
+    np.savez(f'{dir_name}/189.npz', **save_dict)
+
+
+if __name__ == "__main__":
+    main()

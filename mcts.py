@@ -230,7 +230,7 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState):
 
-    action, e, escaped_id = find_checkmate(state, player, depth=6)
+    action, e, escaped_id = find_checkmate(state, player, depth=4)
 
     if e > 0:
         next_node = Node(node.root_player, node.weight_v)

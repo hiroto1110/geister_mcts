@@ -2,6 +2,7 @@ from typing import Any
 from functools import partial
 import time
 import dataclasses
+import itertools
 
 import numpy as np
 import jax
@@ -12,7 +13,9 @@ import orbax.checkpoint
 from flax.training import orbax_utils
 import optax
 
-import matplotlib.pyplot as plt
+import wandb
+
+from buffer import ReplayBuffer
 
 
 class Embeddings(nn.Module):
@@ -181,40 +184,6 @@ class MultiHeadAttentionWithCache(nn.Module):
         q_i = nn.Dense(features=self.embed_dim)(x).reshape(self.num_heads, head_dim)
         k_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
 
-        # [SeqLen k + 1, Head, Dim]
-        v = jnp.concatenate((v, v_i), axis=0)
-        k = jnp.concatenate((k, k_i), axis=0)
-
-        # [Head, SeqLen k + SeqLen q]
-        attention = jnp.einsum('hd,khd->hk', q_i, k) / jnp.sqrt(head_dim)
-        attention = nn.softmax(attention, axis=-1)
-
-        # [Head, Dim]
-        values = jnp.einsum('hk,khd->hd', attention, v)
-        # [EmbedDim]
-        values = values.reshape(self.embed_dim)
-        # [EmbedDim]
-        out_i = nn.Dense(self.embed_dim)(values)
-
-        return out_i, v, k
-
-
-class MultiHeadAttentionWithCache2(nn.Module):
-    num_heads: int
-    embed_dim: int
-
-    @nn.compact
-    def __call__(self, x, v, k):
-        # x: [EmbedDim]
-        # v: [SeqLen k, Head, Dim]
-        # k: [SeqLen k, Head, Dim]
-        head_dim = self.embed_dim // self.num_heads
-
-        # [1, Head, Dim]
-        v_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
-        q_i = nn.Dense(features=self.embed_dim)(x).reshape(self.num_heads, head_dim)
-        k_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
-
         # [SeqLen k, Head, Dim]
         v = jnp.concatenate((v[1:], v_i), axis=0)
         k = jnp.concatenate((k[1:], k_i), axis=0)
@@ -284,7 +253,7 @@ class TransformerBlockWithCache(nn.Module):
                 num_heads=self.num_heads,
                 embed_dim=self.embed_dim)
         else:
-            self.attention = MultiHeadAttentionWithCache2(
+            self.attention = MultiHeadAttentionWithCache(
                 num_heads=self.num_heads,
                 embed_dim=self.embed_dim)
 
@@ -447,22 +416,38 @@ def create_batches(data, batch_size):
     return data_batched
 
 
-def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_size):
+def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_size, log_wandb):
     train_data_batched = [create_batches(data, batch_size) for data in train_data]
     test_data_batched = [create_batches(data, batch_size) for data in test_data]
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
-        # Training
-        state, loss_train, info_train = train_epoch(state, train_data_batched, eval=False)
+        start = time.perf_counter()
 
-        # Evaluation
+        state, loss_train, info_train = train_epoch(state, train_data_batched, eval=False)
         _, loss_test, info_test = train_epoch(state, test_data_batched, eval=True)
+
+        elapsed_time = time.perf_counter() - start
 
         print(f'Epoch: {epoch}, ', end='')
         print(f'Loss: ({loss_train:.3f}, {loss_test:.3f}), ', end='')
         print(f'P: ({info_train[0]:.3f}, {info_test[0]:.3f}), ', end='')
         print(f'V: ({info_train[1]:.3f}, {info_test[1]:.3f}), ', end='')
         print(f'C: ({info_train[2]:.3f}, {info_test[2]:.3f})')
+
+        log_dict = {
+            'epoch': epoch,
+            'elapsed time': elapsed_time,
+            'train/loss': loss_train,
+            'train/loss policy': info_train[0],
+            'train/loss value': info_train[1],
+            'train/loss color': info_train[2],
+            'test/loss': loss_test,
+            'test/loss policy': info_test[0],
+            'test/loss value': info_test[1],
+            'test/loss color': info_test[2],
+        }
+        if log_wandb:
+            wandb.log(log_dict)
 
         state = state.replace(epoch=state.epoch + 1)
         save_checkpoint(state, model, checkpoint_manager)
@@ -475,9 +460,54 @@ class TrainState(train_state.TrainState):
     dropout_rng: Any
 
 
-@partial(jax.jit, device=jax.devices("cpu")[0])
-def predict(state, x, cache1, cache2):
-    return state.apply_fn({'params': state.params}, x, cache1, cache2)
+def main_train(data, log_wandb=True):
+    train_n = int(len(data[0]) * 0.8)
+
+    train_data = [d[:train_n] for d in data]
+    test_data = [d[train_n:] for d in data]
+
+    key, key1, key2 = random.split(random.PRNGKey(0), 3)
+
+    heads = 4,
+    dims = 128, 256, 512
+    num_layers = 2, 4
+
+    for h, d, n in itertools.product(heads, dims, num_layers):
+        if log_wandb:
+            name = f'h={h}, d={d}, n={n}'
+            run_config = {
+                'num heads': h,
+                'embed dim': d,
+                'num layers': n,
+            }
+            run = wandb.init(project='network benchmark', config=run_config, name=name)
+
+        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False)
+
+        variables = model.init(key1, data[0][:1])
+        state = TrainState.create(
+            apply_fn=model.apply,
+            params=variables['params'],
+            tx=optax.adam(learning_rate=0.0005),
+            dropout_rng=key2,
+            epoch=0)
+
+        ckpt_dir = f'./checkpoints/{h}_{d}_{n}'
+
+        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        options = orbax.checkpoint.CheckpointManagerOptions(create=True)
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
+
+        save_checkpoint(state, model, checkpoint_manager)
+
+        state = fit(state, model, checkpoint_manager,
+                    train_data=train_data,
+                    test_data=test_data,
+                    epochs=12, batch_size=256,
+                    log_wandb=log_wandb)
+
+        if log_wandb:
+            run.finish()
 
 
 def create_ckpt(state: TrainState, model: TransformerDecoder):
@@ -490,6 +520,11 @@ def save_checkpoint(state: TrainState,
     ckpt = create_ckpt(state, model)
     save_args = orbax_utils.save_args_from_target(ckpt)
     checkpoint_manager.save(state.epoch, ckpt, save_kwargs={'save_args': save_args})
+
+
+@partial(jax.jit, device=jax.devices("cpu")[0])
+def predict(state, x, cache1, cache2):
+    return state.apply_fn({'params': state.params}, x, cache1, cache2)
 
 
 def main_test_performance(data):
@@ -539,107 +574,16 @@ def main_test_performance(data):
     print(t / v_mean_history.shape[0])
 
 
-def main_train(model: TransformerDecoder, state, data):
-    train_n = int(len(data[0]) * 0.8)
-
-    train_data = [d[:train_n] for d in data]
-    test_data = [d[train_n:] for d in data]
-
-    ckpt_dir = './checkpoints/'
-
-    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    options = orbax.checkpoint.CheckpointManagerOptions(save_interval_steps=50, create=True)
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
-
-    save_checkpoint(state, model, checkpoint_manager)
-
-    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
-
-    print(ckpt['state'].keys())
-    return
-
-    start = time.perf_counter()
-
-    state = fit(state, model, checkpoint_manager,
-                train_data=train_data,
-                test_data=test_data,
-                epochs=12, batch_size=256)
-
-    end = time.perf_counter()
-    print(end - start)
-
-
-def main_test(model, state, data):
-    start = time.perf_counter()
-
-    n = 128
-    pi, v, c, attention = model.apply({'params': state.params}, data[0][:n], eval=True)
-
-    end = time.perf_counter()
-    print(end - start)
-
-    y_pi = data[1][:n].reshape((-1, MAX_LENGTH))
-    y_v = jnp.tile(data[2][:n], MAX_LENGTH).reshape((-1, MAX_LENGTH, 1))
-    y_c = jnp.tile(data[3][:n], MAX_LENGTH).reshape((-1, MAX_LENGTH, 8))
-
-    loss_policy = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi).mean(axis=(0,))
-    loss_reward = optax.squared_error(v, y_v).mean(axis=(0, 2))
-    loss_piece = optax.sigmoid_binary_cross_entropy(c, y_c).mean(axis=(0, 2))
-
-    acc_piece = jnp.mean((c > 0) == y_c, axis=(0, 2))
-
-    plt.plot(loss_policy)
-    plt.savefig("fig_loss_policy")
-    plt.clf()
-
-    plt.plot(loss_reward)
-    plt.savefig("fig_loss_reward")
-    plt.clf()
-
-    plt.plot(loss_piece)
-    plt.savefig("fig_loss_piece")
-    plt.clf()
-
-    plt.plot(acc_piece)
-    plt.savefig("fig_acc_piece")
-
-
 def main():
-    dir_name = 'replay_buffer'
+    buffer = ReplayBuffer(600000, 200)
 
-    tokens_buffer = np.load(f'{dir_name}/tokens.npy')
-    mask_buffer = np.load(f'{dir_name}/mask.npy')
-    policy_buffer = np.load(f'{dir_name}/policy.npy')
-    reward_buffer = np.load(f'{dir_name}/reward.npy')
-    pieces_buffer = np.load(f'{dir_name}/pieces.npy')
+    buffer.load('replay_buffer/189.npz')
+    data = buffer.get_all_batch(shuffle=True).astuple()
 
-    indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
-    indices = indices[:600000]
-    np.random.shuffle(indices)
-    tokens_buffer = tokens_buffer[indices]
-    mask_buffer = mask_buffer[indices]
-    policy_buffer = policy_buffer[indices]
-    reward_buffer = reward_buffer[indices]
-    pieces_buffer = pieces_buffer[indices]
-
-    data = tokens_buffer, mask_buffer, policy_buffer, reward_buffer, pieces_buffer
     print(data[0].shape)
 
-    model = TransformerDecoder(num_heads=8, embed_dim=256, num_hidden_layers=5, is_linear_attention=False)
-
-    key, key1, key2 = random.split(random.PRNGKey(0), 3)
-
-    variables = model.init(key1, data[0][:1])
-    state = TrainState.create(
-        apply_fn=model.apply,
-        params=variables['params'],
-        tx=optax.adam(learning_rate=0.0005),
-        dropout_rng=key2,
-        epoch=0)
-
     # main_test_performance(data)
-    main_train(model, state, data)
-    # main_test(model, state, data)
+    main_train(data)
 
 
 if __name__ == "__main__":
