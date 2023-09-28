@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 from flax import core, struct
 from flax.training import checkpoints
+import orbax.checkpoint
 
 import geister as game
 import geister_lib
@@ -157,21 +158,34 @@ def visibilize_node_graph(node: Node, g: Digraph):
             visibilize_node_graph(child, g)
 
 
-def sim_state_to_str(state: game.SimulationState, predicted_v):
-    board = np.zeros(36, dtype=np.int8)
+def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
+    color_int = (np.array(color) * 10).astype(dtype=np.int16)
+    color_int = np.clip(color_int, 0, 9)
 
-    board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.BLUE)]] = 1
-    board[state.pieces_p[(state.pieces_p >= 0) & (state.color_p == game.RED)]] = 2
-    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.BLUE)]] = -1
-    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.RED)]] = -2
-    board[state.pieces_o[(state.pieces_o >= 0) & (state.color_o == game.UNCERTAIN_PIECE)]] = -3
+    line = [" " for _ in range(36)]
+    for i in range(8):
+        pos = state.pieces_p[i]
+        color = state.color_p[i]
+        if pos != game.CAPTURED:
+            if color == game.BLUE:
+                line[pos] = 'B'
+            else:
+                line[pos] = 'R'
 
-    s = str(board.reshape((6, 6))).replace('0', ' ')
-    s = s.replace('[[', ' [').replace('[', '|')
-    s = s.replace(']]', ']').replace(']', '|')
+        pos = state.pieces_o[i]
+        color = state.color_o[i]
+        if pos != game.CAPTURED:
+            if color == game.BLUE:
+                line[pos] = 'b'
+            elif color == game.RED:
+                line[pos] = 'r'
+            else:
+                line[pos] = str(color_int[i])
+    lines = ["|" + " ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
+    s = "\r\n".join(lines)
 
-    vp = str.join(",", [str(int(v * 100)) for v in predicted_v])
-    v = np.sum(predicted_v * np.array([-1, -1, -1, 0, 1, 1, 1]))
+    vp = str.join(",", [str(int(v_i * 100)) for v_i in v])
+    v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
     s = f"[{vp}]\r\nv={v:.3f}\r\n" + s
 
     n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
@@ -193,7 +207,7 @@ def expand_afterstate(node: Node,
     v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
 
     if should_do_visibilize_node_graph:
-        next_node.state_str = sim_state_to_str(state, next_node.predicted_v)
+        next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
 
     next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
     next_node.p[0] = 1 - next_node.p[1]
@@ -212,14 +226,14 @@ def expand(node: Node,
 
     if next_node.winner != 0:
         if should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [next_node.winner])
+            next_node.state_str = sim_state_to_str(state, [next_node.winner], [0.5]*8)
 
         return next_node, next_node.winner
 
     v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
 
     if should_do_visibilize_node_graph:
-        next_node.state_str = sim_state_to_str(state, next_node.predicted_v)
+        next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
 
     return next_node, v
 
@@ -237,7 +251,7 @@ def try_expand_checkmate(node: Node,
         next_node.winner = 1
 
         if should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [100])
+            next_node.state_str = sim_state_to_str(state, [100], [0.5]*8)
 
         return True, next_node, 1
 
@@ -400,7 +414,7 @@ def select_action_with_mcts(node: Node,
                             checkmate_search_depth=7):
 
     if should_do_visibilize_node_graph:
-        node.state_str = sim_state_to_str(state, [0])
+        node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
     action, e, escaped_id = find_checkmate(state, 1, depth=checkmate_search_depth)
 
@@ -580,39 +594,33 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_b
     return action_history, state1.color_p, state2.color_p
 
 
-def init_jit(state: PredictState, model: TransformerDecoderWithCache, data):
-    cv, ck = model.create_cache(0)
-
-    for t in range(100):
-        print(t)
-        _, _, _, cv, ck = predict(state, data[0][0, t], cv, ck)
-
-
-# should_do_visibilize_node_graph = False
-
-
 def test():
-    # data = [jnp.load(f"data_{i}.npy") for i in range(4)]
+    if True:
+        ckpt_dir = './checkpoints/driven-bird-204'
+        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    model_with_cache = TransformerDecoderWithCache(num_heads=8,
-                                                   embed_dim=128,
-                                                   num_hidden_layers=4,
-                                                   is_linear_attention=True)
+        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
 
-    ckpt_dir = './checkpoints_backup_195/'
-    prefix = 'geister_linear_'
+        model = TransformerDecoderWithCache(**ckpt['model'])
+        params = ckpt['state']['params']
 
-    ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
+    else:
+        model = TransformerDecoderWithCache(num_heads=8,
+                                            embed_dim=128,
+                                            num_hidden_layers=4,
+                                            is_linear_attention=True)
 
-    # init_jit(pred_state, model_with_cache, data)
+        ckpt_dir = './checkpoints/driven-bird-204'
+        prefix = 'geister_linear_'
+
+        ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
 
     np.random.seed(120)
 
-    win_count = np.zeros(7)
-
-    player1 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1,
+    player1 = PlayerMCTS(params, model, num_mcts_sim=100, dirichlet_alpha=0.1,
                          n_ply_to_apply_noise=0, max_duplicates=1)
-    player2 = PlayerMCTS(ckpt['params'], model_with_cache, num_mcts_sim=100, dirichlet_alpha=0.1,
+    player2 = PlayerMCTS(params, model, num_mcts_sim=100, dirichlet_alpha=0.1,
                          n_ply_to_apply_noise=0, max_duplicates=1)
 
     player1.n_ply_to_apply_noise = 0
@@ -623,13 +631,6 @@ def test():
 
     for i in range(1):
         play_game(player1, player2, game_length=200, print_board=True)
-
-        # winner, win_type = play_test_game(pred_state, model_with_cache, 20, 0.3, print_board=False)
-
-        # index = int(winner * win_type.value) + 3
-        # win_count[index] += 1
-
-        print(win_count)
 
 
 if __name__ == "__main__":
