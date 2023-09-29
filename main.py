@@ -35,8 +35,13 @@ def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_s
 
         last_n_updates = checkpoint_manager.latest_step()
 
-        player1 = mcts.PlayerMCTS(ckpt['state']['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
-        player2 = mcts.PlayerMCTS(ckpt['state']['params'], model, num_mcts_sim, dirichlet_alpha, 20, 3)
+        mcts_params = mcts.SearchParameters(num_mcts_sim,
+                                            dirichlet_alpha=dirichlet_alpha,
+                                            n_ply_to_apply_noise=20,
+                                            max_duplicates=3)
+
+        player1 = mcts.PlayerMCTS(ckpt['state']['params'], model, mcts_params)
+        player2 = mcts.PlayerMCTS(ckpt['state']['params'], model, mcts_params)
 
         while True:
             actions, color1, color2 = mcts.play_game(player1, player2)

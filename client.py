@@ -15,13 +15,11 @@ DIRECTION_NAMES = ['N', 'W', 'E', 'S']
 
 
 class Client:
-    def __init__(self, model, params, num_sim: int, alpha: float) -> None:
+    def __init__(self, model, params, search_params: mcts.SearchParameters) -> None:
         self.model = model
         self.pred_state = mcts.PredictState(self.model.apply, params)
 
-        self.num_sim = num_sim
-        self.alpha = alpha
-
+        self.search_params = search_params
         self.win_count = [0, 0, 0]
 
     def send(self, s: str):
@@ -40,9 +38,7 @@ class Client:
 
     def select_next_action(self):
         if not self.state.is_done:
-            return mcts.select_action_with_mcts(self.node, self.state, self.pred_state,
-                                                self.num_sim, self.alpha,
-                                                checkmate_search_depth=10)
+            return mcts.select_action_with_mcts(self.node, self.state, self.pred_state, self.search_params)
 
         assert self.state.win_type == game.WinType.ESCAPE
 
@@ -232,7 +228,14 @@ def main(ip='127.0.0.1',
         params = ckpt['state']['params']
         model = TransformerDecoderWithCache(**ckpt['model'])
 
-    client = Client(model, params, num_sim, alpha)
+    search_params = mcts.SearchParameters(num_sim,
+                                          dirichlet_alpha=alpha,
+                                          n_ply_to_apply_noise=0,
+                                          depth_search_checkmate_leaf=6,
+                                          depth_search_checkmate_root=10,
+                                          max_duplicates=8)
+
+    client = Client(model, params, search_params)
 
     for i in range(100):
         try:
