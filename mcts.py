@@ -10,13 +10,14 @@ from flax import core, struct
 from flax.training import checkpoints
 import orbax.checkpoint
 
+from graphviz import Digraph
+from line_profiler import profile
+import termcolor
+
 import geister as game
 import geister_lib
 from network_transformer import TransformerDecoderWithCache
 from buffer import Sample
-
-from graphviz import Digraph
-from line_profiler import profile
 
 
 class PredictState(struct.PyTreeNode):
@@ -95,7 +96,7 @@ class Node:
         self.p = np.array(nn.softmax(self.p))
 
     def calc_scores(self, player: int, params: SearchParameters):
-        c = self.c_init * np.log((self.n.sum() + 1 + params.c_base) / params.c_base)
+        c = params.c_init * np.log((self.n.sum() + 1 + params.c_base) / params.c_base)
 
         U = c * self.p * np.sqrt(self.n.sum() + 1) / (self.n + 1)
         Q = player * self.w / np.where(self.n != 0, self.n, 1)
@@ -161,30 +162,7 @@ def visibilize_node_graph(node: Node, g: Digraph):
 
 
 def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
-    color_int = (np.array(color) * 10).astype(dtype=np.int16)
-    color_int = np.clip(color_int, 0, 9)
-
-    line = [" " for _ in range(36)]
-    for i in range(8):
-        pos = state.pieces_p[i]
-        color = state.color_p[i]
-        if pos != game.CAPTURED:
-            if color == game.BLUE:
-                line[pos] = 'B'
-            else:
-                line[pos] = 'R'
-
-        pos = state.pieces_o[i]
-        color = state.color_o[i]
-        if pos != game.CAPTURED:
-            if color == game.BLUE:
-                line[pos] = 'b'
-            elif color == game.RED:
-                line[pos] = 'r'
-            else:
-                line[pos] = str(color_int[i])
-    lines = ["|" + " ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
-    s = "\r\n".join(lines)
+    s = state_to_str(state, color)
 
     vp = str.join(",", [str(int(v_i * 100)) for v_i in v])
     v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
@@ -196,6 +174,34 @@ def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
     s += f"\r\nblue={n_cap_b} red={n_cap_r}"
 
     return s
+
+
+def state_to_str(state: game.SimulationState, predicted_color: np.ndarray) -> str:
+    color_int = (np.array(predicted_color) * 10).astype(dtype=np.int16)
+    color_int = np.clip(color_int, 0, 9)
+
+    line = [" " for _ in range(36)]
+    for i in range(8):
+        pos = state.pieces_p[i]
+        color = state.color_p[i]
+        if pos != game.CAPTURED:
+            if color == game.BLUE:
+                line[pos] = termcolor.colored('B', color='blue')
+            else:
+                line[pos] = termcolor.colored('R', color='red')
+
+        pos = state.pieces_o[i]
+        color = state.color_o[i]
+        if pos != game.CAPTURED:
+            if color == game.BLUE:
+                line[pos] = termcolor.colored('b', color='blue')
+            elif color == game.RED:
+                line[pos] = termcolor.colored('r', color='red')
+            else:
+                line[pos] = str(color_int[i])
+
+    lines = ["|" + "  ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
+    return "\r\n".join(lines)
 
 
 @profile
@@ -444,7 +450,7 @@ def select_action_with_mcts(node: Node,
                 node.p[a] = (1 - params.dirichlet_eps) * node.p[a] + params.dirichlet_eps * noise
 
         for _ in range(params.num_simulations):
-            simulate(node, state, 1, pred_state)
+            simulate(node, state, 1, pred_state, params)
 
         policy = node.get_policy()
         if params.n_ply_to_apply_noise < state.n_ply:
@@ -495,7 +501,7 @@ def create_root_node(state: game.SimulationState,
 
     tokens = state.create_init_tokens()
 
-    setup_node(node, pred_state, tokens, cv, ck)
+    setup_node(node, pred_state, tokens, cv, ck, 1)
 
     return node, tokens
 

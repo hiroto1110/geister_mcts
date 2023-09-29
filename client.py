@@ -65,17 +65,18 @@ class Client:
                 afterstate = afterstates[i]
                 color_i = color if afterstate.type == game.AfterstateType.CAPTURING else 0
 
-                child, _ = mcts.expand_afterstate(self.node, tokens, afterstates[i:], self.state, self.pred_state)
+                child, _ = mcts.expand_afterstate(self.node, tokens, afterstates[i:],
+                                                  self.state, self.pred_state, self.search_params)
                 tokens_afterstate = self.state.step_afterstate(afterstate, color_i)
                 tokens += tokens_afterstate
 
-            self.node, _ = mcts.expand(child, tokens_afterstate, self.state, self.pred_state)
+            self.node, _ = mcts.expand(child, tokens_afterstate, self.state, self.pred_state, self.search_params)
         else:
-            self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state)
+            self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state, self.search_params)
 
     def apply_opponent_action(self, action):
         tokens, _ = self.state.step(action, -1)
-        self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state)
+        self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state, self.search_params)
 
     def calc_opponent_action(self, pieces):
         p_id = np.where(pieces != self.state.pieces_o)[0][0]
@@ -86,13 +87,12 @@ class Client:
         return p_id * 4 + d_id
 
     def print_board(self):
-        board = np.zeros(36, dtype=np.int8)
-        board[self.state.pieces_p[(self.state.pieces_p >= 0) & (self.state.color_p == 1)]] = 1
-        board[self.state.pieces_p[(self.state.pieces_p >= 0) & (self.state.color_p == 0)]] = 2
-        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 1)]] = -1
-        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 0)]] = -2
-        board[self.state.pieces_o[(self.state.pieces_o >= 0) & (self.state.color_o == 2)]] = -3
-        print(str(board.reshape((6, 6))).replace('0', ' '))
+        color = self.node.predicted_color
+        if color is None:
+            color = np.array([0.5]*8)
+
+        s = mcts.state_to_str(self.state, color)
+        print(s)
 
     def start(self, ip, port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
