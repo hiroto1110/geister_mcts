@@ -1,16 +1,43 @@
 import os
-import multiprocessing as mp
+import multiprocessing
+from multiprocessing.connection import Connection
+from dataclasses import dataclass
 
 from tqdm import tqdm
 
 import numpy as np
 import wandb
 
-from buffer import ReplayBuffer
+from buffer import ReplayBuffer, Sample
 import geister as game
 
 
-def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_sim: int, dirichlet_alpha: float):
+class MultiRecieverPipe:
+    def __init__(self, num_recievers, ctx=multiprocessing) -> None:
+        self.num_recievers = num_recievers
+        self.pipes = [ctx.Pipe() for _ in num_recievers]
+    
+    def send(self, obj):
+        for sender, _ in self.pipes:
+            sender.send(obj)
+    
+    def get_reciever(self, i):
+        return self.pipes[i][1]
+
+
+@dataclass
+class MatchResult:
+    sample1: Sample
+    sample2: Sample
+    is_selfplay: bool
+
+
+def start_selfplay_process(queue: multiprocessing.Queue,
+                           ckpt_reciever: Connection,
+                           ckpt_dir: str,
+                           seed: int,
+                           num_mcts_sim: int,
+                           dirichlet_alpha: float):
     os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -32,6 +59,9 @@ def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_s
         ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
 
         model = network.TransformerDecoderWithCache(**ckpt['model'])
+        current_params = ckpt['state']['params']
+
+        params_checkpoints = [current_params]
 
         last_n_updates = checkpoint_manager.latest_step()
 
@@ -40,25 +70,36 @@ def start_selfplay_process(queue: mp.Queue, ckpt_dir: str, seed: int, num_mcts_s
                                             n_ply_to_apply_noise=20,
                                             max_duplicates=3)
 
-        player1 = mcts.PlayerMCTS(ckpt['state']['params'], model, mcts_params)
-        player2 = mcts.PlayerMCTS(ckpt['state']['params'], model, mcts_params)
+        player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
+        player2 = mcts.PlayerMCTS(current_params, model, mcts_params)
 
         while True:
+            if np.random.random() > 0.5:
+                is_selfplay = True
+                opponent_params = current_params
+            else:
+                is_selfplay = False
+                opponent_params = np.random.choice(params_checkpoints)
+
+            player2.update_params(opponent_params)
+
             actions, color1, color2 = mcts.play_game(player1, player2)
 
             sample1 = player1.create_sample(actions, color2)
             sample2 = player2.create_sample(actions, color1)
 
-            queue.put(sample1)
-            queue.put(sample2)
+            queue.put(MatchResult(sample1, sample2, is_selfplay))
 
-            if last_n_updates != checkpoint_manager.latest_step():
+            if ckpt_reciever.poll():
+                is_league_member = ckpt_reciever.recv()
+
                 ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
 
-                player1.update_params(ckpt['state']['params'])
-                player2.update_params(ckpt['state']['params'])
+                current_params = ckpt['state']['params']
 
-                last_n_updates = checkpoint_manager.latest_step()
+                player1.update_params(current_params)
+                if is_league_member:
+                    params_checkpoints.append(current_params)
 
 
 def main(n_clients=30,
@@ -111,12 +152,14 @@ def main(n_clients=30,
 
     network.save_checkpoint(state, model, checkpoint_manager)
 
-    ctx = mp.get_context('spawn')
+    ctx = multiprocessing.get_context('spawn')
     sample_queue = ctx.Queue()
+    ckpt_sender = MultiRecieverPipe(n_clients, ctx=ctx)
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
-        args = sample_queue, ckpt_dir, seed, num_mcts_sim, dirichlet_alpha
+        ckpt_reciever = ckpt_sender.get_reciever(i)
+        args = sample_queue, ckpt_reciever, ckpt_dir, seed, num_mcts_sim, dirichlet_alpha
 
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
