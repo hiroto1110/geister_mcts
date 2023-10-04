@@ -9,8 +9,19 @@ class MatchResult:
     win: bool
 
 
+def underestimation(w, n, a=1.64):
+    n = np.where(n != 0, n, 1)
+
+    b = (a**2 + 2*w) / (a**2 + n)
+    c = w**2 / (n*a**2 + n**2)
+
+    p = 0.5 * b - np.sqrt(0.25 * b**2 - c)
+
+    return p
+
+
 class FSP:
-    def __init__(self, n_agents: int, match_buffer_size=1000, ucb_c=0.1, p=2) -> None:
+    def __init__(self, n_agents: int, match_buffer_size=1000, p=2) -> None:
         self.n = np.zeros(n_agents)
         self.w = np.zeros(n_agents)
         self.n_agents = n_agents
@@ -19,14 +30,13 @@ class FSP:
         maxlen = match_buffer_size * n_agents
         self.match_deque = deque(maxlen=maxlen)
 
-        self.ucb_c = ucb_c
-
         self.score_func = lambda x: (1 - x) ** p
 
     def next_match(self) -> int:
-        win_rate = self.w / np.where(self.n != 0, self.n, 1)
+        # win_rate = self.w / np.where(self.n != 0, self.n, 1)
+        win_rate = underestimation(self.w, self.n)
         score = self.score_func(win_rate)
-        score += self.ucb_c * np.sqrt((self.n.sum() + 1) / (self.n + 1))
+        # score += self.ucb_c * np.sqrt((self.n.sum() + 1) / (self.n + 1))
 
         score = score / score.sum()
 
@@ -60,7 +70,7 @@ class FSP:
 def main():
     true_p = np.array([0.9, 0.7, 0.61, 0.59, 0.58])
 
-    fsp = FSP(n_agents=true_p.shape[0], ucb_c=0.001, match_buffer_size=500, p=4)
+    fsp = FSP(n_agents=true_p.shape[0], match_buffer_size=500, p=6)
 
     for i in range(2000):
         id = fsp.next_match()

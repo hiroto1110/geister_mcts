@@ -91,7 +91,7 @@ def main(n_clients=30,
          buffer_size=200000,
          batch_size=256,
          num_batches=16,
-         update_period=400,
+         update_period=200,
          num_mcts_sim=50,
          dirichlet_alpha=0.3,
          fsp_threshold=0.6):
@@ -104,7 +104,7 @@ def main(n_clients=30,
     import network_transformer as network
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_2', checkpointer)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_4', checkpointer)
     # ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
     ckpt = checkpoint_manager.restore(0)
 
@@ -145,7 +145,7 @@ def main(n_clients=30,
     match_result_queue = ctx.Queue()
     ckpt_queues = [ctx.Queue() for _ in range(n_clients)]
 
-    for _ in range(n_clients + 1):
+    for _ in range(n_clients * 2):
         match_request_queue.put(0)
 
     for i in range(n_clients):
@@ -161,7 +161,7 @@ def main(n_clients=30,
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    fsp = FSP(1, match_buffer_size=500, ucb_c=0.005, p=3)
+    fsp = FSP(1, match_buffer_size=500, p=6)
 
     while True:
         for i in tqdm(range(update_period // 2)):
@@ -189,7 +189,9 @@ def main(n_clients=30,
 
         print(fsp.n, win_rate)
 
-        log_dict['fsp/win_rate'] = wandb.Histogram(win_rate, num_bins=20)
+        for i in range(len(win_rate)):
+            log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
+
         log_dict['fsp/n_agents'] = fsp.n_agents
 
         for ckpt_queue in ckpt_queues:
