@@ -1,6 +1,5 @@
 import os
 import multiprocessing
-from multiprocessing.connection import Connection
 from dataclasses import dataclass
 
 from tqdm import tqdm
@@ -12,28 +11,19 @@ from buffer import ReplayBuffer, Sample
 import geister as game
 
 
-class MultiRecieverPipe:
-    def __init__(self, num_recievers, ctx=multiprocessing) -> None:
-        self.num_recievers = num_recievers
-        self.pipes = [ctx.Pipe() for _ in num_recievers]
-    
-    def send(self, obj):
-        for sender, _ in self.pipes:
-            sender.send(obj)
-    
-    def get_reciever(self, i):
-        return self.pipes[i][1]
-
-
 @dataclass
 class MatchResult:
     sample1: Sample
     sample2: Sample
-    is_selfplay: bool
+    agent_id: int
+
+    def is_winning(self):
+        return self.sample1.reward > 3
 
 
-def start_selfplay_process(queue: multiprocessing.Queue,
-                           ckpt_reciever: Connection,
+def start_selfplay_process(match_request_queue: multiprocessing.Queue,
+                           match_result_queue: multiprocessing.Queue,
+                           ckpt_queue: multiprocessing.Queue,
                            ckpt_dir: str,
                            seed: int,
                            num_mcts_sim: int,
@@ -63,62 +53,60 @@ def start_selfplay_process(queue: multiprocessing.Queue,
 
         params_checkpoints = [current_params]
 
-        last_n_updates = checkpoint_manager.latest_step()
-
         mcts_params = mcts.SearchParameters(num_mcts_sim,
                                             dirichlet_alpha=dirichlet_alpha,
                                             n_ply_to_apply_noise=20,
-                                            max_duplicates=3)
-
-        player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
-        player2 = mcts.PlayerMCTS(current_params, model, mcts_params)
+                                            max_duplicates=3,
+                                            depth_search_checkmate_leaf=4,
+                                            depth_search_checkmate_root=7)
 
         while True:
+            agent_id = match_request_queue.get()
+            opponent_params = params_checkpoints[agent_id]
+
+            player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
+            player2 = mcts.PlayerMCTS(opponent_params, model, mcts_params)
+
             if np.random.random() > 0.5:
-                is_selfplay = True
-                opponent_params = current_params
+                actions, color1, color2 = mcts.play_game(player1, player2)
             else:
-                is_selfplay = False
-                opponent_params = np.random.choice(params_checkpoints)
-
-            player2.update_params(opponent_params)
-
-            actions, color1, color2 = mcts.play_game(player1, player2)
+                actions, color2, color1 = mcts.play_game(player2, player1)
 
             sample1 = player1.create_sample(actions, color2)
             sample2 = player2.create_sample(actions, color1)
 
-            queue.put(MatchResult(sample1, sample2, is_selfplay))
+            match_result_queue.put(MatchResult(sample1, sample2, agent_id))
 
-            if ckpt_reciever.poll():
-                is_league_member = ckpt_reciever.recv()
-
-                ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
-
-                current_params = ckpt['state']['params']
-
-                player1.update_params(current_params)
+            if not ckpt_queue.empty():
+                step, is_league_member = ckpt_queue.get()
                 if is_league_member:
                     params_checkpoints.append(current_params)
+
+                # print(f'update: {step}')
+                ckpt = checkpoint_manager.restore(step)
+                current_params = ckpt['state']['params']
 
 
 def main(n_clients=30,
          buffer_size=200000,
          batch_size=256,
          num_batches=16,
-         update_period=200,
+         update_period=400,
          num_mcts_sim=50,
-         dirichlet_alpha=0.3):
+         dirichlet_alpha=0.3,
+         fsp_threshold=0.6):
 
     import optax
     import orbax.checkpoint
 
     from buffer import ReplayBuffer
+    from fsp import FSP
     import network_transformer as network
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_4', checkpointer)
-    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_2', checkpointer)
+    # ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+    ckpt = checkpoint_manager.restore(0)
 
     model = network.TransformerDecoder(**ckpt['model'])
 
@@ -147,39 +135,67 @@ def main(n_clients=30,
 
     ckpt_dir = f'./checkpoints/{name}/'
 
-    options = orbax.checkpoint.CheckpointManagerOptions(save_interval_steps=50, create=True)
+    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=50, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
 
     network.save_checkpoint(state, model, checkpoint_manager)
 
     ctx = multiprocessing.get_context('spawn')
-    sample_queue = ctx.Queue()
-    ckpt_sender = MultiRecieverPipe(n_clients, ctx=ctx)
+    match_request_queue = ctx.Queue()
+    match_result_queue = ctx.Queue()
+    ckpt_queues = [ctx.Queue() for _ in range(n_clients)]
+
+    for _ in range(n_clients + 1):
+        match_request_queue.put(0)
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
-        ckpt_reciever = ckpt_sender.get_reciever(i)
-        args = sample_queue, ckpt_reciever, ckpt_dir, seed, num_mcts_sim, dirichlet_alpha
+        args = (match_request_queue,
+                match_result_queue,
+                ckpt_queues[i],
+                ckpt_dir,
+                seed,
+                num_mcts_sim,
+                dirichlet_alpha)
 
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
+    fsp = FSP(1, match_buffer_size=500, ucb_c=0.005, p=3)
+
     while True:
-        for i in tqdm(range(update_period)):
-            while sample_queue.empty():
+        for i in tqdm(range(update_period // 2)):
+            while match_result_queue.empty():
                 pass
 
-            sample = sample_queue.get()
-            replay_buffer.add_sample(sample)
+            match_result = match_result_queue.get()
+            replay_buffer.add_sample(match_result.sample1)
+            replay_buffer.add_sample(match_result.sample2)
 
-        log_dict = {"step": state.epoch}
+            fsp.apply_match_result(match_result.agent_id, match_result.is_winning())
+
+            match_request_queue.put(fsp.next_match())
+
+        log_dict = {'step': state.epoch}
 
         log_games(replay_buffer, update_period, log_dict)
         state = train_and_log(state, replay_buffer, batch_size, num_batches, log_dict)
 
-        wandb.log(log_dict)
-
         network.save_checkpoint(state, model, checkpoint_manager)
+
+        is_league_member, win_rate = fsp.is_winning_all_agents(fsp_threshold)
+        if is_league_member:
+            fsp.add_agent()
+
+        print(fsp.n, win_rate)
+
+        log_dict['fsp/win_rate'] = wandb.Histogram(win_rate, num_bins=20)
+        log_dict['fsp/n_agents'] = fsp.n_agents
+
+        for ckpt_queue in ckpt_queues:
+            ckpt_queue.put((state.epoch, is_league_member))
+
+        wandb.log(log_dict)
 
 
 def log_games(buffer: ReplayBuffer, num_games: int, log_dict):
