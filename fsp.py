@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass
 import numpy as np
+from scipy.stats import beta
 
 
 @dataclass
@@ -9,14 +10,8 @@ class MatchResult:
     win: bool
 
 
-def underestimation(w, n, a=1.64):
-    n = np.where(n != 0, n, 1)
-
-    b = (a**2 + 2*w) / (a**2 + n)
-    c = w**2 / (n*a**2 + n**2)
-
-    p = 0.5 * b - np.sqrt(0.25 * b**2 - c)
-
+def underestimation(w, n, q=0.05):
+    p = beta.ppf(q, w + 1, (n - w) + 1)
     return p
 
 
@@ -34,10 +29,8 @@ class FSP:
         self.score_func = lambda x: (1 - x) ** p
 
     def next_match(self) -> int:
-        # win_rate = self.w / np.where(self.n != 0, self.n, 1)
         win_rate = underestimation(self.w, self.n)
         score = self.score_func(win_rate)
-        # score += self.ucb_c * np.sqrt((self.n.sum() + 1) / (self.n + 1))
 
         score = score / score.sum()
 
@@ -89,7 +82,8 @@ def main():
         fsp.apply_match_result(id, win)
 
         print(fsp.n)
-    print(fsp.is_winning_all_agents(0.55))
+    r = fsp.is_winning_all_agents(0.55)
+    print(underestimation(fsp.w, fsp.n))
 
     true_p = np.concatenate([true_p, [0.5]])
     fsp.add_agent()
@@ -102,7 +96,8 @@ def main():
 
         print(fsp.n)
 
-    print(fsp.is_winning_all_agents(0.55))
+    is_w, r = fsp.is_winning_all_agents(0.55)
+    print(r)
 
 
 if __name__ == "__main__":
