@@ -25,10 +25,11 @@ class FSP:
         self.n = np.zeros(n_agents)
         self.w = np.zeros(n_agents)
         self.n_agents = n_agents
-
         self.match_buffer_size = match_buffer_size
+
         maxlen = match_buffer_size * n_agents
         self.match_deque = deque(maxlen=maxlen)
+        self.agent_match_deques = [deque(maxlen=match_buffer_size) for _ in range(n_agents)]
 
         self.score_func = lambda x: (1 - x) ** p
 
@@ -53,8 +54,15 @@ class FSP:
 
         self.match_deque.append(MatchResult(agent_id, win))
 
+        self.agent_match_deques[agent_id].append(int(win))
+
     def is_winning_all_agents(self, win_rate_threshold: float) -> bool:
-        win_rate = self.w / np.where(self.n != 0, self.n, 1)
+        win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
+        win_rate = np.array(win_rate)
+
+        for matchs in self.agent_match_deques:
+            if len(matchs) < self.match_buffer_size:
+                return False, win_rate
 
         return np.all(win_rate > win_rate_threshold), win_rate
 
@@ -65,6 +73,8 @@ class FSP:
 
         maxlen = self.n_agents * self.match_buffer_size
         self.match_deque = deque(self.match_deque, maxlen=maxlen)
+
+        self.agent_match_deques.append(deque(maxlen=self.match_buffer_size))
 
 
 def main():
