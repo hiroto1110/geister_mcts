@@ -82,8 +82,7 @@ def main():
         fsp.apply_match_result(id, win)
 
         print(fsp.n)
-    r = fsp.is_winning_all_agents(0.55)
-    print(underestimation(fsp.w, fsp.n))
+    print(fsp.is_winning_all_agents(0.55))
 
     true_p = np.concatenate([true_p, [0.5]])
     fsp.add_agent()
@@ -96,8 +95,7 @@ def main():
 
         print(fsp.n)
 
-    is_w, r = fsp.is_winning_all_agents(0.55)
-    print(r)
+    print(fsp.is_winning_all_agents(0.55))
 
 
 if __name__ == "__main__":
