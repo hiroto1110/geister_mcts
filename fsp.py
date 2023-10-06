@@ -29,6 +29,13 @@ class FSP:
         self.score_func = lambda x: (1 - x) ** p
 
     def next_match(self) -> int:
+        if self.n_agents == 1:
+            return 0
+
+        for i in range(self.n_agents):
+            if len(self.agent_match_deques[i]) < self.match_buffer_size:
+                return i
+
         win_rate = underestimation(self.w, self.n)
         score = self.score_func(win_rate)
 
@@ -53,8 +60,8 @@ class FSP:
         win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
         win_rate = np.array(win_rate)
 
-        for matchs in self.agent_match_deques:
-            if len(matchs) < self.match_buffer_size:
+        for match_deque in self.agent_match_deques:
+            if len(match_deque) < self.match_buffer_size:
                 return False, win_rate
 
         return np.all(win_rate > win_rate_threshold), win_rate
@@ -94,7 +101,6 @@ def main():
         fsp.apply_match_result(id, win)
 
         print(fsp.n)
-
     print(fsp.is_winning_all_agents(0.55))
 
 
