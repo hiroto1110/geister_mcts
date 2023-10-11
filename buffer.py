@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, astuple
+from dataclasses import dataclass, astuple, field
 
 import numpy as np
 import geister as game
@@ -7,19 +7,19 @@ import geister as game
 
 @dataclass
 class Sample:
-    tokens: np.ndarray
-    policy: np.ndarray
-    reward: int
-    colors: np.ndarray
+    tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    reward: int = 0
+    colors: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
 
 @dataclass
 class Batch:
-    tokens: np.ndarray
-    mask: np.ndarray
-    policy: np.ndarray
-    reward: np.ndarray
-    colors: np.ndarray
+    tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    mask: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    reward: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    colors: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     def astuple(self):
         return astuple(self)

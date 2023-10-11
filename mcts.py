@@ -1,14 +1,12 @@
 from functools import partial
 from typing import List, Any, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 
 import numpy as np
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
 from flax import core, struct
-from flax.training import checkpoints
-import orbax.checkpoint
 
 from graphviz import Digraph
 from line_profiler import profile
@@ -26,6 +24,7 @@ class PredictState(struct.PyTreeNode):
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
+# @jax.jit
 def predict(state: PredictState, tokens, cache_v, cache_k):
     pi, v, c, cv, ck = state.apply_fn({'params': state.params}, tokens, cache_v, cache_k, eval=True)
 
@@ -46,7 +45,7 @@ class SearchParameters:
     c_base: int = 19652
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
-    v_weight: np.ndarray = np.array([-1, -1, -1, 0, 1, 1, 1])
+    v_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
     should_do_visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -168,17 +167,23 @@ def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
     v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
     s = f"[{vp}]\r\nv={v:.3f}\r\n" + s
 
-    n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
-    n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
-
-    s += f"\r\nblue={n_cap_b} red={n_cap_r}"
-
     return s
 
 
-def state_to_str(state: game.SimulationState, predicted_color: np.ndarray) -> str:
+def state_to_str(state: game.SimulationState, predicted_color: np.ndarray, colored=False) -> str:
     color_int = (np.array(predicted_color) * 10).astype(dtype=np.int16)
     color_int = np.clip(color_int, 0, 9)
+
+    if colored:
+        B_str = termcolor.colored('B', color='blue')
+        R_str = termcolor.colored('R', color='red')
+        b_str = termcolor.colored('b', color='blue')
+        r_str = termcolor.colored('r', color='red')
+    else:
+        B_str = 'B'
+        R_str = 'R'
+        b_str = 'b'
+        r_str = 'r'
 
     line = [" " for _ in range(36)]
     for i in range(8):
@@ -186,22 +191,30 @@ def state_to_str(state: game.SimulationState, predicted_color: np.ndarray) -> st
         color = state.color_p[i]
         if pos != game.CAPTURED:
             if color == game.BLUE:
-                line[pos] = termcolor.colored('B', color='blue')
+                line[pos] = B_str
             else:
-                line[pos] = termcolor.colored('R', color='red')
+                line[pos] = R_str
 
         pos = state.pieces_o[i]
         color = state.color_o[i]
         if pos != game.CAPTURED:
             if color == game.BLUE:
-                line[pos] = termcolor.colored('b', color='blue')
+                line[pos] = b_str
             elif color == game.RED:
-                line[pos] = termcolor.colored('r', color='red')
+                line[pos] = r_str
             else:
                 line[pos] = str(color_int[i])
 
     lines = ["|" + "  ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
-    return "\r\n".join(lines)
+
+    s = "\r\n".join(lines)
+
+    n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
+    n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
+
+    s += f"\r\nblue={n_cap_b} red={n_cap_r}"
+
+    return s
 
 
 @profile
@@ -473,19 +486,20 @@ def apply_action(node: Node,
                  action: int,
                  player: int,
                  true_color_o: np.ndarray,
-                 pred_state: PredictState):
+                 pred_state: PredictState,
+                 params: SearchParameters):
 
     tokens, afterstates = state.step(action, player * state.root_player)
 
     if len(afterstates) > 0:
         for i in range(len(afterstates)):
-            child_afterstate, _ = expand_afterstate(node, tokens, afterstates[i:], state, pred_state)
+            child_afterstate, _ = expand_afterstate(node, tokens, afterstates[i:], state, pred_state, params)
             tokens_afterstate = state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
             tokens += tokens_afterstate
 
-        child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state)
+        child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state, params)
     else:
-        child, _ = expand(node, tokens, state, pred_state)
+        child, _ = expand(node, tokens, state, pred_state, params)
 
     return child, tokens
 
@@ -525,7 +539,7 @@ class PlayerMCTS:
         self.pieces_history = np.zeros((101, 8), dtype=np.int8)
         self.tokens = []
 
-        self.node, tokens = create_root_node(state, self.pred_state, self.model, self.search_params.v_weight)
+        self.node, tokens = create_root_node(state, self.pred_state, self.model)
         self.tokens += tokens
 
     def select_next_action(self) -> int:
@@ -537,7 +551,8 @@ class PlayerMCTS:
         return action
 
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
-        self.node, tokens = apply_action(self.node, self.state, action, player, true_color_o, self.pred_state)
+        self.node, tokens = apply_action(
+            self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
         self.tokens += tokens
 
     def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Sample:
@@ -590,16 +605,18 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_b
 
 
 def test():
+    from flax.training import checkpoints
+    import orbax.checkpoint
+
     if True:
         ckpt_dir = './checkpoints/driven-bird-204'
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+        ckpt = checkpoint_manager.restore(12)
 
         model = TransformerDecoderWithCache(**ckpt['model'])
         params = ckpt['state']['params']
-
     else:
         model = TransformerDecoderWithCache(num_heads=8,
                                             embed_dim=128,
@@ -607,22 +624,21 @@ def test():
                                             is_linear_attention=True)
 
         ckpt_dir = './checkpoints/driven-bird-204'
-        prefix = 'geister_linear_'
+        prefix = 'geister_'
 
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
+        params = ckpt['state']['params']
 
     np.random.seed(120)
 
-    player1 = PlayerMCTS(params, model, num_mcts_sim=100, dirichlet_alpha=0.1,
-                         n_ply_to_apply_noise=0, max_duplicates=1)
-    player2 = PlayerMCTS(params, model, num_mcts_sim=100, dirichlet_alpha=0.1,
-                         n_ply_to_apply_noise=0, max_duplicates=1)
+    mcts_params = SearchParameters(num_simulations=100,
+                                   dirichlet_alpha=0.1,
+                                   n_ply_to_apply_noise=0,
+                                   max_duplicates=3,
+                                   should_do_visibilize_node_graph=True)
 
-    player1.n_ply_to_apply_noise = 0
-    player2.n_ply_to_apply_noise = 0
-
-    player1.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
-    player2.weight_v = np.array([-1, -1, -1, 0, 1, 1, 1])
+    player1 = PlayerMCTS(params, model, mcts_params)
+    player2 = PlayerMCTS(params, model, mcts_params)
 
     for i in range(1):
         play_game(player1, player2, game_length=200, print_board=True)

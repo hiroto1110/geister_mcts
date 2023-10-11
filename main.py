@@ -161,17 +161,16 @@ def main(n_clients=30,
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    fsp = FSP(1, match_buffer_size=500, p=6)
+    fsp = FSP(n_agents=1, match_buffer_size=2000, p=5)
 
     while True:
-        for i in tqdm(range(update_period // 2)):
+        for i in tqdm(range(update_period)):
             while match_result_queue.empty():
                 pass
 
             match_result = match_result_queue.get()
             replay_buffer.add_sample(match_result.sample1)
-            replay_buffer.add_sample(match_result.sample2)
-
+            # replay_buffer.add_sample(match_result.sample2)
             fsp.apply_match_result(match_result.agent_id, match_result.is_winning())
 
             match_request_queue.put(fsp.next_match())
@@ -187,7 +186,7 @@ def main(n_clients=30,
         if is_league_member:
             fsp.add_agent()
 
-        print(fsp.n, win_rate)
+        print(win_rate)
 
         for i in range(len(win_rate)):
             log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
