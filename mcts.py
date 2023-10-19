@@ -25,8 +25,8 @@ class PredictState(struct.PyTreeNode):
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 # @jax.jit
-def predict(state: PredictState, tokens, cache_v, cache_k):
-    pi, v, c, cv, ck = state.apply_fn({'params': state.params}, tokens, cache_v, cache_k, eval=True)
+def predict(state: PredictState, x_a, x_s, cache_v, cache_k):
+    pi, v, c, cv, ck = state.apply_fn({'params': state.params}, x_a, x_s, cache_v, cache_k, eval=True)
 
     v = nn.softmax(v)
     c = nn.sigmoid(c)
@@ -41,8 +41,7 @@ class SearchParameters:
     dirichlet_eps: float = 0.25
     n_ply_to_apply_noise: int = 20
     max_duplicates: int = 3
-    c_init: float = 1.25
-    c_base: int = 19652
+    c_puct: float = 1
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
     v_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
@@ -55,7 +54,6 @@ class SearchParameters:
 class Node:
     def __init__(self) -> None:
         self.has_afterstate = False
-        self.winner = 0
 
         self.state_str = ""
 
@@ -68,6 +66,7 @@ class Node:
         self.predicted_v = 0
 
         self.children = [None] * game.ACTION_SPACE
+        self.winner = np.zeros(game.ACTION_SPACE, dtype=np.int8)
         self.p = np.zeros(game.ACTION_SPACE)
         self.w = np.zeros(game.ACTION_SPACE)
         self.n = np.zeros(game.ACTION_SPACE, dtype=np.int16)
@@ -77,9 +76,6 @@ class Node:
             return
 
         self.valid_actions_mask[self.invalid_actions] = 0
-
-        # self.valid_actions = np.where(self.valid_actions_mask)[0]
-
         self.p = np.where(self.valid_actions_mask, self.p, 0)
 
     def setup_valid_actions(self, state, player):
@@ -95,15 +91,25 @@ class Node:
         self.p = np.array(nn.softmax(self.p))
 
     def calc_scores(self, player: int, params: SearchParameters):
-        c = params.c_init * np.log((self.n.sum() + 1 + params.c_base) / params.c_base)
-
-        U = c * self.p * np.sqrt(self.n.sum() + 1) / (self.n + 1)
+        U = params.c_puct * self.p * np.sqrt(self.n.sum() + 1) / (self.n + 1)
         Q = player * self.w / np.where(self.n != 0, self.n, 1)
 
         scores = U + Q
+
+        # scores = np.where(self.winner == 0, scores, scores.min() - 1)
         scores = np.where(self.valid_actions_mask, scores, -np.inf)
 
         return scores
+
+    def select_action_root(self, random_choice: bool):
+        if np.any(self.winner == 1):
+            return np.argmax(self.winner)
+
+        if random_choice:
+            p = self.n / self.n.sum()
+            return np.random.choice(range(32), p=p)
+        else:
+            return np.argmax(self.n)
 
     def get_policy(self):
         return self.n / self.n.sum()
@@ -115,8 +121,6 @@ class AfterStateNode:
         self.remaining_afterstates = afterstates[1:]
         self.has_afterstate = True
 
-        self.winner = 0
-
         self.state_str = ""
 
         self.cache_v = None
@@ -126,6 +130,7 @@ class AfterStateNode:
         self.predicted_v = 0
 
         self.children = [None] * 2
+        self.winner = np.zeros(2, dtype=np.int8)
         self.p = np.zeros(2)
         self.w = np.zeros(2)
         self.n = np.zeros(2, dtype=np.int16)
@@ -133,12 +138,16 @@ class AfterStateNode:
 
 def visibilize_node_graph(node: Node, g: Digraph):
     if isinstance(node, Node):
-        for child, w, n, p in zip(node.children, node.w, node.n, node.p):
+        for i, child, wi, w, n, p in zip(range(32), node.children, node.winner, node.w, node.n, node.p):
             if child is None:
                 continue
 
-            v = w / n if n > 0 else 0
-            label = f"w = {v:.3f}\r\np = {p:.3f}"
+            if wi != 0:
+                v = wi
+            else:
+                v = w / n if n > 0 else 0
+
+            label = f"a={i}\r\nw = {v:.3f}\r\np = {p:.3f}"
             g.edge(node.state_str, child.state_str, label)
 
             visibilize_node_graph(child, g)
@@ -198,6 +207,8 @@ def state_to_str(state: game.SimulationState, predicted_color: np.ndarray, color
         pos = state.pieces_o[i]
         color = state.color_o[i]
         if pos != game.CAPTURED:
+            if not (0 <= pos < 36):
+                print(f'pos is not valid: {pos}, {state.pieces_p}, {state.pieces_o}')
             if color == game.BLUE:
                 line[pos] = b_str
             elif color == game.RED:
@@ -226,7 +237,7 @@ def expand_afterstate(node: Node,
                       params: SearchParameters):
     next_node = AfterStateNode(afterstates)
 
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
+    v, _ = setup_node(next_node, state, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
 
     if params.should_do_visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -234,7 +245,7 @@ def expand_afterstate(node: Node,
     next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
     next_node.p[0] = 1 - next_node.p[1]
 
-    return next_node, v
+    return next_node, v, 0
 
 
 @profile
@@ -245,20 +256,24 @@ def expand(node: Node,
            params: SearchParameters):
 
     next_node = Node()
-    next_node.winner = state.winner
 
-    if next_node.winner != 0:
+    if state.is_done:
         if params.should_do_visibilize_node_graph:
-            next_node.state_str = sim_state_to_str(state, [next_node.winner], [0.5]*8)
+            next_node.state_str = sim_state_to_str(state, [state.winner], [0.5]*8)
 
-        return next_node, next_node.winner
+        return next_node, state.winner, state.winner
 
-    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
+    if node.cache_k is None:
+        print(node.winner)
+        print(node.n)
+        print(node.state_str)
+
+    v, next_node.p = setup_node(next_node, state, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
 
     if params.should_do_visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
 
-    return next_node, v
+    return next_node, v, 0
 
 
 def try_expand_checkmate(node: Node,
@@ -267,36 +282,51 @@ def try_expand_checkmate(node: Node,
                          player: int,
                          pred_state: PredictState,
                          params: SearchParameters):
+    if state.is_done:
+        next_node = Node()
+
+        if params.should_do_visibilize_node_graph:
+            next_node.state_str = sim_state_to_str(state, [state.winner], [0.5]*8)
+
+        return next_node, state.winner, state.winner
 
     action, e, escaped_id = find_checkmate(state, player, depth=params.depth_search_checkmate_leaf)
 
     if e > 0:
         next_node = Node()
-        next_node.winner = 1
 
         if params.should_do_visibilize_node_graph:
             next_node.state_str = sim_state_to_str(state, [100], [0.5]*8)
 
-        return True, next_node, 1
+        return next_node, 1, 1
 
     if e == 0 or escaped_id == -1:
-        return False, None, 0
+        return expand(node, tokens, state, pred_state, params)
 
     afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
-    next_node, v = expand_afterstate(node, tokens, [afterstate], state, pred_state, params)
+    next_node, v, _ = expand_afterstate(node, tokens, [afterstate], state, pred_state, params)
 
-    return True, next_node, v
+    return next_node, v, 0
 
 
-def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck, v_weight):
+def create_state_token(state: game.SimulationState):
+    p = np.concatenate([state.pieces_p, state.pieces_o])
+    p[p == game.CAPTURED] = 36
+
+    s = jax.nn.one_hot(p, num_classes=37, axis=-2)
+    s = jnp.reshape(s[:36], (6, 6, 16))
+    return s
+
+
+def setup_node(node: Node, state: game.SimulationState, pred_state: PredictState, tokens, cv, ck, v_weight):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
-    for i in range(tokens.shape[0]):
-        pi, v, c, cv, ck = predict(pred_state, tokens[i], cv, ck)
+    # state_token = create_state_token(state)
+    state_token = None
 
-    if np.isnan(c).any():
-        c = np.full(shape=8, fill_value=0.5)
+    for i in range(tokens.shape[0]):
+        pi, v, c, cv, ck = predict(pred_state, tokens[i], state_token, cv, ck)
 
     node.predicted_color = c
     node.predicted_v = v
@@ -316,35 +346,40 @@ def simulate_afterstate(node: AfterStateNode,
                         params: SearchParameters) -> float:
     color = np.random.choice([game.RED, game.BLUE], p=node.p)
 
+    if node.winner[color] != 0:
+        return node.winner[color], 0
+
     tokens = state.step_afterstate(node.afterstate, color)
 
     if node.children[color] is None:
         if len(node.remaining_afterstates) > 0:
-            child, v = expand_afterstate(node, tokens, node.remaining_afterstates, state, pred_state, params)
-
-        elif not state.is_done:
-            exists_checkmate, child, v = try_expand_checkmate(node, tokens, state, player, pred_state, params)
-
-            if not exists_checkmate:
-                child, v = expand(node, tokens, state, pred_state, params)
+            child, v, winner = expand_afterstate(node, tokens, node.remaining_afterstates, state, pred_state, params)
         else:
-            child, v = expand(node, tokens, state, pred_state, params)
+            child, v, winner = try_expand_checkmate(node, tokens, state, player, pred_state, params)
 
         node.children[color] = child
     else:
         child = node.children[color]
 
         if child.has_afterstate:
-            v = simulate_afterstate(child, state, player, pred_state, params)
+            v, winner = simulate_afterstate(child, state, player, pred_state, params)
         else:
-            v = simulate(child, state, player, pred_state, params)
+            v, winner = simulate(child, state, player, pred_state, params)
 
     state.undo_step_afterstate(node.afterstate)
 
     node.n[color] += 1
     node.w[color] += v
 
-    return v
+    """if winner != 0:
+        node.winner[color] = winner"""
+
+    if np.all(node.winner == 1):
+        return 1, 1
+    elif np.all(node.winner == -1):
+        return -1, -1
+
+    return v, 0
 
 
 @profile
@@ -354,11 +389,8 @@ def simulate(node: Node,
              pred_state: PredictState,
              params: SearchParameters) -> float:
 
-    if state.is_done:
-        return state.winner
-
-    if node.winner != 0:
-        return node.winner
+    if state.is_done or state.n_ply >= 199:
+        return state.winner, state.winner
 
     node.setup_valid_actions(state, player)
 
@@ -369,28 +401,38 @@ def simulate(node: Node,
 
     if node.children[action] is None:
         if len(afterstates) > 0:
-            child, v = expand_afterstate(node, tokens, afterstates, state, pred_state, params)
+            child, v, winner = expand_afterstate(node, tokens, afterstates, state, pred_state, params)
         else:
-            exists_checkmate, child, v = try_expand_checkmate(node, tokens, state, -player, pred_state, params)
-
-            if not exists_checkmate:
-                child, v = expand(node, tokens, state, pred_state, params)
+            child, v, winner = try_expand_checkmate(node, tokens, state, player, pred_state, params)
 
         node.children[action] = child
     else:
         child = node.children[action]
 
         if child.has_afterstate:
-            v = simulate_afterstate(child, state, -player, pred_state, params)
+            v, winner = simulate_afterstate(child, state, -player, pred_state, params)
         else:
-            v = simulate(child, state, -player, pred_state, params)
+            v, winner = simulate(child, state, -player, pred_state, params)
 
     state.undo_step(action, player, tokens, afterstates)
+
+    """if winner != 0:
+        node.winner[action] = winner
+
+        if node.n[action] > 0:
+            v = node.w[action] / node.n[action]
+        else:
+            v = 0"""
 
     node.n[action] += 1
     node.w[action] += v
 
-    return v
+    if np.any(node.winner == player):
+        return player, player
+    elif np.all(node.winner[node.valid_actions_mask] == -player):
+        return -player, -player
+
+    return v, 0
 
 
 def find_checkmate(state: game.SimulationState, player: int, depth: int):
@@ -399,7 +441,7 @@ def find_checkmate(state: game.SimulationState, player: int, depth: int):
                                       state.pieces_o,
                                       state.color_o,
                                       player,
-                                      state.root_player,
+                                      1,
                                       depth)
 
 
@@ -465,11 +507,7 @@ def select_action_with_mcts(node: Node,
         for _ in range(params.num_simulations):
             simulate(node, state, 1, pred_state, params)
 
-        policy = node.get_policy()
-        if params.n_ply_to_apply_noise < state.n_ply:
-            action = np.argmax(policy)
-        else:
-            action = np.random.choice(range(len(policy)), p=policy)
+        action = node.select_action_root(params.n_ply_to_apply_noise > state.n_ply)
 
         if params.should_do_visibilize_node_graph:
             dg = Digraph(format='png')
@@ -489,17 +527,17 @@ def apply_action(node: Node,
                  pred_state: PredictState,
                  params: SearchParameters):
 
-    tokens, afterstates = state.step(action, player * state.root_player)
+    tokens, afterstates = state.step(action, player)
 
     if len(afterstates) > 0:
         for i in range(len(afterstates)):
-            child_afterstate, _ = expand_afterstate(node, tokens, afterstates[i:], state, pred_state, params)
+            child_afterstate, _, _ = expand_afterstate(node, tokens, afterstates[i:], state, pred_state, params)
             tokens_afterstate = state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
             tokens += tokens_afterstate
 
-        child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state, params)
+        child, _, _ = expand(child_afterstate, tokens_afterstate, state, pred_state, params)
     else:
-        child, _ = expand(node, tokens, state, pred_state, params)
+        child, _, _ = expand(node, tokens, state, pred_state, params)
 
     return child, tokens
 
@@ -515,7 +553,7 @@ def create_root_node(state: game.SimulationState,
 
     tokens = state.create_init_tokens()
 
-    setup_node(node, pred_state, tokens, cv, ck, 1)
+    setup_node(node, state, pred_state, tokens, cv, ck, 1)
 
     return node, tokens
 
@@ -552,7 +590,8 @@ class PlayerMCTS:
 
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
         self.node, tokens = apply_action(
-            self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
+            self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params
+        )
         self.tokens += tokens
 
     def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Sample:
@@ -566,32 +605,45 @@ class PlayerMCTS:
 
 
 def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
+    action_history = np.zeros((2, 200), dtype=np.int16)
+
     state1, state2 = game.get_initial_state_pair()
-    player1.init_state(state1)
+
+    action1 = np.random.choice(game.get_valid_actions(state1, 1))
+    action2 = 31 - action1
+
     player2.init_state(state2)
+    player2.apply_action(action2, -1, state1.color_p[::-1])
 
-    action_history = np.zeros(game_length + 1, dtype=np.int16)
+    state1.step(action1, 1)
+    state1.n_ply = 0
+    player1.init_state(state1)
 
-    player = 1
+    action_history[1, 0] = action2
 
-    for i in range(game_length):
+    player = -1
+
+    for i in range(1, game_length):
         if player == 1:
-            action = player1.select_next_action()
+            action1 = player1.select_next_action()
+            action2 = 31 - action1
         else:
-            action = player2.select_next_action()
+            action2 = player2.select_next_action()
+            action1 = 31 - action2
 
-        player1.apply_action(action, player, state2.color_p)
-        player2.apply_action(action, player, state1.color_p)
+        player1.apply_action(action1, player, state2.color_p[::-1])
+        player2.apply_action(action2, -player, state1.color_p[::-1])
 
-        action_history[i] = action
+        action_history[0, i - 1] = action1
+        action_history[1, i] = action2
 
         if print_board:
             board = np.zeros(36, dtype=np.int8)
 
             board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 1)]] = 1
             board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 0)]] = 2
-            board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 1)]] = -1
-            board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 0)]] = -2
+            board[35 - state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 1)]] = -1
+            board[35 - state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 0)]] = -2
 
             print(str(board.reshape((6, 6))).replace('0', ' '))
             print(i)
@@ -608,12 +660,14 @@ def test():
     from flax.training import checkpoints
     import orbax.checkpoint
 
+    jax.config.update("jax_debug_nans", True)
+
     if True:
-        ckpt_dir = './checkpoints/driven-bird-204'
+        ckpt_dir = './checkpoints/253'
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        ckpt = checkpoint_manager.restore(12)
+        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
 
         model = TransformerDecoderWithCache(**ckpt['model'])
         params = ckpt['state']['params']
@@ -629,9 +683,9 @@ def test():
         ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
         params = ckpt['state']['params']
 
-    np.random.seed(120)
+    np.random.seed(12)
 
-    mcts_params = SearchParameters(num_simulations=100,
+    mcts_params = SearchParameters(num_simulations=160,
                                    dirichlet_alpha=0.1,
                                    n_ply_to_apply_noise=0,
                                    max_duplicates=3,
@@ -641,7 +695,9 @@ def test():
     player2 = PlayerMCTS(params, model, mcts_params)
 
     for i in range(1):
-        play_game(player1, player2, game_length=200, print_board=True)
+        play_game(player1, player2, game_length=30, print_board=True)
+        np.savetxt('token1.csv', np.array(player1.tokens, dtype=np.uint8), delimiter=',')
+        np.savetxt('token2.csv', np.array(player2.tokens, dtype=np.uint8), delimiter=',')
 
 
 if __name__ == "__main__":

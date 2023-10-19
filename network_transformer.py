@@ -4,6 +4,8 @@ import time
 import dataclasses
 import itertools
 
+from tqdm import tqdm
+
 import numpy as np
 import jax
 from jax import random, numpy as jnp
@@ -15,7 +17,7 @@ import optax
 
 import wandb
 
-from buffer import ReplayBuffer
+from buffer import ReplayBuffer, create_pos_history_from_tokens
 
 
 class Embeddings(nn.Module):
@@ -275,11 +277,38 @@ NUM_ACTIONS = 32
 MAX_LENGTH = 200
 
 
+class StateEncoder(nn.Module):
+    embed_dim: int
+    n_blocks: int
+    n_filters: int
+
+    @nn.compact
+    def __call__(self, x):
+        # x: [..., 6, 6, 16]
+        # return: [..., EmbedDim]
+        org_shape = x.shape
+        x = x.reshape(-1, *org_shape[-3:])
+
+        for _ in range(self.n_blocks):
+            x = nn.Conv(self.n_filters, kernel_size=(3, 3))(x)
+            x = nn.relu(x)
+
+        x = x.reshape(*org_shape[:-3], -1)
+        x = nn.Dense(self.embed_dim)(x)
+        x = nn.tanh(x)
+
+        return x
+
+
 class TransformerDecoder(nn.Module):
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
-    is_linear_attention: bool
+    is_linear_attention: bool = False
+
+    has_state_encoder: bool = False
+    state_encoder_n_blocks: int = 1
+    state_encoder_n_filters: int = 64
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
@@ -287,11 +316,20 @@ class TransformerDecoder(nn.Module):
         self.layers = [TransformerBlock(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
 
+        if self.has_state_encoder:
+            self.state_encoder = StateEncoder(self.embed_dim,
+                                              self.state_encoder_n_blocks,
+                                              self.state_encoder_n_filters)
+
     @nn.compact
-    def __call__(self, x, eval=True):
+    def __call__(self, x, states=None, eval=True):
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
         x = self.embeddings(x, eval)
+
+        if self.has_state_encoder:
+            x += self.state_encoder(states)
+            x = nn.LayerNorm()(x)
 
         for i in range(self.num_hidden_layers):
             x = self.layers[i](x, mask, eval=eval)
@@ -310,10 +348,19 @@ class TransformerDecoderWithCache(nn.Module):
     num_hidden_layers: int
     is_linear_attention: bool = False
 
+    has_state_encoder: bool = False
+    state_encoder_n_blocks: int = 1
+    state_encoder_n_filters: int = 64
+
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
         self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
+
+        if self.has_state_encoder:
+            self.state_encoder = StateEncoder(self.embed_dim,
+                                              self.state_encoder_n_blocks,
+                                              self.state_encoder_n_filters)
 
     def create_cache(self, seq_len):
         head_dim = self.embed_dim // self.num_heads
@@ -333,21 +380,19 @@ class TransformerDecoderWithCache(nn.Module):
         return s, z
 
     @nn.compact
-    def __call__(self, x, cache1, cache2, eval=True):
-        x = self.embeddings(x, eval)
+    def __call__(self, x_a, x_s, cache1, cache2, eval=True):
+        x = self.embeddings(x_a, eval)
 
-        # if not self.is_linear_attention:
-        if False:
-            next_cache1, next_cache2 = self.create_cache(cache1.shape[1] + 1)
-        else:
-            next_cache1, next_cache2 = cache1, cache2
+        if self.has_state_encoder:
+            x += self.state_encoder(x_s)
+            x = nn.LayerNorm()(x)
 
         i = 0
         for layer in self.layers:
             x, cache1_i, cache2_i = layer(x, cache1[i], cache2[i], eval=eval)
 
-            next_cache1 = next_cache1.at[i].set(cache1_i)
-            next_cache2 = next_cache2.at[i].set(cache2_i)
+            cache1 = cache1.at[i].set(cache1_i)
+            cache2 = cache2.at[i].set(cache2_i)
 
             i += 1
 
@@ -357,12 +402,12 @@ class TransformerDecoderWithCache(nn.Module):
         logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
-        return logits_pi, logits_v, logits_color, next_cache1, next_cache2
+        return logits_pi, logits_v, logits_color, cache1, cache2
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
-    pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
+def loss_fn(params, state, x, x_states, mask, y_pi, y_v, y_color, dropout_rng, eval):
+    pi, v, color = state.apply_fn({'params': params}, x, x_states, eval=eval,
                                   rngs={'dropout': dropout_rng})
 
     # [Batch, SeqLen, 32]
@@ -386,16 +431,16 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state, x, mask, y_pi, y_v, y_color, eval):
+def train_step(state, x, x_states, mask, y_pi, y_v, y_color, eval):
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
         (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            state.params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval)
+            state.params, state, x, x_states, mask, y_pi, y_v, y_color, dropout_rng, eval)
 
         new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
     else:
         loss, info = loss_fn(
-            state.params, state, x, mask, y_pi, y_v, y_color, random.PRNGKey(0), eval)
+            state.params, state, x, x_states, mask, y_pi, y_v, y_color, random.PRNGKey(0), eval)
         new_state = state
 
     return new_state, loss, info
@@ -403,8 +448,12 @@ def train_step(state, x, mask, y_pi, y_v, y_color, eval):
 
 def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
-    for x, mask, y_pi, y_v, y_color in zip(*data_batched):
-        state, loss, info = train_step(state, x, mask, y_pi, y_v, y_color, eval)
+    for x, x_states, mask, y_pi, y_v, y_color in tqdm(zip(*data_batched)):
+        x_states = jax.nn.one_hot(x_states, 37, axis=-2)
+        x_states = x_states[..., :36, :]
+        x_states = x_states.reshape(-1, 200, 6, 6, 16)
+
+        state, loss, info = train_step(state, x, x_states, mask, y_pi, y_v, y_color, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
@@ -460,31 +509,47 @@ class TrainState(train_state.TrainState):
     dropout_rng: Any
 
 
-def main_train(data, log_wandb=True):
+def main_train(data, log_wandb=False):
     train_n = int(len(data[0]) * 0.8)
 
-    train_data = [d[:train_n] for d in data]
-    test_data = [d[train_n:] for d in data]
+    train_data = [jnp.array(d[:train_n]) for d in data]
+    test_data = [jnp.array(d[train_n:]) for d in data]
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
     heads = 4,
-    dims = 128, 256, 512
-    num_layers = 2, 4
+    dims = 256,
+    num_layers = 2,
+    # has_state_encoder = True,
+    n_blocks = 1,
+    n_filters = 64,
 
-    for h, d, n in itertools.product(heads, dims, num_layers):
+    for h, d, n, s_b, s_f in itertools.product(heads, dims, num_layers, n_blocks, n_filters):
         if log_wandb:
-            name = f'h={h}, d={d}, n={n}'
+            name = f'h={h}, d={d}, n={n}, s_b={s_b}, s_f={s_f}, t'
             run_config = {
                 'num heads': h,
                 'embed dim': d,
                 'num layers': n,
+                'n_blocks': s_b,
+                'n_filters': s_f,
             }
-            run = wandb.init(project='network benchmark', config=run_config, name=name)
+            run = wandb.init(project='network benchmark s', config=run_config, name=name)
 
-        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False)
+        model = TransformerDecoder(num_heads=h,
+                                   embed_dim=d,
+                                   num_hidden_layers=n,
+                                   is_linear_attention=False,
+                                   has_state_encoder=True,
+                                   state_encoder_n_blocks=s_b,
+                                   state_encoder_n_filters=s_f)
 
-        variables = model.init(key1, data[0][:1])
+        x_states = create_pos_history_from_tokens(data[0][0])
+        x_states = jax.nn.one_hot(x_states, 37, axis=1)
+        x_states = x_states[:, :36, :]
+        x_states = x_states.reshape(-1, 200, 6, 6, 16)
+
+        variables = model.init(key1, data[0][:1], x_states)
         state = TrainState.create(
             apply_fn=model.apply,
             params=variables['params'],
@@ -492,7 +557,7 @@ def main_train(data, log_wandb=True):
             dropout_rng=key2,
             epoch=0)
 
-        ckpt_dir = f'./checkpoints/{h}_{d}_{n}'
+        ckpt_dir = f'./checkpoints/{h}_{d}_{n}_{s_b}_{s_f}'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
@@ -503,7 +568,7 @@ def main_train(data, log_wandb=True):
         state = fit(state, model, checkpoint_manager,
                     train_data=train_data,
                     test_data=test_data,
-                    epochs=12, batch_size=256,
+                    epochs=8, batch_size=128,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -574,13 +639,35 @@ def main_test_performance(data):
     print(t / v_mean_history.shape[0])
 
 
+def map_func(t):
+    print(t[0])
+    return create_pos_history_from_tokens(t[1])
+
+
 def main():
+    np.random.seed(100)
+
     buffer = ReplayBuffer(600000, 200)
 
     buffer.load('replay_buffer/189.npz')
-    data = buffer.get_all_batch(shuffle=True).astuple()
+    data = buffer.get_all_batch(shuffle=True)
 
-    print(data[0].shape)
+    if False:
+        from multiprocessing import Pool
+
+        p = Pool(processes=12)
+        states = p.map(map_func, zip(range(data.tokens.shape[0]), data.tokens))
+        states = np.array(states, dtype=np.uint8)
+
+        np.save('states.npy', states)
+    else:
+        states = np.load('states.npy')
+        pass
+
+    print(data.tokens.shape)
+
+    data = data.tokens, states, data.mask, data.policy, data.reward, data.colors
+    # data = data.astuple()
 
     # main_test_performance(data)
     main_train(data)

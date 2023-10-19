@@ -1,7 +1,10 @@
 import os
-from dataclasses import dataclass, astuple, field
+from dataclasses import dataclass, field
 
 import numpy as np
+import jax
+import jax.numpy as jnp
+
 import geister as game
 
 
@@ -16,13 +19,48 @@ class Sample:
 @dataclass
 class Batch:
     tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    mask: np.ndarray = field(default_factory=lambda: np.zeros(0))
     policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
     reward: np.ndarray = field(default_factory=lambda: np.zeros(0))
     colors: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
-    def astuple(self):
-        return astuple(self)
+    def create_inputs(self, create_x_state: bool):
+        mask = np.any(self.tokens != 0, axis=2)
+
+        if create_x_state:
+            pos_history = [create_pos_history_from_tokens(self.tokens[i]) for i in range(self.tokens.shape[0])]
+            pos_history = jnp.array(pos_history)
+            x_states = pos_history_to_states(pos_history)
+        else:
+            x_states = None
+
+        return self.tokens, x_states, mask, self.policy, self.reward, self.colors
+
+
+def pos_history_to_states(pos_history: np.ndarray) -> jnp.ndarray:
+    x_states = jax.nn.one_hot(pos_history, 37, axis=-2)
+    x_states = x_states[..., :36, :]
+    x_states = x_states.reshape(-1, 200, 6, 6, 16)
+
+    return x_states
+
+
+def create_pos_history_from_tokens(tokens: np.ndarray) -> np.ndarray:
+    pos_history = np.zeros((tokens.shape[0], 16), dtype=np.uint8)
+
+    if tokens[0, 3] < 3:
+        pos = np.array([1, 2, 3, 4, 7, 8, 9, 10, 25, 26, 27, 28, 31, 32, 33, 34])
+    else:
+        pos = np.array([25, 26, 27, 28, 31, 32, 33, 34, 1, 2, 3, 4, 7, 8, 9, 10])
+
+    for t, (c, id, x, y, n) in enumerate(tokens):
+        if x < 6 and y < 6:
+            pos[id] = x + 6 * y
+        else:
+            pos[id] = 36
+
+        pos_history[t] = pos
+
+    return pos_history
 
 
 class ReplayBuffer:
@@ -64,9 +102,9 @@ class ReplayBuffer:
         reward = self.reward_buffer[indices]
         colors = self.colors_buffer[indices]
 
-        mask = np.any(tokens != 0, axis=2)
+        tokens[:, :, game.Token.T] = np.clip(tokens[:, :, game.Token.T], 0, 199)
 
-        return Batch(tokens, mask, policy, reward, colors)
+        return Batch(tokens, policy, reward, colors)
 
     def add_sample(self, sample: Sample):
         self.tokens_buffer[self.index] = sample.tokens
@@ -120,32 +158,3 @@ class ReplayBuffer:
 
         self.n_samples = n_samples
         self.index = self.n_samples % self.buffer_size
-
-
-def main():
-    dir_name = 'replay_buffer'
-
-    tokens_buffer = np.load(f'{dir_name}/tokens.npy')
-    mask_buffer = np.load(f'{dir_name}/mask.npy')
-    policy_buffer = np.load(f'{dir_name}/policy.npy')
-    reward_buffer = np.load(f'{dir_name}/reward.npy')
-    pieces_buffer = np.load(f'{dir_name}/pieces.npy')
-
-    indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
-    indices = indices[:600000]
-    tokens_buffer = tokens_buffer[indices]
-    policy_buffer = policy_buffer[indices]
-    reward_buffer = reward_buffer[indices]
-    pieces_buffer = pieces_buffer[indices]
-
-    save_dict = {
-        't': tokens_buffer,
-        'p': policy_buffer,
-        'r': reward_buffer,
-        'c': pieces_buffer,
-    }
-    np.savez(f'{dir_name}/189.npz', **save_dict)
-
-
-if __name__ == "__main__":
-    main()

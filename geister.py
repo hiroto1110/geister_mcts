@@ -52,9 +52,7 @@ class Afterstate:
 
 
 class SimulationState:
-    def __init__(self, color, root_player: int):
-        self.root_player = root_player
-
+    def __init__(self, color: np.ndarray):
         self.pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
         self.pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
 
@@ -63,10 +61,6 @@ class SimulationState:
 
         self.escape_pos_p = ESCAPE_POS_P
         self.escape_pos_o = ESCAPE_POS_O
-
-        if root_player == -1:
-            self.pieces_p, self.pieces_o = self.pieces_o, self.pieces_p
-            self.escape_pos_p, self.escape_pos_o = self.escape_pos_o, self.escape_pos_p
 
         self.is_done = False
         self.winner = 0
@@ -125,6 +119,9 @@ class SimulationState:
         pos = self.pieces_p[p_id]
         pos_next = pos + d
 
+        assert 0 <= pos < 36
+        assert 0 <= pos_next < 36
+
         p_cap_id = np.where(self.pieces_o == pos_next)[0]
 
         afterstates = []
@@ -175,6 +172,9 @@ class SimulationState:
 
         pos = self.pieces_o[p_id]
         pos_next = pos + d
+
+        assert 0 <= pos < 36
+        assert 0 <= pos_next < 36
 
         p_cap_id = np.where(self.pieces_p == pos_next)[0]
 
@@ -288,8 +288,8 @@ def get_initial_state_pair() -> Tuple[SimulationState, SimulationState]:
     color_p = create_random_color()
     color_o = create_random_color()
 
-    state_p = SimulationState(color_p, 1)
-    state_o = SimulationState(color_o, -1)
+    state_p = SimulationState(color_p)
+    state_o = SimulationState(color_o)
 
     return state_p, state_o
 
