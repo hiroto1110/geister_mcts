@@ -5,15 +5,15 @@ namespace Game_
 {
 	using namespace std;
 	
-	char board[6][6];			//board[y][x] = {R:©•ª‚ÌÔ, B:©•ª‚ÌÂ, u:‘Šè‚Ì‹î, '.':‹óƒ}ƒX, ©•ª‚Íy=5‚Ì‘¤‚É‚¢‚é
-	char komaName[6][6];		//komaName[y][x] = {óM‚É, (y, x)‚É‚ ‚é‹î‚Ì–¼‘O}
-	int rNum, uNum;				//”Õ–Ê‚É‚ ‚é“G‚ÌÔƒRƒ}‚ÌŒÂ”, “G‚ÌƒRƒ}‚ÌŒÂ”
+	char board[6][6];			//board[y][x] = {R:è‡ªåˆ†ã®èµ¤, B:è‡ªåˆ†ã®é’, u:ç›¸æ‰‹ã®é§’, '.':ç©ºãƒã‚¹, è‡ªåˆ†ã¯y=5ã®å´ã«ã„ã‚‹
+	char komaName[6][6];		//komaName[y][x] = {å—ä¿¡æ™‚ã«, (y, x)ã«ã‚ã‚‹é§’ã®åå‰}
+	int rNum, uNum;				//ç›¤é¢ã«ã‚ã‚‹æ•µã®èµ¤ã‚³ãƒã®å€‹æ•°, æ•µã®ã‚³ãƒã®å€‹æ•°
 	
 	const int WON = 1;
 	const int LST = 2;
 	const int DRW = 3;
 	
-	//s‚Ìæ“ª‚ªt Ì true
+	//sã®å…ˆé ­ãŒt â‡” true
 	bool startWith(string &s, string t) {
 		for (int i = 0; i < t.length(); i++) {
 			if (i >= s.length() || s[i] != t[i]) return false;
@@ -21,7 +21,7 @@ namespace Game_
 		return true;
 	}
 
-	//ƒQ[ƒ€‚ÌI—¹”»’è. dispFlag = true‚É‚·‚é‚Æ, Œ‹‰Ê‚ğ•\¦‚Å‚«‚éB
+	//ã‚²ãƒ¼ãƒ ã®çµ‚äº†åˆ¤å®š. dispFlag = trueã«ã™ã‚‹ã¨, çµæœã‚’è¡¨ç¤ºã§ãã‚‹ã€‚
 	int isEnd(string s, bool dispFlag = true) {
 		if (startWith(s, "WON")) {
 			if (dispFlag) cout << "won" << endl;
@@ -38,7 +38,7 @@ namespace Game_
 		return 0;
 	}
 
-	//I—¹‚ÌŒ´ˆö
+	//çµ‚äº†ã®åŸå› 
 	string getEndInfo(string recv_msg) {
 		if (startWith(recv_msg, "DRW")) return "draw";
 		
@@ -69,7 +69,7 @@ namespace Game_
 		return "lost escaped b";
 	}
 	
-	//ƒ{[ƒh‚ÌóM
+	//ãƒœãƒ¼ãƒ‰ã®å—ä¿¡
 	void recvBoard(string msg) {
 		int i, j;
 		
@@ -81,7 +81,7 @@ namespace Game_
 		}
 		
 		const int baius = 4;
-		rNum = 4;	//“G‚ÌÔ‚¢‹î‚ÌŒÂ”
+		rNum = 4;	//æ•µã®èµ¤ã„é§’ã®å€‹æ•°
 		uNum = 0;
 		
 		for (i = 0; i < 16; i++) {
@@ -107,7 +107,7 @@ namespace Game_
 		}
 	}
 	
-	//ƒRƒ}ƒ“ƒh‚Ì•ÏŠ·
+	//ã‚³ãƒãƒ³ãƒ‰ã®å¤‰æ›
 	string move(int y, int x, int dir) {
 		string moveStr = "NESW";
 		string ret;

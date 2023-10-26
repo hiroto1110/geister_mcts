@@ -4,8 +4,8 @@
 class MoveCommand
 {
 public:
-	int y, x;	//ˆÚ“®‚·‚é‹î‚ÌÀ•W (ˆÚ“®‘O)
-	int dir;	//ˆÚ“®‚·‚é•ûŒü (ªc0, ¨c1, «c2, ©c3)
+	int y, x;	//ç§»å‹•ã™ã‚‹é§’ã®åº§æ¨™ (ç§»å‹•å‰)
+	int dir;	//ç§»å‹•ã™ã‚‹æ–¹å‘ (â†‘â€¦0, â†’â€¦1, â†“â€¦2, â†â€¦3)
 	
 	MoveCommand() { y = -1; x = -1; dir = -1; }
 	MoveCommand(int y, int x, int dir)

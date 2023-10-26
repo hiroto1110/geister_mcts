@@ -1,5 +1,5 @@
-//isj—ñ–Ú(i>=0, j>=0)‚ğƒ}ƒXi * 6 + j‚Æ‚¨‚­.
-//—pˆÓ‚·‚éƒƒ\ƒbƒhFI—¹ğŒ(2í—Ş), “®‚©‚·
+//iè¡Œjåˆ—ç›®(i>=0, j>=0)ã‚’ãƒã‚¹i * 6 + jã¨ãŠã.
+//ç”¨æ„ã™ã‚‹ãƒ¡ã‚½ãƒƒãƒ‰ï¼šçµ‚äº†æ¡ä»¶(2ç¨®é¡), å‹•ã‹ã™
 #pragma once
 #include <string>
 #include <algorithm>
@@ -7,18 +7,18 @@
 using namespace std;
 
 namespace kbb {
-	int weight1 = 1000;		//Â‹î‚ÌŒÂ”‚Ì•]‰¿‚Ìd‚İ(1`1000)
-	int weight2 = 1;		//‹î‚ÌˆÊ’u‚Ì•]‰¿‚Ìd‚İ(1`1000)
-	int bitCountTable[1 << 18];	//bitCountTable[s] = s‚Ì2i”•\‹L‚É‚¨‚¯‚éŒ…‚Ì˜a
-	int _myGoalDist[1 << 18];	//_myGoalDist[s] = (s‚Ìiƒrƒbƒg–Ú‚ª1Ìƒ}ƒXi‚É‹î‚ª‚ ‚é)‚Æ‚«‚ÌƒS[ƒ‹‚Ü‚Å‚Ìƒ}ƒ“ƒnƒbƒ^ƒ“‹——£‚Ì˜a.
+	int weight1 = 1000;		//é’é§’ã®å€‹æ•°ã®è©•ä¾¡ã®é‡ã¿(1ï½1000)
+	int weight2 = 1;		//é§’ã®ä½ç½®ã®è©•ä¾¡ã®é‡ã¿(1ï½1000)
+	int bitCountTable[1 << 18];	//bitCountTable[s] = sã®2é€²æ•°è¡¨è¨˜ã«ãŠã‘ã‚‹æ¡ã®å’Œ
+	int _myGoalDist[1 << 18];	//_myGoalDist[s] = (sã®iãƒ“ãƒƒãƒˆç›®ãŒ1â‡”ãƒã‚¹iã«é§’ãŒã‚ã‚‹)ã¨ãã®ã‚´ãƒ¼ãƒ«ã¾ã§ã®ãƒãƒ³ãƒãƒƒã‚¿ãƒ³è·é›¢ã®å’Œ.
 	int _yourGoalDist[1 << 18];
 	
-	//x‚Í0`2^36 - 1
+	//xã¯0ï½2^36 - 1
 	inline int bitCount(long long x) {
 		return bitCountTable[x & 262143] + bitCountTable[x >> 18];
 	}
 	
-	//‘Oˆ—. AI.cpp‚ÅŒÄ‚Ño‚·.
+	//å‰å‡¦ç†. AI.cppã§å‘¼ã³å‡ºã™.
 	void prepare() {
 		int i, j;
 		
@@ -38,8 +38,8 @@ namespace kbb {
 			_yourGoalDist[i] = 0;
 			for (j = 0; j < 18; j++) {
 				if ((i >> j) % 2 == 0) continue;
-				//ƒ}ƒXj‚©‚çƒS[ƒ‹‚Ü‚Å‚Ìƒ}ƒ“ƒnƒbƒ^ƒ“‹——£
-				//‘Šèw‚Íy = 0‘¤‚É, ©w‚Íy = 5‘¤‚É‚ ‚é‚Æ‚·‚éB
+				//ãƒã‚¹jã‹ã‚‰ã‚´ãƒ¼ãƒ«ã¾ã§ã®ãƒãƒ³ãƒãƒƒã‚¿ãƒ³è·é›¢
+				//ç›¸æ‰‹é™£ã¯y = 0å´ã«, è‡ªé™£ã¯y = 5å´ã«ã‚ã‚‹ã¨ã™ã‚‹ã€‚
 				int y = j / 6;
 				int x = j % 6;
 				int dist1 = y + min(x, 5 - x);
@@ -50,12 +50,12 @@ namespace kbb {
 		}
 	}
 	
-	//s = 0`2^36 - 1. (s >> i) & 1 == 1 Ì ƒ}ƒXi‚É©‹î‚ª‚ ‚é
+	//s = 0ï½2^36 - 1. (s >> i) & 1 == 1 â‡” ãƒã‚¹iã«è‡ªé§’ãŒã‚ã‚‹
 	inline int myGoalDist(long long s) {
 		return _myGoalDist[s & 262143] + _myGoalDist[s >> 18] + 3 * bitCountTable[s >> 18];
 	}
 	
-	//s = 0`2^36 - 1. (s >> i) & 1 == 1 Ì ƒ}ƒXi‚É‘Šè‹î‚ª‚ ‚é
+	//s = 0ï½2^36 - 1. (s >> i) & 1 == 1 â‡” ãƒã‚¹iã«ç›¸æ‰‹é§’ãŒã‚ã‚‹
 	inline int yourGoalDist(long long s) {
 		return _yourGoalDist[s & 262143] + _yourGoalDist[s >> 18] - 3 * bitCountTable[s >> 18];
 	}
@@ -63,12 +63,12 @@ namespace kbb {
 
 struct KanzenBoard
 {
-	long long existR;	//ƒ}ƒXi‚É©•ª‚ÌÔ‚ª‚ ‚é Ì (existR >> i) & 1 == 1‚Æ‚·‚éB
+	long long existR;	//ãƒã‚¹iã«è‡ªåˆ†ã®èµ¤ãŒã‚ã‚‹ â‡” (existR >> i) & 1 == 1ã¨ã™ã‚‹ã€‚
 	long long existB;
-	long long existr;	//ƒ}ƒXi‚É“G‚ÌÔ‹î‚ª‚ ‚é Ì (existr >> i) & 1 == 1‚Æ‚·‚éB
+	long long existr;	//ãƒã‚¹iã«æ•µã®èµ¤é§’ãŒã‚ã‚‹ â‡” (existr >> i) & 1 == 1ã¨ã™ã‚‹ã€‚
 	long long existb;
 	
-	//board[i]cƒ}ƒXi‚É‚ ‚é‹î‚Ìí—Ş(R, B, u)
+	//board[i]â€¦ãƒã‚¹iã«ã‚ã‚‹é§’ã®ç¨®é¡(R, B, u)
 	void toBitBoard(string board) {
 		existR = existB = existr = existb = 0;
 		for (int i = 0; i < 36; i++) {
@@ -79,8 +79,8 @@ struct KanzenBoard
 		}
 	}
 	
-	//è‚Ì¶¬. è‚ÌŒÂ”‚ğ•Ô‚·(teban=0 : ©•ªè”Ô, teban=1:“Gè”Ô). from[], to[]‚Éè‚ğŠi”[. (from, to‚ÍƒTƒCƒY32ˆÈã‚Ì”z—ñj
-	//kiki[5 * i + j] = ƒ}ƒXi‚Æ—×Ú‚·‚éj”Ô–Ú‚Ìƒ}ƒX‚Ì”Ô†. ‚È‚¯‚ê‚Î-1B
+	//æ‰‹ã®ç”Ÿæˆ. æ‰‹ã®å€‹æ•°ã‚’è¿”ã™(teban=0 : è‡ªåˆ†æ‰‹ç•ª, teban=1:æ•µæ‰‹ç•ª). from[], to[]ã«æ‰‹ã‚’æ ¼ç´. (from, toã¯ã‚µã‚¤ã‚º32ä»¥ä¸Šã®é…åˆ—ï¼‰
+	//kiki[5 * i + j] = ãƒã‚¹iã¨éš£æ¥ã™ã‚‹jç•ªç›®ã®ãƒã‚¹ã®ç•ªå·. ãªã‘ã‚Œã°-1ã€‚
 	int makeMoves(int teban, int kiki[], int from[], int to[]) {
 		int pos, i, cnt = 0;
 		for (pos = 0; pos < 36; pos++) {
@@ -88,10 +88,10 @@ struct KanzenBoard
 			if (teban == 1 && !(((existr | existb) >> pos) & 1)) continue;
 			for (i = pos * 5; kiki[i] != -1; i++) {
 				int npos = kiki[i];
-				//ƒ}ƒXpos -> ƒ}ƒXnpos‚Æ‹î‚ğ“®‚©‚¹‚é‚©Hi©‹î‚Æ‚Ô‚Â‚©‚ç‚È‚¢‚©j
+				//ãƒã‚¹pos -> ãƒã‚¹nposã¨é§’ã‚’å‹•ã‹ã›ã‚‹ã‹ï¼Ÿï¼ˆè‡ªé§’ã¨ã¶ã¤ã‹ã‚‰ãªã„ã‹ï¼‰
 				if (teban == 0 && (((existR | existB) >> npos) & 1)) continue;
 				if (teban == 1 && (((existr | existb) >> npos) & 1)) continue;
-				//“®‚©‚¹‚é
+				//å‹•ã‹ã›ã‚‹
 				from[cnt] = pos;
 				to[cnt] = npos;
 				cnt++;
@@ -100,7 +100,7 @@ struct KanzenBoard
 		return cnt;
 	}
 	
-	//æè‚ÌÔ‚ğ“®‚©‚µ‚½Œã‚Ìó‘Ô‚ÉXV‚·‚éB
+	//å…ˆæ‰‹ã®èµ¤ã‚’å‹•ã‹ã—ãŸå¾Œã®çŠ¶æ…‹ã«æ›´æ–°ã™ã‚‹ã€‚
 	inline void moveR(int from, int to) {
 		existR &= ~(1LL << from);
 		existR |= (1LL << to);
@@ -142,8 +142,8 @@ struct KanzenBoard
 			assert(0);
 	}
 	
-	//‚Ç‚¿‚ç‚ªŸ‚¿ó‘Ô‚©‚ğ•Ô‚·. (0c©•ª, 1c“G, 2c•s–¾). 
-	//teban c 0‚È‚ç©•ªè”Ô. 1‚È‚ç“Gè”Ô. (è”Ô c è‚ğ‘Å‚Â’¼‘O‚ÌƒvƒŒƒCƒ„[)
+	//ã©ã¡ã‚‰ãŒå‹ã¡çŠ¶æ…‹ã‹ã‚’è¿”ã™. (0â€¦è‡ªåˆ†, 1â€¦æ•µ, 2â€¦ä¸æ˜). 
+	//teban â€¦ 0ãªã‚‰è‡ªåˆ†æ‰‹ç•ª. 1ãªã‚‰æ•µæ‰‹ç•ª. (æ‰‹ç•ª â€¦ æ‰‹ã‚’æ‰“ã¤ç›´å‰ã®ãƒ—ãƒ¬ã‚¤ãƒ¤ãƒ¼)
 	int getWinPlayer(int teban) {
 		if (existR == 0 || existb == 0) return 0;
 		if (existB == 0 || existr == 0) return 1;
@@ -152,10 +152,10 @@ struct KanzenBoard
 		return 2;
 	}
 	
-	//tebanƒvƒŒƒCƒ„[‚ª1è‚Å’Eo‚Å‚«‚é‚©H (teban‚ª0‚È‚ç©•ªè”Ô)
-	//E‚Å‚«‚È‚¢cMoveCommand(-1, -1, -1)
-	//E‚Å‚«‚é  c“®‚©‚µ•ûiMoveCommand)‚ğ•Ô‚·
-	//[‚³0‚Å‚Ì”»’è‚Å‚Í, ‚±‚¿‚ç‚ğ—p‚¢‚é. ƒfƒoƒbƒO—p‚Æ‚µ‚Ä, ‘Šè”Ô‚Å‚à—˜—p‰Â”\‚É‚·‚é.
+	//tebanãƒ—ãƒ¬ã‚¤ãƒ¤ãƒ¼ãŒ1æ‰‹ã§è„±å‡ºã§ãã‚‹ã‹ï¼Ÿ (tebanãŒ0ãªã‚‰è‡ªåˆ†æ‰‹ç•ª)
+	//ãƒ»ã§ããªã„â€¦MoveCommand(-1, -1, -1)
+	//ãƒ»ã§ãã‚‹  â€¦å‹•ã‹ã—æ–¹ï¼ˆMoveCommand)ã‚’è¿”ã™
+	//æ·±ã•0ã§ã®åˆ¤å®šã§ã¯, ã“ã¡ã‚‰ã‚’ç”¨ã„ã‚‹. ãƒ‡ãƒãƒƒã‚°ç”¨ã¨ã—ã¦, ç›¸æ‰‹ç•ªã§ã‚‚åˆ©ç”¨å¯èƒ½ã«ã™ã‚‹.
 	MoveCommand getEscapeCommand(int teban) {
 		if (teban == 0) {
 			if (existB & 1LL) return MoveCommand(0, 0, 3);
@@ -169,7 +169,7 @@ struct KanzenBoard
 		}
 	}
 	
-	//•]‰¿ŠÖ”. tebanƒvƒŒƒCƒ„[‚Ì—L—˜‚³‚ğ•Ô‚·. teban=0c©•ªè”Ô.
+	//è©•ä¾¡é–¢æ•°. tebanãƒ—ãƒ¬ã‚¤ãƒ¤ãƒ¼ã®æœ‰åˆ©ã•ã‚’è¿”ã™. teban=0â€¦è‡ªåˆ†æ‰‹ç•ª.
 	int evaluate(int teban) {
 		int s0 = kbb::weight1 * kbb::bitCount(existB) - kbb::weight2 * kbb::myGoalDist(existB | existR);
 		int s1 = kbb::weight1 * kbb::bitCount(existb) - kbb::weight2 * kbb::yourGoalDist(existb | existr);
@@ -177,7 +177,7 @@ struct KanzenBoard
 		return s1 - s0;
 	}
 	
-	//ƒfƒoƒbƒO—p
+	//ãƒ‡ãƒãƒƒã‚°ç”¨
 	void printBoard() {
 		for (int y = 0; y < 6; y++) {
 			for (int x = 0; x < 6; x++) {

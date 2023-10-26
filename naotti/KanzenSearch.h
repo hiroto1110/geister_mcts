@@ -1,7 +1,7 @@
-//ƒKƒCƒXƒ^[‚Ì’Tõ
-//•sŠ®‘Sî•ñ•”•ª, Š®‘Sî•ñƒKƒCƒXƒ^[‚Ì2’iŠK‚©‚ç‚È‚éB
-//isj—ñ–Ú(i>=0, j>=0)‚ğƒ}ƒXi * 6 + j‚Æ‚¨‚­Bæè‚Ì’EoŒû‚Íƒ}ƒX0, 5B
-//cornerIdc¶ã0, ‰Eã1, ¶‰º2, ‰E‰º3
+//ã‚¬ã‚¤ã‚¹ã‚¿ãƒ¼ã®æ¢ç´¢
+//ä¸å®Œå…¨æƒ…å ±éƒ¨åˆ†, å®Œå…¨æƒ…å ±ã‚¬ã‚¤ã‚¹ã‚¿ãƒ¼ã®2æ®µéšã‹ã‚‰ãªã‚‹ã€‚
+//iè¡Œjåˆ—ç›®(i>=0, j>=0)ã‚’ãƒã‚¹i * 6 + jã¨ãŠãã€‚å…ˆæ‰‹ã®è„±å‡ºå£ã¯ãƒã‚¹0, 5ã€‚
+//cornerIdâ€¦å·¦ä¸Š0, å³ä¸Š1, å·¦ä¸‹2, å³ä¸‹3
 #pragma once
 #include <vector>
 #include <algorithm>
@@ -13,13 +13,13 @@ using namespace std;
 
 class KanzenSearch
 {
-	int kiki[36 * 5];				//kiki[i * 5 + j] = ƒ}ƒXi‚©‚çs‚¯‚éj”Ô–Ú‚Ìƒ}ƒX‚Ì”Ô†. (‚È‚¯‚ê‚Î-1)
-	int INF;						//INF         = •]‰¿’l‚ÌãŒÀ (‰ºŒÀ‚Í-INFˆÈã)
-	int maxDepth;					//maxDepth    = ’Tõ‚Ì[‚³‚ÌÅ‘å’l
+	int kiki[36 * 5];				//kiki[i * 5 + j] = ãƒã‚¹iã‹ã‚‰è¡Œã‘ã‚‹jç•ªç›®ã®ãƒã‚¹ã®ç•ªå·. (ãªã‘ã‚Œã°-1)
+	int INF;						//INF         = è©•ä¾¡å€¤ã®ä¸Šé™ (ä¸‹é™ã¯-INFä»¥ä¸Š)
+	int maxDepth;					//maxDepth    = æ¢ç´¢ã®æ·±ã•ã®æœ€å¤§å€¤
 	
 public:
 
-	KanzenSearch()	//ƒQ[ƒ€‚ªn‚Ü‚é‘O‚Ìˆ—
+	KanzenSearch()	//ã‚²ãƒ¼ãƒ ãŒå§‹ã¾ã‚‹å‰ã®å‡¦ç†
 	{
 		INF = 100000000;
 		int y, x, dir, i, j;
@@ -43,28 +43,28 @@ public:
 		}
 	}
 	
-	//board[i] = ƒ}ƒXi‚Ìó‘Ô. ([i / 6]s, i % 6—ñ–Új
-	//Š®‘Sî•ñB‘ŠèÔ‚ÍKŒÂ‚ÅA‘¼‚Í‘S•”ÂI‚İ‚½‚¢‚È”Õ–Ê‚ª—^‚¦‚ç‚ê‚éB
+	//board[i] = ãƒã‚¹iã®çŠ¶æ…‹. ([i / 6]è¡Œ, i % 6åˆ—ç›®ï¼‰
+	//å®Œå…¨æƒ…å ±ã€‚ç›¸æ‰‹èµ¤ã¯Kå€‹ã§ã€ä»–ã¯å…¨éƒ¨é’ï¼ã¿ãŸã„ãªç›¤é¢ãŒä¸ãˆã‚‰ã‚Œã‚‹ã€‚
 	pair<MoveCommand, int> think(string board, int maxDepth) {
 		KanzenBoard bb;
 		
-		//’Tõ‚Ìİ’è
+		//æ¢ç´¢ã®è¨­å®š
 		this->maxDepth = maxDepth;
 		
-		//1è‚Å’Eo‚Å‚«‚é‚©H
+		//1æ‰‹ã§è„±å‡ºã§ãã‚‹ã‹ï¼Ÿ
 		bb.toBitBoard(board);
 		MoveCommand escapeTe = bb.getEscapeCommand(0);
 		if (escapeTe.y >= 0) return pair<MoveCommand, int>(escapeTe, INF);
 		
-		//‘Šè‚Ì‹î‚ğ‡‹î‚Æ‚µ‚½Š®‘Sî•ñ’Tõ ([‚³0’Tõ‚ÉÅ‘Pè‚ğŠi”[j
+		//ç›¸æ‰‹ã®é§’ã‚’ç´«é§’ã¨ã—ãŸå®Œå…¨æƒ…å ±æ¢ç´¢ (æ·±ã•0æ¢ç´¢æ™‚ã«æœ€å–„æ‰‹ã‚’æ ¼ç´ï¼‰
 		int eval = negamax(bb, 0, -INF - 1, INF + 1);
 		return pair<MoveCommand, int>(bestMove, eval);
 	}
 	
 private:
-	MoveCommand bestMove;	//[‚³0iR,B‚ğ“®‚©‚·è”Ôj‚É‚¨‚¯‚éÅ—Çè
+	MoveCommand bestMove;	//æ·±ã•0ï¼ˆR,Bã‚’å‹•ã‹ã™æ‰‹ç•ªï¼‰ã«ãŠã‘ã‚‹æœ€è‰¯æ‰‹
 	
-	//’Tõ•”•ª (©•ª•KŸFINF, ©•ª•K•‰-INF), –ß‚è’l‚ª(alpha, beta)‚Ì”ÍˆÍ‚ğ’´‚¦‚½‚ç“K“–‚É•Ô‚·
+	//æ¢ç´¢éƒ¨åˆ† (è‡ªåˆ†å¿…å‹ï¼šINF, è‡ªåˆ†å¿…è² -INF), æˆ»ã‚Šå€¤ãŒ(alpha, beta)ã®ç¯„å›²ã‚’è¶…ãˆãŸã‚‰é©å½“ã«è¿”ã™
 	int negamax(KanzenBoard bb, int depth, int alpha, int beta) {
 		int player = depth % 2;
 		int winPlayer = bb.getWinPlayer(player);
@@ -79,7 +79,7 @@ private:
 			nextbb.move(from[i], to[i]);
 			int res = -negamax(nextbb, depth + 1, -beta, -alpha);
 			if (alpha < res) { alpha = res; if (depth == 0) { bestMove = MoveCommand::parse(from[i], to[i]); } }
-			if (alpha >= beta) { return beta; }	//ƒÀcut
+			if (alpha >= beta) { return beta; }	//Î²cut
 		}
 		
 		return alpha;
