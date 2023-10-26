@@ -15,7 +15,7 @@ import optax
 
 import wandb
 
-from buffer import ReplayBuffer
+from buffer import load_batch
 
 
 class Embeddings(nn.Module):
@@ -460,7 +460,7 @@ class TrainState(train_state.TrainState):
     dropout_rng: Any
 
 
-def main_train(data, log_wandb=True):
+def main_train(data, log_wandb=False):
     train_n = int(len(data[0]) * 0.8)
 
     train_data = [d[:train_n] for d in data]
@@ -468,9 +468,9 @@ def main_train(data, log_wandb=True):
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
-    heads = 4,
-    dims = 128, 256, 512
-    num_layers = 2, 4
+    heads = 8,
+    dims = 128,
+    num_layers = 4,
 
     for h, d, n in itertools.product(heads, dims, num_layers):
         if log_wandb:
@@ -503,7 +503,7 @@ def main_train(data, log_wandb=True):
         state = fit(state, model, checkpoint_manager,
                     train_data=train_data,
                     test_data=test_data,
-                    epochs=12, batch_size=256,
+                    epochs=8, batch_size=32,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -575,10 +575,8 @@ def main_test_performance(data):
 
 
 def main():
-    buffer = ReplayBuffer(600000, 200)
-
-    buffer.load('replay_buffer/189.npz')
-    data = buffer.get_all_batch(shuffle=True).astuple()
+    batch = load_batch(['replay_buffer/189.npz'], shuffle=True)
+    data = batch.astuple()
 
     print(data[0].shape)
 

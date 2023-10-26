@@ -9,15 +9,25 @@ class MatchResult:
     win: bool
 
 
+SELFPLAY_ID = -1
+
+
 class FSP:
-    def __init__(self, n_agents: int, match_buffer_size=1000, p=2) -> None:
+    def __init__(self, n_agents: int, selfplay_p=0.5, match_buffer_size=1000, p=2) -> None:
         self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
+        self.selfplay_p = selfplay_p
         self.agent_match_deques = [deque(maxlen=match_buffer_size) for _ in range(n_agents)]
 
         self.score_func = lambda x: (1 - x) ** p
 
     def next_match(self) -> int:
+        if self.n_agents == 0:
+            return SELFPLAY_ID
+
+        if np.random.random() < self.selfplay_p:
+            return SELFPLAY_ID
+
         if self.n_agents == 1:
             return 0
 
@@ -34,6 +44,9 @@ class FSP:
         return np.random.choice(range(self.n_agents), p=score)
 
     def apply_match_result(self, agent_id: int, win: bool):
+        if agent_id == SELFPLAY_ID:
+            return
+
         self.agent_match_deques[agent_id].append(int(win))
 
     def is_winning_all_agents(self, win_rate_threshold: float) -> bool:

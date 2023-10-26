@@ -16,6 +16,8 @@ import geister as game
 import geister_lib
 from network_transformer import TransformerDecoderWithCache
 from buffer import Sample
+import server_util
+import naotti2020
 
 
 class PredictState(struct.PyTreeNode):
@@ -462,13 +464,22 @@ def select_action_with_mcts(node: Node,
             for a, noise in zip(node.valid_actions, dirichlet_noise):
                 node.p[a] = (1 - params.dirichlet_eps) * node.p[a] + params.dirichlet_eps * noise
 
-        for _ in range(params.num_simulations):
-            simulate(node, state, 1, pred_state, params)
-
-        policy = node.get_policy()
         if params.n_ply_to_apply_noise < state.n_ply:
-            action = np.argmax(policy)
+            for i in range(params.num_simulations):
+                sorted_n = np.sort(node.n)
+                diff = sorted_n[-1] - sorted_n[-2]
+
+                if diff > params.num_simulations - i:
+                    break
+
+                simulate(node, state, 1, pred_state, params)
+
+            action = np.argmax(node.n)
         else:
+            for i in range(params.num_simulations):
+                simulate(node, state, 1, pred_state, params)
+
+            policy = node.get_policy()
             action = np.random.choice(range(len(policy)), p=policy)
 
         if params.should_do_visibilize_node_graph:
@@ -565,12 +576,56 @@ class PlayerMCTS:
         return Sample(tokens, actions, reward, true_color_o)
 
 
-def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
+class PlayerNaotti2020:
+    def __init__(self, depth_min, depth_max, print_log=False) -> None:
+        self.depth_min = depth_min
+        self.depth_max = depth_max
+        self.print_log = print_log
+
+    def init_state(self, state: game.SimulationState):
+        self.state = state
+        self.turn_count = 0
+
+        depth = np.random.randint(self.depth_min, self.depth_max + 1)
+        naotti2020.initGame(depth, self.print_log)
+
+    def select_next_action(self) -> int:
+        board_msg = server_util.encode_board_str(self.state)
+        naotti2020.recvBoard(board_msg)
+
+        try:
+            action_msg = naotti2020.solve(self.turn_count)
+        except Exception as e:
+            print('turn cnt', self.turn_count)
+            print('state n ply', self.state.n_ply)
+            print('state root player', self.state.root_player)
+            print(state_to_str(self.state, [0.5]*8, colored=True))
+            raise e
+        action = server_util.decode_action_message(action_msg)
+
+        if self.state.root_player == 1:
+            p_id = action // 4
+            d_id = action % 4
+
+            action = p_id * 4 + (3 - d_id)
+
+        self.turn_count += 2
+
+        return action
+
+    def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
+        _, afterstates = self.state.step(action, player * self.state.root_player)
+
+        for i in range(len(afterstates)):
+            _ = self.state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
+
+
+def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=180, print_board=False):
     state1, state2 = game.get_initial_state_pair()
     player1.init_state(state1)
     player2.init_state(state2)
 
-    action_history = np.zeros(game_length + 1, dtype=np.int16)
+    action_history = np.zeros(200, dtype=np.int16)
 
     player = 1
 
@@ -605,29 +660,16 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_b
 
 
 def test():
-    from flax.training import checkpoints
     import orbax.checkpoint
 
-    if True:
-        ckpt_dir = './checkpoints/driven-bird-204'
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
+    ckpt_dir = './checkpoints/driven-bird-204'
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        ckpt = checkpoint_manager.restore(12)
+    ckpt = checkpoint_manager.restore(12)
 
-        model = TransformerDecoderWithCache(**ckpt['model'])
-        params = ckpt['state']['params']
-    else:
-        model = TransformerDecoderWithCache(num_heads=8,
-                                            embed_dim=128,
-                                            num_hidden_layers=4,
-                                            is_linear_attention=True)
-
-        ckpt_dir = './checkpoints/driven-bird-204'
-        prefix = 'geister_'
-
-        ckpt = checkpoints.restore_checkpoint(ckpt_dir=ckpt_dir, prefix=prefix, target=None)
-        params = ckpt['state']['params']
+    model = TransformerDecoderWithCache(**ckpt['model'])
+    params = ckpt['state']['params']
 
     np.random.seed(120)
 
@@ -640,8 +682,13 @@ def test():
     player1 = PlayerMCTS(params, model, mcts_params)
     player2 = PlayerMCTS(params, model, mcts_params)
 
-    for i in range(1):
-        play_game(player1, player2, game_length=200, print_board=True)
+    player1 = PlayerNaotti2020(6)
+
+    for i in range(100):
+        if i % 2 == 0:
+            play_game(player1, player2, game_length=180, print_board=True)
+        else:
+            play_game(player2, player1, game_length=180, print_board=True)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,25 @@
 import socket
 import numpy as np
-from flax.training import checkpoints
 import orbax.checkpoint
 
 import mcts
 import geister as game
+import server_util
 from network_transformer import TransformerDecoderWithCache
 
 DIRECTION_DICT = {-6: 0, -1: 1, 1: 2, 6: 3}
 
-COLOR_DICT = {'r': game.RED, 'b': game.BLUE, 'u': game.UNCERTAIN_PIECE}
-PIECE_NAMES = 'ABCDEFGH'
-DIRECTION_NAMES = ['N', 'W', 'E', 'S']
+
+def send(s: socket.socket, msg: str):
+    print(f'SEND:[{msg.rstrip()}]')
+    s.send(msg.encode())
+
+
+def recv(s: socket.socket) -> str:
+    msg = s.recv(2**12).decode()
+    print(f'RECV:[{msg.rstrip()}]')
+
+    return msg
 
 
 class Client:
@@ -21,16 +29,6 @@ class Client:
 
         self.search_params = search_params
         self.win_count = [0, 0, 0]
-
-    def send(self, s: str):
-        print(f'SEND:[{s.rstrip()}]')
-        self.socket.send(s.encode())
-
-    def recv(self) -> str:
-        s = self.socket.recv(2**12).decode()
-        print(f'RECV:[{s.rstrip()}]')
-
-        return s
 
     def init_state(self, color: np.ndarray):
         self.state = game.SimulationState(color, -1)
@@ -91,23 +89,25 @@ class Client:
         if color is None:
             color = np.array([0.5]*8)
 
-        s = mcts.state_to_str(self.state, color)
+        s = mcts.state_to_str(self.state, color, colored=True)
         print(s)
 
-    def start(self, ip, port):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((ip, port))
+    def connect_and_start(self, ip: str, port: int):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((ip, port))
+            self.start(sock)
 
-        set_msg = self.recv()
+    def start(self, sock: socket.socket):
+        set_msg = recv(sock)
 
-        set_msg = format_set_message(self.state.color_p)
-        self.send(set_msg)
+        set_msg = server_util.encode_set_message(self.state.color_p)
+        send(sock, set_msg)
 
-        self.recv()
-        board_msg = self.recv()
+        recv(sock)
+        board_msg = recv(sock)
 
         while True:
-            pieces_o, _ = parse_board_str(board_msg)
+            pieces_o, _ = server_util.parse_board_str(board_msg)
             action_o = self.calc_opponent_action(pieces_o)
             self.apply_opponent_action(action_o)
 
@@ -116,123 +116,47 @@ class Client:
 
             action = self.select_next_action()
 
-            action_msg = format_action_message(action)
-            self.send(action_msg)
+            action_msg = server_util.format_action_message(action)
+            send(sock, action_msg)
 
-            action_responce = self.recv()
+            action_responce = recv(sock)
 
-            is_done, winner = is_done_message(action_responce)
+            is_done, winner = server_util.is_done_message(action_responce)
             if is_done:
                 self.win_count[winner + 1] += 1
                 break
 
-            board_msg = self.recv()
+            board_msg = recv(sock)
 
-            is_done, winner = is_done_message(board_msg)
+            is_done, winner = server_util.is_done_message(board_msg)
             if is_done:
                 self.win_count[winner + 1] += 1
                 break
 
-            color = parse_action_ack(action_responce)
+            color = server_util.parse_action_ack(action_responce)
             self.apply_player_action(action, color)
 
             self.print_board()
 
-        self.socket.close()
-
-
-def format_set_message(color: np.ndarray) -> str:
-    msg = ''
-
-    for i in range(8):
-        if color[i] == game.RED:
-            msg += PIECE_NAMES[i]
-
-    return f'SET:{msg}\r\n'
-
-
-def format_action_message(action: int) -> str:
-    p_id = action // 4
-    d_id = action % 4
-
-    p_name = PIECE_NAMES[p_id]
-    d_id = DIRECTION_NAMES[d_id]
-
-    return f'MOV:{p_name},{d_id}\r\n'
-
-
-def parse_action_ack(s: str):
-    if s[2] == 'R':
-        return game.RED
-
-    if s[2] == 'B':
-        return game.BLUE
-
-    return game.UNCERTAIN_PIECE
-
-
-def is_done_message(s: str):
-    if s.startswith('WON'):
-        return True, 1
-
-    if s.startswith('LST'):
-        return True, -1
-
-    if s.startswith('DRW'):
-        return True, 0
-
-    return False, 0
-
-
-def parse_board_str(s: str):
-    pieces_o = np.zeros(8, dtype=np.int16)
-    color_o = np.zeros(8, dtype=np.int16)
-
-    offset = 24 + 4
-
-    for i in range(8):
-        x = int(s[offset + 0 + i*3])
-        y = int(s[offset + 1 + i*3])
-        c = s[offset + 2 + i*3]
-
-        if x == 9 and y == 9:
-            pieces_o[i] = -1
-        else:
-            pieces_o[i] = y * 6 + x
-
-        color_o[i] = COLOR_DICT[c]
-
-    return pieces_o[::-1], color_o[::-1]
-
 
 def main(ip='127.0.0.1',
-         port=10001,
-         num_sim=400,
-         alpha=0.2):
+         port=10001):
 
-    if False:
-        ckpt = checkpoints.restore_checkpoint(ckpt_dir='./checkpoints_backup_203/',
-                                              prefix='geister_5_256_', target=None)
-        params = ckpt['params']
+    ckpt_dir = './checkpoints/dark-hill-285'
 
-        model = TransformerDecoderWithCache(num_heads=8,
-                                            embed_dim=256,
-                                            num_hidden_layers=5,
-                                            is_linear_attention=False)
-    else:
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/driven-bird-204', orbax_checkpointer)
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+    ckpt = checkpoint_manager.restore(186)
 
-        params = ckpt['state']['params']
-        model = TransformerDecoderWithCache(**ckpt['model'])
+    params = ckpt['state']['params']
+    model = TransformerDecoderWithCache(**ckpt['model'])
 
-    search_params = mcts.SearchParameters(num_sim,
-                                          dirichlet_alpha=alpha,
+    search_params = mcts.SearchParameters(num_simulations=100,
+                                          dirichlet_alpha=0.2,
                                           n_ply_to_apply_noise=0,
-                                          depth_search_checkmate_leaf=6,
-                                          depth_search_checkmate_root=10,
+                                          depth_search_checkmate_leaf=5,
+                                          depth_search_checkmate_root=9,
                                           max_duplicates=8)
 
     client = Client(model, params, search_params)
@@ -240,7 +164,7 @@ def main(ip='127.0.0.1',
     for i in range(100):
         try:
             client.init_state(np.array([0, 0, 0, 0, 1, 1, 1, 1]))
-            client.start(ip, port)
+            client.connect_and_start(ip, port)
         except Exception as e:
             raise e
         finally:

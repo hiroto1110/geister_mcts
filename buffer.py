@@ -40,10 +40,8 @@ class ReplayBuffer:
     def __len__(self):
         return self.n_samples
 
-    def get_last__minibatch(self, batch_size):
-        i = (self.index - batch_size) % self.buffer_size
-        indices = np.arange(i, i + batch_size)
-
+    def get_last_minibatch(self, batch_size):
+        indices = (self.index - batch_size + np.arange(batch_size)) % self.buffer_size
         return self.create_batch_from_indices(indices)
 
     def get_minibatch(self, batch_size):
@@ -122,30 +120,28 @@ class ReplayBuffer:
         self.index = self.n_samples % self.buffer_size
 
 
-def main():
-    dir_name = 'replay_buffer'
+def load_batch(file_names, shuffle: bool):
+    tokens = np.zeros((0, 200, game.TOKEN_SIZE), dtype=np.uint8)
+    policy = np.zeros((0, 200), dtype=np.uint8)
+    reward = np.zeros((0, 1), dtype=np.int8)
+    colors = np.zeros((0, 8), dtype=np.uint8)
 
-    tokens_buffer = np.load(f'{dir_name}/tokens.npy')
-    mask_buffer = np.load(f'{dir_name}/mask.npy')
-    policy_buffer = np.load(f'{dir_name}/policy.npy')
-    reward_buffer = np.load(f'{dir_name}/reward.npy')
-    pieces_buffer = np.load(f'{dir_name}/pieces.npy')
+    for file_name in file_names:
+        with np.load(file_name) as data:
+            tokens = np.concatenate([data['t'], tokens])
+            policy = np.concatenate([data['p'], policy])
+            reward = np.concatenate([data['r'], reward])
+            colors = np.concatenate([data['c'], colors])
 
-    indices = np.where(np.sum(mask_buffer != 0, axis=1) > 10)[0]
-    indices = indices[:600000]
-    tokens_buffer = tokens_buffer[indices]
-    policy_buffer = policy_buffer[indices]
-    reward_buffer = reward_buffer[indices]
-    pieces_buffer = pieces_buffer[indices]
+    indices = np.arange(tokens.shape[0])
+    if shuffle:
+        np.random.shuffle(indices)
 
-    save_dict = {
-        't': tokens_buffer,
-        'p': policy_buffer,
-        'r': reward_buffer,
-        'c': pieces_buffer,
-    }
-    np.savez(f'{dir_name}/189.npz', **save_dict)
+    tokens = tokens[indices]
+    policy = policy[indices]
+    reward = reward[indices]
+    colors = colors[indices]
 
+    mask = np.any(tokens != 0, axis=2)
 
-if __name__ == "__main__":
-    main()
+    return Batch(tokens, mask, policy, reward, colors)

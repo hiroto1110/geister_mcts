@@ -9,12 +9,13 @@ import wandb
 
 from buffer import ReplayBuffer, Sample
 import geister as game
+from fsp import FSP
 
 
 @dataclass
 class MatchResult:
     sample1: Sample
-    sample2: Sample
+    # sample2: Sample
     agent_id: int
 
     def is_winning(self):
@@ -62,10 +63,15 @@ def start_selfplay_process(match_request_queue: multiprocessing.Queue,
 
         while True:
             agent_id = match_request_queue.get()
-            opponent_params = params_checkpoints[agent_id]
 
             player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
-            player2 = mcts.PlayerMCTS(opponent_params, model, mcts_params)
+
+            if agent_id == -1:
+                player2 = mcts.PlayerMCTS(current_params, model, mcts_params)
+            elif agent_id == 0:
+                player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
+            else:
+                player2 = mcts.PlayerMCTS(params_checkpoints[agent_id], model, mcts_params)
 
             if np.random.random() > 0.5:
                 actions, color1, color2 = mcts.play_game(player1, player2)
@@ -73,9 +79,8 @@ def start_selfplay_process(match_request_queue: multiprocessing.Queue,
                 actions, color2, color1 = mcts.play_game(player2, player1)
 
             sample1 = player1.create_sample(actions, color2)
-            sample2 = player2.create_sample(actions, color1)
 
-            match_result_queue.put(MatchResult(sample1, sample2, agent_id))
+            match_result_queue.put(MatchResult(sample1, agent_id))
 
             if not ckpt_queue.empty():
                 step, is_league_member = ckpt_queue.get()
@@ -88,9 +93,9 @@ def start_selfplay_process(match_request_queue: multiprocessing.Queue,
 
 
 def main(n_clients=30,
-         buffer_size=200000,
+         buffer_size=400000,
          batch_size=256,
-         num_batches=16,
+         num_batches=8,
          update_period=200,
          num_mcts_sim=50,
          dirichlet_alpha=0.3,
@@ -100,13 +105,12 @@ def main(n_clients=30,
     import orbax.checkpoint
 
     from buffer import ReplayBuffer
-    from fsp import FSP
     import network_transformer as network
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_4', checkpointer)
-    # ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
-    ckpt = checkpoint_manager.restore(0)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/dark-hill-285', checkpointer)
+
+    ckpt = checkpoint_manager.restore(400)
 
     model = network.TransformerDecoder(**ckpt['model'])
 
@@ -135,7 +139,7 @@ def main(n_clients=30,
 
     ckpt_dir = f'./checkpoints/{name}/'
 
-    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=50, keep_period=50, create=True)
+    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=100, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
 
     network.save_checkpoint(state, model, checkpoint_manager)
@@ -161,7 +165,7 @@ def main(n_clients=30,
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    fsp = FSP(n_agents=1, match_buffer_size=2000, p=5)
+    fsp = FSP(n_agents=1, selfplay_p=0.5, match_buffer_size=2000, p=5)
 
     while True:
         for i in tqdm(range(update_period)):
@@ -170,7 +174,6 @@ def main(n_clients=30,
 
             match_result = match_result_queue.get()
             replay_buffer.add_sample(match_result.sample1)
-            # replay_buffer.add_sample(match_result.sample2)
             fsp.apply_match_result(match_result.agent_id, match_result.is_winning())
 
             match_request_queue.put(fsp.next_match())
@@ -182,16 +185,7 @@ def main(n_clients=30,
 
         network.save_checkpoint(state, model, checkpoint_manager)
 
-        is_league_member, win_rate = fsp.is_winning_all_agents(fsp_threshold)
-        if is_league_member:
-            fsp.add_agent()
-
-        print(win_rate)
-
-        for i in range(len(win_rate)):
-            log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
-
-        log_dict['fsp/n_agents'] = fsp.n_agents
+        is_league_member = log_fsp(fsp, fsp_threshold, replay_buffer, log_dict)
 
         for ckpt_queue in ckpt_queues:
             ckpt_queue.put((state.epoch, is_league_member))
@@ -199,18 +193,51 @@ def main(n_clients=30,
         wandb.log(log_dict)
 
 
-def log_games(buffer: ReplayBuffer, num_games: int, log_dict):
-    batch = buffer.get_last__minibatch(batch_size=num_games)
+def log_fsp(fsp: FSP, fsp_threshold: float, buffer: ReplayBuffer, log_dict: dict):
+    is_league_member, win_rate = fsp.is_winning_all_agents(fsp_threshold)
 
-    n_ply = batch.tokens[:, :, game.Token.T].max(axis=1)
+    if is_league_member:
+        fsp.add_agent()
+
+    print(win_rate)
+
+    for i in range(len(win_rate)):
+        log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
+
+    log_dict['fsp/n_agents'] = fsp.n_agents
+
+    return is_league_member
+
+
+def log_games(buffer: ReplayBuffer, num_games: int, log_dict):
+    batch = buffer.get_last_minibatch(batch_size=num_games)
+
+    n_sections = 10
+    tokens = batch.tokens
+    tokens_div = tokens.reshape(tokens.shape[0], n_sections, -1, 5)
+
+    is_move = (tokens_div[..., game.Token.T] > 0) & (tokens_div[..., game.Token.X] < 6)
+
+    n_move_blue = is_move & (tokens_div[..., game.Token.COLOR] == game.BLUE)
+    n_move_red = is_move & (tokens_div[..., game.Token.COLOR] == game.RED)
+
+    n_move_blue = np.sum(n_move_blue, axis=(0, 2))
+    n_move_red = np.sum(n_move_red, axis=(0, 2))
+
+    blue_rate = n_move_blue / (n_move_blue + n_move_red)
+
+    for i in range(n_sections):
+        log_dict[f'blue_rate/{i}'] = blue_rate[i]
+
+    n_ply = tokens[:, :, game.Token.T].max(axis=1)
 
     log_dict["n_ply"] = n_ply.mean()
     log_dict["n_ply histgram"] = wandb.Histogram(n_ply, num_bins=50)
 
     value = batch.reward.flatten()
-    value_count = np.bincount(np.abs(value - 3), minlength=4)
+    value_count = np.bincount(value, minlength=7)
 
-    for i in range(4):
+    for i in range(7):
         log_dict[f'value/{i}'] = value_count[i] / num_games
 
 
