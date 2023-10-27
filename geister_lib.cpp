@@ -289,28 +289,39 @@ SolveResult get_max_result(SolveResult r1, SolveResult r2, int player) {
 
 SolveResult SOLVE_RESULT_NONE = {0, -1, -1};
 
-int calc_min_distance(vector<ulong> distance_mask, ulong pieces) {
+int calc_min_distance(vector<ulong>* distance_mask, ulong pieces) {
 	for(int i = 0; i < 6; i++) {
-		if (distance_mask[i] & pieces)
+		if (distance_mask->at(i) & pieces)
 			return i;
 	}
 	return 6;
 }
 
-bool is_escaped_p(SearchParam* search, Board* b) {
+bool is_escaped_p(SearchParam* search, Board* b, int* winner, int* escaped_id) {
+	ulong o_b = 0;
+	ulong o_r = 0;
+
+	for (int i = 0; i < 8; i++) {
+		if (search->color_o[i] == 0)
+			o_r |= 1ULL << search->pos_o[i];
+		else
+			o_b |= 1ULL << search->pos_o[i];
+	}
+
 	for (int i = 0; i < 2; i++) {
-		int distance_pb = calc_min_distance(search->escape_distance_mask_p[i], b->pb);
-		int distance_pr = calc_min_distance(search->escape_distance_mask_p[i], b->pr);
-		int distance_o = calc_min_distance(search->escape_distance_mask_p[i], b->o);
+		int distance_pb = calc_min_distance(&search->escape_distance_mask_p[i], b->pb);
+		int distance_pr = calc_min_distance(&search->escape_distance_mask_p[i], b->pr);
+		int distance_o = calc_min_distance(&search->escape_distance_mask_p[i], b->o);
 
 		if(distance_pb < distance_o && distance_pb <= distance_pr) {
+			*winner = 1;
 			return true;
 		}
 	}
 	return false;
 }
 
-bool is_escaped_o(SearchParam* search, Board* b, int* escaped_id) {
+bool is_escaped_o(SearchParam* search, Board* b, int* winner, int* escaped_id) {
 	ulong o_b = 0;
 	ulong o_r = 0;
 
@@ -322,13 +333,14 @@ bool is_escaped_o(SearchParam* search, Board* b, int* escaped_id) {
 	}
 
 	for(int i = 0; i < 2; i++) {
-		int distance_p = calc_min_distance(search->escape_distance_mask_o[i], b->pb | b->pr);
-		int distance_ob = calc_min_distance(search->escape_distance_mask_o[i], o_b);
-		int distance_or = calc_min_distance(search->escape_distance_mask_o[i], o_r);
+		int distance_p = calc_min_distance(&search->escape_distance_mask_o[i], b->pb | b->pr);
+		int distance_ob = calc_min_distance(&search->escape_distance_mask_o[i], o_b);
+		int distance_or = calc_min_distance(&search->escape_distance_mask_o[i], o_r);
 
 		if(distance_ob < distance_p && distance_ob <= distance_or) {
 			ulong escaped_mask = o_b & search->escape_distance_mask_o[i][distance_ob];
 			*escaped_id = index_of(&search->pos_o, tzcnt(escaped_mask));
+			*winner = -1;
 
 			return true;
 		}
@@ -338,37 +350,16 @@ bool is_escaped_o(SearchParam* search, Board* b, int* escaped_id) {
 
 bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type, int* escaped_id) {
 	if (player == 1) {
-		if (is_escaped_p(search, b)) {
-			*winner = 1;
+		if (is_escaped_p(search, b, winner, escaped_id)) {
 			*type = WIN_ESCAPE;
 			return true;
 		}
-
-		/*if ((b->pb & search->escape_mask_p) != 0) {
-			*winner = 1;
-			*type = WIN_ESCAPE;
-			return true;
-		}*/
 	}
 	else {
-		if (is_escaped_o(search, b, escaped_id)) {
-			*winner = -1;
+		if (is_escaped_o(search, b, winner, escaped_id)) {
 			*type = WIN_ESCAPE;
 			return true;
 		}
-
-		/*ulong escaped = b->o & search->escape_mask_o;
-
-		if (escaped != 0) {
-			int id = index_of(&search->pos_o, tzcnt(escaped));
-
-			if(search->color_o[id] != 0) {
-				*winner = -1;
-				*type = WIN_ESCAPE;
-				*escaped_id = index_of(&search->pos_o, tzcnt(escaped));
-				return true;
-			}
-		}*/
 	}
 
 	if (b->pb == 0) {
