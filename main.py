@@ -9,7 +9,7 @@ import wandb
 
 from buffer import ReplayBuffer, Sample
 import geister as game
-from fsp import FSP
+import fsp
 
 
 @dataclass
@@ -66,7 +66,7 @@ def start_selfplay_process(match_request_queue: multiprocessing.Queue,
 
             player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
 
-            if agent_id == -1:
+            if agent_id == fsp.SELFPLAY_ID:
                 player2 = mcts.PlayerMCTS(current_params, model, mcts_params)
             elif agent_id == 0:
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
@@ -165,7 +165,7 @@ def main(n_clients=30,
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    fsp = FSP(n_agents=1, selfplay_p=0.5, match_buffer_size=2000, p=5)
+    match_maker = fsp.FSP(n_agents=1, selfplay_p=0.5, match_buffer_size=2000, p=5)
 
     while True:
         for i in tqdm(range(update_period)):
@@ -174,9 +174,9 @@ def main(n_clients=30,
 
             match_result = match_result_queue.get()
             replay_buffer.add_sample(match_result.sample1)
-            fsp.apply_match_result(match_result.agent_id, match_result.is_winning())
+            match_maker.apply_match_result(match_result.agent_id, match_result.is_winning())
 
-            match_request_queue.put(fsp.next_match())
+            match_request_queue.put(match_maker.next_match())
 
         log_dict = {'step': state.epoch}
 
@@ -185,7 +185,7 @@ def main(n_clients=30,
 
         network.save_checkpoint(state, model, checkpoint_manager)
 
-        is_league_member = log_fsp(fsp, fsp_threshold, replay_buffer, log_dict)
+        is_league_member = log_fsp(match_maker, fsp_threshold, log_dict)
 
         for ckpt_queue in ckpt_queues:
             ckpt_queue.put((state.epoch, is_league_member))
@@ -193,18 +193,18 @@ def main(n_clients=30,
         wandb.log(log_dict)
 
 
-def log_fsp(fsp: FSP, fsp_threshold: float, buffer: ReplayBuffer, log_dict: dict):
-    is_league_member, win_rate = fsp.is_winning_all_agents(fsp_threshold)
+def log_fsp(match_maker: fsp.FSP, fsp_threshold: float, log_dict: dict):
+    is_league_member, win_rate = match_maker.is_winning_all_agents(fsp_threshold)
 
     if is_league_member:
-        fsp.add_agent()
+        match_maker.add_agent()
 
     print(win_rate)
 
     for i in range(len(win_rate)):
         log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
 
-    log_dict['fsp/n_agents'] = fsp.n_agents
+    log_dict['fsp/n_agents'] = match_maker.n_agents
 
     return is_league_member
 

@@ -1,8 +1,4 @@
 # geister_mcts
 
-Geister
-AlphaZero
-Transformer
-Attention
-AlphaBeta
-PolterGeister
+G3945
+AlphaZero + Transformer + αβ + Fictitious Self-Play

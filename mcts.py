@@ -593,14 +593,7 @@ class PlayerNaotti2020:
         board_msg = server_util.encode_board_str(self.state)
         naotti2020.recvBoard(board_msg)
 
-        try:
-            action_msg = naotti2020.solve(self.turn_count)
-        except Exception as e:
-            print('turn cnt', self.turn_count)
-            print('state n ply', self.state.n_ply)
-            print('state root player', self.state.root_player)
-            print(state_to_str(self.state, [0.5]*8, colored=True))
-            raise e
+        action_msg = naotti2020.solve(self.turn_count)
         action = server_util.decode_action_message(action_msg)
 
         if self.state.root_player == 1:
@@ -662,33 +655,74 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=180, print_b
 def test():
     import orbax.checkpoint
 
-    ckpt_dir = './checkpoints/driven-bird-204'
+    ckpt_dir = './checkpoints/fresh-terrain-288'
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(12)
+    ckpt = checkpoint_manager.restore(1330)
 
     model = TransformerDecoderWithCache(**ckpt['model'])
     params = ckpt['state']['params']
 
-    np.random.seed(120)
+    np.random.seed(12)
 
     mcts_params = SearchParameters(num_simulations=100,
                                    dirichlet_alpha=0.1,
                                    n_ply_to_apply_noise=0,
-                                   max_duplicates=3,
-                                   should_do_visibilize_node_graph=True)
+                                   max_duplicates=8,
+                                   depth_search_checkmate_leaf=5,
+                                   depth_search_checkmate_root=9,
+                                   should_do_visibilize_node_graph=False)
 
     player1 = PlayerMCTS(params, model, mcts_params)
     player2 = PlayerMCTS(params, model, mcts_params)
 
-    player1 = PlayerNaotti2020(6)
+    player1 = PlayerNaotti2020(6, 6)
+
+    game_result = [0, 0, 0]
 
     for i in range(100):
-        if i % 2 == 0:
+        if True or i % 2 == 0:
             play_game(player1, player2, game_length=180, print_board=True)
         else:
             play_game(player2, player1, game_length=180, print_board=True)
+
+        game_result[player2.state.winner + 1] += 1
+        print(game_result, game_result[2] / sum(game_result))
+
+
+def test_ab():
+    pieces_p = np.array([17, 19, 23, 25, 28, 30, -1, -1])
+    colors_p = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+
+    pieces_o = np.array([2, 4, 11, 18, 31, -1, -1, -1])
+    colors_o = np.array([1, 1, 0, 1, 1, 0, 0, 0])
+
+    pieces_p[pieces_p > 5] -= 6
+    pieces_o[pieces_o > 5] -= 6
+
+    state = game.SimulationState(colors_p, -1)
+    state.pieces_p[:] = pieces_p
+    state.pieces_o[:] = pieces_o
+    state.color_p[:] = colors_p
+    state.color_o[pieces_o == game.CAPTURED] = colors_o[pieces_o == game.CAPTURED]
+
+    print(state_to_str(state, [0.5]*8, colored=True))
+    print()
+
+    _ = find_checkmate(state, -1, 6)
+
+    import time
+
+    n = 100
+    start = time.perf_counter()
+
+    for i in range(n):
+        action, e, escaped_id = find_checkmate(state, -1, 6)
+        print(i, action, e, escaped_id)
+
+    t = time.perf_counter() - start
+    print(t / n)
 
 
 if __name__ == "__main__":
