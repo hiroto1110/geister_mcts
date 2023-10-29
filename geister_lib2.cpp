@@ -137,6 +137,14 @@ const ulong ESCAPE_MASK_O = 0b100001ULL;
 const ulong INIT_MASK_P = 0b011110011110ULL;
 const ulong INIT_MASK_O = 0b011110011110000000000000000000000000ULL;
 
+static ulong spread_mask(ulong b) {
+	return
+		((b >> 6) & MASKS[0]) |
+		((b >> 1) & MASKS[1]) |
+		((b << 1) & MASKS[2]) |
+		((b << 6) & MASKS[3]);
+}
+
 static ulong GetMoveShiftL(ulong p, ulong mask, int shift) {
 	return ((p << shift) & mask) >> shift;
 }
@@ -218,6 +226,7 @@ const int WIN_NONE = 0;
 const int WIN_ESCAPE = 1;
 const int WIN_BLUE4 = 2;
 const int WIN_RED4 = 3;
+const int END_CAP7 = 4;
 
 struct SearchParam {
 	int root_player;
@@ -247,6 +256,14 @@ struct SearchParam {
 		this->init_cap_o_b_cnt = init_cap_o_b_cnt;
 		this->init_cap_o_r_cnt = init_cap_o_r_cnt;
 	}
+
+	int n_cap_blue_in_best_case(Board* b) {
+		return this->init_cap_o_b_cnt + this->init_o_b_cnt + this->init_o_u_cnt - popcount(b->o_b | b->o_u);
+	}
+
+	int n_cap_red_in_worst_case(Board* b) {
+		return this->init_cap_o_r_cnt + this->init_o_r_cnt + this->init_o_u_cnt - popcount(b->o_r | b->o_u);
+	}
 };
 
 bool test_f = false;
@@ -275,6 +292,53 @@ SolveResult get_max_result(SolveResult r1, SolveResult r2, int player) {
 
 SolveResult SOLVE_RESULT_NONE = {0, 0, -1};
 
+/*
+n_ply回の行動でo_bの駒をnum_need_cap個取ることができる可能性があるか
+*/
+bool can_cap_4blue_in_n_ply(ulong p, ulong o_b, ulong o_r, int num_need_cap, int n_ply) {
+	for(int i = 0; i < n_ply; i++) {
+		if (n_ply - i < num_need_cap)
+			return false;
+
+		int num_need_cap_in_1ply = num_need_cap - (n_ply - num_need_cap);
+
+		p = spread_mask(p);
+		p ^= o_r;
+		ulong cap_o_b = o_b & p;
+		int num_cap_in_1ply = popcount(cap_o_b);
+
+		if (num_cap_in_1ply < num_need_cap_in_1ply)
+			return false;
+		
+		o_b ^= cap_o_b;
+		num_need_cap -= num_cap_in_1ply;
+
+		if(num_need_cap <= 0)
+			return true;
+	}
+	return false;
+}
+
+bool can_cap_4blue_in_n_ply_o(SearchParam* search, Board* board, ulong mask, int n_ply) {
+	ulong p = board->o_b | board->o_r | board->o_u;
+	ulong o_b = board->p_b ^ mask;
+	ulong o_r = board->p_r | mask;
+
+	int n_remaining_blue = 4 - popcount(board->p_b);
+
+	return can_cap_4blue_in_n_ply(p, o_b, o_r, n_remaining_blue, n_ply);
+}
+
+bool can_cap_4blue_in_n_ply_p(SearchParam* search, Board* board, ulong mask, int n_ply) {
+	ulong p = board->p_b | board->p_r;
+	ulong o_b = (board->o_b | board->o_u) ^ mask;
+	ulong o_r = board->o_r | mask;
+
+	int n_remaining_blue = 4 - search->n_cap_blue_in_best_case(board);
+
+	return can_cap_4blue_in_n_ply(p, o_b, o_r, n_remaining_blue, n_ply);
+}
+
 int calc_min_distance(vector<ulong>* distance_mask, ulong pieces) {
 	if(pieces == 0)
 		return 6;
@@ -286,7 +350,7 @@ int calc_min_distance(vector<ulong>* distance_mask, ulong pieces) {
 	return 6;
 }
 
-bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* action, int* distance) {
+bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* action, int* distance, ulong* escaped_mask) {
 	vector<ulong>* masks = &search->escape_distance_mask_p[i];
 
 	int distance_p_b = calc_min_distance(masks, b->p_b);
@@ -298,10 +362,11 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* ac
 	if(distance_p_b < distance_o + offset && distance_p_b <= distance_p_r) {
 		*distance = distance_p_b;
 
+		ulong mask = b->p_b & masks->at(distance_p_b);
+		*escaped_mask = first_bit(mask);
+
 		if (action != nullptr) {
-			ulong mask = b->p_b & masks->at(distance_p_b);
-			mask = first_bit(mask);
-			int pos = tzcnt(mask);
+			int pos = tzcnt(*escaped_mask);
 			*action = pos * 4;
 
 			if(pos % 6 == 0 || pos % 6 == 5) {
@@ -322,11 +387,12 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* ac
 	return false;
 }
 
-bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, int* distance) {
+bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, int* distance, ulong* escaped_mask) {
 	int d1 = 6, d2 = 6;
 	int a1 = 0, a2 = 0;
-	bool esc1 = is_escaped_root_p(search, b, player, 0, &a1, &d1);
-	bool esc2 = is_escaped_root_p(search, b, player, 1, &a2, &d2);
+	ulong m1 = 0, m2 = 0;
+	bool esc1 = is_escaped_root_p(search, b, player, 0, &a1, &d1, &m1);
+	bool esc2 = is_escaped_root_p(search, b, player, 1, &a2, &d2, &m2);
 
 	if (!esc1 && !esc2)
 		return false;
@@ -334,10 +400,12 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, i
 	if(d1 < d2) {
 		*distance = d1;
 		*action = a1;
+		*escaped_mask = m1;
 	}
 	else {
 		*distance = d2;
 		*action = a2;
+		*escaped_mask = m2;
 	}
 	return true;
 }
@@ -405,70 +473,66 @@ bool is_escaped_root_o(SearchParam* search, Board* b, int player, int* action, i
 bool is_escaped_root(SearchParam* search, Board* b, int player, int* winner, int* action, int* escaped_depth, ulong* escaped_mask) {
 	int d1 = 6, d2 = 6;
 	int a1 = 0, a2 = 0;
-	bool esc1 = is_escaped_root_p(search, b, player, &a1, &d1);
-	bool esc2 = is_escaped_root_o(search, b, player, &a2, &d2, escaped_mask);
+	ulong m1 = 0, m2 = 0;
+	bool esc1 = is_escaped_root_p(search, b, player, &a1, &d1, &m1);
+	bool esc2 = is_escaped_root_o(search, b, player, &a2, &d2, &m2);
 
 	if (!esc1 && !esc2)
 		return false;
+	
+	int remaining_n_ply;
 
 	if (player == 1) {
 		if (d1 <= d2) {
 			*winner = 1;
 			*action = a1;
+			*escaped_mask = m1;
 			*escaped_depth = d1 * 2;
+			remaining_n_ply = d1;
 		}
 		else {
 			*winner = -1;
+			*escaped_mask = m2;
 			*escaped_depth = d2 * 2 + 1;
+			remaining_n_ply = d2 + 1;
 		}
 	}
 	else {
 		if (d2 <= d1) {
 			*winner = -1;
 			*action = a2;
+			*escaped_mask = m2;
 			*escaped_depth = d2 * 2;
+			remaining_n_ply = d2;
 		}
 		else {
 			*winner = 1;
+			*escaped_mask = m1;
 			*escaped_depth = d1 * 2 + 1;
+			remaining_n_ply = d1 + 1;
 		}
 	}
+
+	/*if(*winner == 1 && can_cap_4blue_in_n_ply_o(search, b, *escaped_mask, remaining_n_ply)) {
+		*winner = 0;
+		*action = -1;
+		*escaped_depth = 100;
+		*escaped_mask = 0;
+		return false;
+	}
+
+	if(*winner == -1 && can_cap_4blue_in_n_ply_p(search, b, *escaped_mask, remaining_n_ply)) {
+		*winner = 0;
+		*action = -1;
+		*escaped_depth = 100;
+		*escaped_mask = 0;
+		return false;
+	}*/
 
 	return true;
 }
 
-bool is_escaped_p(SearchParam* search, Board* b, int* escaped_depth) {
-	for (int i = 0; i < 2; i++) {
-		int distance_p_b = calc_min_distance(&search->escape_distance_mask_p[i], b->p_b);
-		int distance_p_r = calc_min_distance(&search->escape_distance_mask_p[i], b->p_r);
-		int distance_o = calc_min_distance(&search->escape_distance_mask_p[i], b->o_b | b->o_r | b->o_u);
-
-		if(distance_p_b < distance_o && distance_p_b <= distance_p_r) {
-			*escaped_depth = distance_p_b * 2;
-			return true;
-		}
-	}
-	return false;
-}
-
-bool is_escaped_o(SearchParam* search, Board* b, int* escaped_depth, ulong* escaped_mask) {
-	for(int i = 0; i < 2; i++) {
-		int distance_p = calc_min_distance(&search->escape_distance_mask_o[i], b->p_b | b->p_r);
-		int distance_ob = calc_min_distance(&search->escape_distance_mask_o[i], b->o_b | b->o_u);
-		int distance_or = calc_min_distance(&search->escape_distance_mask_o[i], b->o_r);
-
-		if(distance_ob < distance_p && distance_ob <= distance_or) {
-			*escaped_depth = distance_ob * 2;
-
-			ulong mask = (b->o_b | b->o_u) & search->escape_distance_mask_o[i][distance_ob];
-			*escaped_mask = first_bit(mask);
-			return true;
-		}
-	}
-	return false;
-}
-
-bool is_done_by_captureing(SearchParam* search, Board* b, int* winner, int* type) {
+bool is_done_by_captureing(SearchParam* search, Board* b, int* winner, int* type, ulong* escaped_mask) {
 	if (b->p_b == 0) {
 		*winner = -1;
 		*type = WIN_BLUE4;
@@ -481,11 +545,9 @@ bool is_done_by_captureing(SearchParam* search, Board* b, int* winner, int* type
 		return true;
 	}
 
-	int n_cap_red = search->init_cap_o_r_cnt + search->init_o_r_cnt + search->init_o_u_cnt - popcount(b->o_r | b->o_u);
-
-	if (n_cap_red >= 4) {
-		*winner = -1;
-		*type = WIN_RED4;
+	if (popcount(b->o_b | b->o_r | b->o_u) <= 1) {
+		*winner = 0;
+		*type = END_CAP7;
 		return true;
 	}
 
@@ -494,42 +556,39 @@ bool is_done_by_captureing(SearchParam* search, Board* b, int* winner, int* type
 	return false;
 }
 
-bool is_done(SearchParam* search, Board* b, int player, int* winner, int* type, int* escaped_depth, ulong* escaped_mask) {
-	/*if (player == 1 && is_escaped_p(search, b, escaped_depth)) {
-		*winner = 1;
-		*type = WIN_ESCAPE;
-		return true;
-	}
-	else if (player == -1 && is_escaped_o(search, b, escaped_depth, escaped_mask)) {
-		*winner = -1;
-		*type = WIN_ESCAPE;
-		return true;
-	}*/
-	int action = 0;
-	if(is_escaped_root(search, b, player, winner, &action, escaped_depth, escaped_mask)) {
-		*type = WIN_ESCAPE;
-		return true;
-	}
-	return is_done_by_captureing(search, b, winner, type);
-}
-
 const int EVAL_OFFSET = 100; 
 
 SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int player, int depth) {
 	int winner = 0;
-	int type = 0;
+	int type = WIN_NONE;
+	ulong captured_mask = 0;
+
+	if(is_done_by_captureing(search, board, &winner, &type, &captured_mask) && type == WIN_RED4) {
+		switch(type) {
+			case WIN_BLUE4:
+				return {0, 0, -1};
+
+			case WIN_RED4:
+				return {winner * (EVAL_OFFSET + depth), 0, -1};
+
+			case END_CAP7:
+				return {winner * (EVAL_OFFSET + depth), 0, 0};
+		}
+	}
+
+	int action = 0;
 	int escaped_depth = 0;
 	ulong escaped_mask = 0;
 
-	if (is_done(search, board, player, &winner, &type, &escaped_depth, &escaped_mask)) {
-		if(type == WIN_ESCAPE)
+	if(is_escaped_root(search, board, player, &winner, &action, &escaped_depth, &escaped_mask)) {
+		if(winner == -1) {
 			return {winner * (EVAL_OFFSET + depth - escaped_depth), escaped_mask, 1};
+		}
 
-		else if(type == WIN_RED4 && winner == -1)
-			return {winner * (EVAL_OFFSET + depth), 0, 0};
-
-		else
-			return SOLVE_RESULT_NONE;
+		int n_cap_red = search->init_cap_o_r_cnt + search->init_o_r_cnt + search->init_o_u_cnt - popcount(board->o_r | board->o_u);
+		if (n_cap_red < 4) {
+			return {winner * (EVAL_OFFSET + depth - escaped_depth), escaped_mask, 1};
+		}
 	}
 
 	if (depth <= 0)
@@ -562,7 +621,7 @@ SolveResult solve(SearchParam* search, Board* board, int alpha, int beta, int pl
 				cout << b_to_string(next_board) << endl;
 			}
 
-			if (result.eval == -depth && result.cause_piece_mask == 0 && result.cause_piece_color == 0) {
+			if (result.eval == -(EVAL_OFFSET + depth - 1) && result.cause_piece_mask == 0 && result.cause_piece_color == 0) {
 				result.cause_piece_mask = move;
 			}
 
@@ -619,12 +678,12 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 	int escaped_root_depth = 0;
 	int escaped_root_e = 0;
 
-	ulong escaped_mask_i = 0;
-	int escaped_root_e_i = 0;
-
 	if (is_escaped_root(search, board, player, &winner, max_action, &escaped_root_depth, escaped_mask)) {
 		escaped_root_e = winner * (EVAL_OFFSET + depth - escaped_root_depth);
 	}
+
+	vector<SolveResult> results;
+	SolveResult result = {0, 0, -1};
 
 	for (int d = 0; d < 4; d++) {
 		ulong moves_d = moves[d];
@@ -634,33 +693,46 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 
 			step(board, next_board, move, d);
 
+			ulong escaped_mask_i = 0;
 			int type = 0;
-			if(is_done_by_captureing(search, next_board, &winner, &type)) {
-				continue;
-			}
+			if(is_done_by_captureing(search, next_board, &winner, &type, &escaped_mask_i)) {
+				switch(type) {
+					case WIN_BLUE4:
+						continue;
 
-			if (is_escaped_root(search, next_board, -player, &winner, &action, &escaped_root_depth, &escaped_mask_i)) {
-				escaped_root_e_i = winner * (EVAL_OFFSET + depth - 1 - escaped_root_depth);
+					case WIN_RED4:
+						result = {winner * (EVAL_OFFSET + depth), 0, -1};
+
+					case END_CAP7:
+						result = {winner * (EVAL_OFFSET + depth), move, -0};
+				}
 			}
 			else {
-				escaped_root_e_i = 0;
-			}
+				int escaped_root_e_i = 0;
+
+				if (is_escaped_root(search, next_board, -player, &winner, &action, &escaped_root_depth, &escaped_mask_i)) {
+					if (winner == -1 || search->n_cap_red_in_worst_case(next_board) < 4)
+						escaped_root_e_i = winner * (EVAL_OFFSET + depth - 1 - escaped_root_depth);
+				}
 
 			// test_f = d == 1 && tzcnt(move) == 26;
 
-			SolveResult result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
+				result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
 
-			if(abs(escaped_root_e_i) > abs(result.eval)) {
-				result.eval = escaped_root_e_i;
-				result.cause_piece_mask = escaped_mask_i;
-				result.cause_piece_color = 1;
-			}
-			else {
-				next = shift_left(move, DIRECTIONS[d]);
-				if((next & result.cause_piece_mask) != 0) {
-					result.cause_piece_mask = move;
+				if(abs(escaped_root_e_i) > abs(result.eval)) {
+					result.eval = escaped_root_e_i;
+					result.cause_piece_mask = escaped_mask_i;
+					result.cause_piece_color = 1;
+				}
+				else {
+					next = shift_left(move, DIRECTIONS[d]);
+					if((next & result.cause_piece_mask) != 0) {
+						result.cause_piece_mask = move;
+					}
 				}
 			}
+
+			results.push_back(result);
 
 			if (result.eval * player > max_e) {
 				max_e = result.eval * player;
@@ -674,6 +746,21 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 		}
 	}
 	delete next_board;
+
+	if (max_e * player >= 0 || max_e > 0)
+		return max_e * player;
+
+	vector<int> colors(36);
+
+	for(SolveResult result: results) {
+		int pos = tzcnt(result.cause_piece_mask);
+		int color = result.cause_piece_color;
+
+		if (colors[pos] != 0 && colors[pos] != color + 1) {
+			return 0;
+		}
+		colors[pos] = color + 1;
+	}
 
 	return max_e * player;
 }
