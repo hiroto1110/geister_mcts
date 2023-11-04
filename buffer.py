@@ -108,13 +108,17 @@ class ReplayBuffer:
             reward = data['r']
             colors = data['c']
 
-        n_samples = int(np.sum(np.any(colors != 0, axis=1)))
-        n_samples = min(n_samples, self.buffer_size)
+        mask = np.any(colors != 0, axis=1)
+        indices = np.arange(len(colors))[mask]
 
-        self.tokens_buffer[:n_samples] = tokens[:n_samples]
-        self.policy_buffer[:n_samples] = policy[:n_samples]
-        self.reward_buffer[:n_samples] = reward[:n_samples]
-        self.colors_buffer[:n_samples] = colors[:n_samples]
+        n_samples = min(len(indices), self.buffer_size)
+
+        indices = indices[-n_samples:]
+
+        self.tokens_buffer[:n_samples] = tokens[indices]
+        self.policy_buffer[:n_samples] = policy[indices]
+        self.reward_buffer[:n_samples] = reward[indices]
+        self.colors_buffer[:n_samples] = colors[indices]
 
         self.n_samples = n_samples
         self.index = self.n_samples % self.buffer_size

@@ -10,9 +10,9 @@ from flax import core, struct
 
 from graphviz import Digraph
 from line_profiler import profile
-import termcolor
 
 import geister as game
+import game_analytics
 import geister_lib
 from network_transformer import TransformerDecoderWithCache
 from buffer import Sample
@@ -163,58 +163,11 @@ def visibilize_node_graph(node: Node, g: Digraph):
 
 
 def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
-    s = state_to_str(state, color)
+    s = game_analytics.state_to_str(state, color, colored=False)
 
     vp = str.join(",", [str(int(v_i * 100)) for v_i in v])
     v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
     s = f"[{vp}]\r\nv={v:.3f}\r\n" + s
-
-    return s
-
-
-def state_to_str(state: game.SimulationState, predicted_color: np.ndarray, colored=False) -> str:
-    color_int = (np.array(predicted_color) * 10).astype(dtype=np.int16)
-    color_int = np.clip(color_int, 0, 9)
-
-    if colored:
-        B_str = termcolor.colored('B', color='blue')
-        R_str = termcolor.colored('R', color='red')
-        b_str = termcolor.colored('b', color='blue')
-        r_str = termcolor.colored('r', color='red')
-    else:
-        B_str = 'B'
-        R_str = 'R'
-        b_str = 'b'
-        r_str = 'r'
-
-    line = [" " for _ in range(36)]
-    for i in range(8):
-        pos = state.pieces_p[i]
-        color = state.color_p[i]
-        if pos != game.CAPTURED:
-            if color == game.BLUE:
-                line[pos] = B_str
-            else:
-                line[pos] = R_str
-
-        pos = state.pieces_o[i]
-        color = state.color_o[i]
-        if pos != game.CAPTURED:
-            if color == game.BLUE:
-                line[pos] = b_str
-            elif color == game.RED:
-                line[pos] = r_str
-            else:
-                line[pos] = str(color_int[i])
-
-    lines = ["|" + "  ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
-
-    s = "\r\n".join(lines)
-
-    n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
-    n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
-
-    s += f"\r\nblue={n_cap_b} red={n_cap_r}"
 
     return s
 
@@ -397,13 +350,11 @@ def simulate(node: Node,
 
 
 def find_checkmate(state: game.SimulationState, player: int, depth: int):
-    return geister_lib.find_checkmate(state.pieces_p,
-                                      state.color_p,
-                                      state.pieces_o,
-                                      state.color_o,
-                                      player,
-                                      state.root_player,
-                                      depth)
+    return geister_lib.find_checkmate(
+        state.pieces_p, state.color_p,
+        state.pieces_o, state.color_o,
+        player, state.root_player, depth
+    )
 
 
 def create_invalid_actions(actions, state: game.SimulationState, pieces_history: np.ndarray, max_duplicates=0):
@@ -656,77 +607,38 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=180, print_b
 def test():
     import orbax.checkpoint
 
-    ckpt_dir = './checkpoints/fresh-terrain-288'
+    ckpt_dir = './checkpoints/run-2'
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(1444)
+    ckpt = checkpoint_manager.restore(1950)
 
     model = TransformerDecoderWithCache(**ckpt['model'])
     params = ckpt['state']['params']
 
-    np.random.seed(11)
+    np.random.seed(1444)
 
     mcts_params = SearchParameters(num_simulations=100,
                                    dirichlet_alpha=0.1,
                                    n_ply_to_apply_noise=0,
                                    max_duplicates=8,
-                                   depth_search_checkmate_leaf=5,
+                                   depth_search_checkmate_leaf=6,
                                    depth_search_checkmate_root=8,
-                                   should_do_visibilize_node_graph=False)
-
-    player1 = PlayerMCTS(params, model, mcts_params)
-    player2 = PlayerMCTS(params, model, mcts_params)
+                                   should_do_visibilize_node_graph=True)
 
     player1 = PlayerNaotti2020(depth_min=6, depth_max=6)
+    player2 = PlayerMCTS(params, model, mcts_params)
 
     game_result = [0, 0, 0]
 
     for i in range(1):
         if True or i % 2 == 0:
-            play_game(player1, player2, game_length=100, print_board=True)
+            play_game(player1, player2, game_length=180, print_board=True)
         else:
             play_game(player2, player1, game_length=180, print_board=True)
 
         game_result[player2.state.winner + 1] += 1
         print(game_result, game_result[2] / sum(game_result))
-
-
-def test_ab():
-    pieces_p = np.array([-1, 1, 7, 28, -1, 24, 34, -1])
-    colors_p = np.array([0, 0, 0, 1, 0, 1, 1, 1])
-
-    pieces_o = np.array([-1, -1, 26, 11, -1, 6, 31, -1])
-    colors_o = np.array([0, 0, 2, 2, 1, 2, 2, 0])
-
-    player = 1
-
-    state = game.SimulationState(colors_p, -1)
-    state.pieces_p[:] = pieces_p
-    state.pieces_o[:] = pieces_o
-    state.color_p[:] = colors_p
-    state.color_o[pieces_o == game.CAPTURED] = colors_o[pieces_o == game.CAPTURED]
-
-    print(state_to_str(state, np.arange(8)*0.1, colored=True))
-    print()
-
-    _ = find_checkmate(state, -1, 6)
-
-    import time
-
-    n = 1
-    start = time.perf_counter()
-
-    for i in range(n):
-        action1, e1, escaped_id1 = find_checkmate(state, player=player, depth=6)
-        action2, e2, escaped_id2 = find_checkmate(state, player=player, depth=6)
-        print(f'a: {action1}, {action2}')
-        print(f'e: {e1}, {e2}')
-        print(f'i: {escaped_id1}, {escaped_id2}')
-        print(i)
-
-    t = time.perf_counter() - start
-    print(t / n)
 
 
 if __name__ == "__main__":

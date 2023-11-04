@@ -3,6 +3,8 @@ import multiprocessing
 from dataclasses import dataclass
 
 from tqdm import tqdm
+import time
+import glob
 
 import numpy as np
 import wandb
@@ -63,6 +65,9 @@ def start_selfplay_process(match_request_queue: multiprocessing.Queue,
 
         while True:
             agent_id = match_request_queue.get()
+            if agent_id >= len(params_checkpoints):
+                agent_id = len(params_checkpoints) - 1
+                print("agent_id is out of range")
 
             player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
 
@@ -107,8 +112,18 @@ def main(n_clients=30,
     from buffer import ReplayBuffer
     import network_transformer as network
 
+    run_list = glob.glob("./checkpoints/run-*/")
+    max_run_number = max([int(os.path.dirname(run)[-1]) for run in run_list])
+    run_name = f'run-{max_run_number + 1}'
+    prev_run_name = 'fresh-terrain-288'
+
+    ckpt_dir = f'./checkpoints/{run_name}/'
+    prev_ckpt_dir = f'./checkpoints/{prev_run_name}/'
+
+    snapshots = []
+
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/dark-hill-285', checkpointer)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(prev_ckpt_dir, checkpointer)
 
     ckpt = checkpoint_manager.restore(400)
 
@@ -129,25 +144,22 @@ def main(n_clients=30,
         }
     run_config.update(ckpt['model'])
 
-    run = wandb.init(project="geister-zero", config=run_config)
-    name = run.name
+    wandb.init(project="geister-zero", name=run_name, config=run_config)
 
     replay_buffer = ReplayBuffer(buffer_size=buffer_size,
                                  seq_length=game.MAX_TOKEN_LENGTH,
-                                 file_name=f'replay_buffer/{name}.npz')
-    replay_buffer.load('replay_buffer/189.npz')
+                                 file_name=f'replay_buffer/{run_name}.npz')
+    replay_buffer.load(f'replay_buffer/{prev_run_name}.npz')
 
-    ckpt_dir = f'./checkpoints/{name}/'
-
-    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=100, create=True)
+    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
 
     network.save_checkpoint(state, model, checkpoint_manager)
 
     ctx = multiprocessing.get_context('spawn')
-    match_request_queue = ctx.Queue()
-    match_result_queue = ctx.Queue()
-    ckpt_queues = [ctx.Queue() for _ in range(n_clients)]
+    match_request_queue = ctx.Queue(100)
+    match_result_queue = ctx.Queue(100)
+    ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
     for _ in range(n_clients * 2):
         match_request_queue.put(0)
@@ -165,12 +177,12 @@ def main(n_clients=30,
         process = ctx.Process(target=start_selfplay_process, args=args)
         process.start()
 
-    match_maker = fsp.FSP(n_agents=1, selfplay_p=0.5, match_buffer_size=2000, p=5)
+    match_maker = fsp.FSP(n_agents=1, selfplay_p=0.3, match_buffer_size=2000, p=5)
 
     while True:
-        for i in tqdm(range(update_period)):
+        for i in tqdm(range(update_period), desc='Collecting'):
             while match_result_queue.empty():
-                pass
+                time.sleep(0.01)
 
             match_result = match_result_queue.get()
             replay_buffer.add_sample(match_result.sample1)
@@ -189,6 +201,7 @@ def main(n_clients=30,
 
         for ckpt_queue in ckpt_queues:
             ckpt_queue.put((state.epoch, is_league_member))
+            np.save(ckpt_dir + 'snapshots.npy', np.array(snapshots, dtype=np.int32))
 
         wandb.log(log_dict)
 
@@ -202,7 +215,8 @@ def log_fsp(match_maker: fsp.FSP, fsp_threshold: float, log_dict: dict):
     print(win_rate)
 
     for i in range(len(win_rate)):
-        log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
+        if win_rate[i] > 0:
+            log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
 
     log_dict['fsp/n_agents'] = match_maker.n_agents
 
@@ -254,7 +268,7 @@ def train_and_log(state,
     info = np.zeros((num_batches, 3))
     loss = 0
 
-    for i in range(num_batches):
+    for i in tqdm(range(num_batches), desc=' Training '):
         train_batch = buffer.get_minibatch(batch_size=train_batch_size)
         state, loss_i, info_i = network.train_step(state, *train_batch.astuple(), eval=False)
 

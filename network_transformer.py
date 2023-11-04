@@ -275,11 +275,38 @@ NUM_ACTIONS = 32
 MAX_LENGTH = 200
 
 
+class StateEncoder(nn.Module):
+    embed_dim: int
+    n_blocks: int
+    n_filters: int
+
+    @nn.compact
+    def __call__(self, x):
+        # x: [..., 6, 6, 16]
+        # return: [..., EmbedDim]
+        org_shape = x.shape
+        x = x.reshape(-1, *org_shape[-3:])
+
+        for _ in range(self.n_blocks):
+            x = nn.Conv(self.n_filters, kernel_size=(3, 3))(x)
+            x = nn.relu(x)
+
+        x = x.reshape(*org_shape[:-3], -1)
+        x = nn.Dense(self.embed_dim)(x)
+        x = nn.tanh(x)
+
+        return x
+
+
 class TransformerDecoder(nn.Module):
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
     is_linear_attention: bool
+
+    has_state_encoder: bool = False
+    state_encoder_n_blocks: int = 1
+    state_encoder_n_filters: int = 64
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
@@ -287,11 +314,20 @@ class TransformerDecoder(nn.Module):
         self.layers = [TransformerBlock(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
 
+        if self.has_state_encoder:
+            self.state_encoder = StateEncoder(self.embed_dim ** 2 / self.num_heads,
+                                              self.state_encoder_n_blocks,
+                                              self.state_encoder_n_filters)
+
     @nn.compact
-    def __call__(self, x, eval=True):
+    def __call__(self, x, states=None, eval=True):
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
         x = self.embeddings(x, eval)
+
+        if self.has_state_encoder:
+            x += self.state_encoder(states)
+            x = nn.LayerNorm()(x)
 
         for i in range(self.num_hidden_layers):
             x = self.layers[i](x, mask, eval=eval)

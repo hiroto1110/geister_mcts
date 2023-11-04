@@ -17,7 +17,7 @@ class FSP:
         self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
         self.selfplay_p = selfplay_p
-        self.agent_match_deques = [deque(maxlen=match_buffer_size) for _ in range(n_agents)]
+        self.agent_match_deques = [deque([0], maxlen=match_buffer_size) for _ in range(n_agents)]
 
         self.score_func = lambda x: (1 - x) ** p
 
@@ -61,7 +61,7 @@ class FSP:
 
     def add_agent(self):
         self.n_agents += 1
-        self.agent_match_deques.append(deque(maxlen=self.match_buffer_size))
+        self.agent_match_deques.append(deque([0], maxlen=self.match_buffer_size))
 
 
 def main():

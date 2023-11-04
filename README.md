@@ -1,4 +1,5 @@
 # geister_mcts
 
-G3945
+Albireo 1.0
+
 AlphaZero + Transformer + αβ + Fictitious Self-Play
