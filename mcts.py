@@ -270,7 +270,8 @@ def simulate_afterstate(node: AfterStateNode,
                         player: int,
                         pred_state: PredictState,
                         params: SearchParameters) -> float:
-    color = np.random.choice([game.RED, game.BLUE], p=node.p)
+    p = 0.5 + (node.p - 0.5) * 1
+    color = np.random.choice([game.RED, game.BLUE], p=p)
 
     tokens = state.step_afterstate(node.afterstate, color)
 
@@ -604,41 +605,78 @@ def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=180, print_b
     return action_history, state1.color_p, state2.color_p
 
 
-def test():
+def load_ckpt(ckpt_dir, step):
     import orbax.checkpoint
 
-    ckpt_dir = './checkpoints/run-2'
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(1950)
+    ckpt = checkpoint_manager.restore(step)
 
     model = TransformerDecoderWithCache(**ckpt['model'])
     params = ckpt['state']['params']
 
-    np.random.seed(1444)
+    return params, model
 
-    mcts_params = SearchParameters(num_simulations=100,
-                                   dirichlet_alpha=0.1,
-                                   n_ply_to_apply_noise=0,
-                                   max_duplicates=8,
-                                   depth_search_checkmate_leaf=6,
-                                   depth_search_checkmate_root=8,
-                                   should_do_visibilize_node_graph=True)
 
-    player1 = PlayerNaotti2020(depth_min=6, depth_max=6)
-    player2 = PlayerMCTS(params, model, mcts_params)
+def BO_N(N, p):
+    import math
+    n = 1 + N // 2
+    return sum([p ** n * (1 - p) ** i * math.comb(n + i - 1, i) for i in range(n)])
+
+
+def test():
+    np.random.seed(4)
+
+    mcts_params1 = SearchParameters(
+        num_simulations=50,
+        dirichlet_alpha=0.1,
+        n_ply_to_apply_noise=0,
+        max_duplicates=1,
+        depth_search_checkmate_leaf=4,
+        depth_search_checkmate_root=8,
+        should_do_visibilize_node_graph=False
+    )
+
+    mcts_params2 = SearchParameters(
+        num_simulations=50,
+        dirichlet_alpha=0.2,
+        n_ply_to_apply_noise=0,
+        max_duplicates=1,
+        depth_search_checkmate_leaf=4,
+        depth_search_checkmate_root=8,
+        should_do_visibilize_node_graph=False
+    )
+
+    player1 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params1)
+    # player2 = PlayerMCTS(*load_ckpt('./checkpoints/4_256_4', 12), mcts_params1)
+    player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
 
     game_result = [0, 0, 0]
+    game_result_180 = [0, 0, 0]
 
-    for i in range(1):
-        if True or i % 2 == 0:
-            play_game(player1, player2, game_length=180, print_board=True)
+    while game_result[0] + game_result[2] < 200:
+        if (game_result[0] + game_result[2]) % 2 == 0:
+            play_game(player1, player2, game_length=200, print_board=False)
         else:
-            play_game(player2, player1, game_length=180, print_board=True)
+            play_game(player2, player1, game_length=200, print_board=False)
 
-        game_result[player2.state.winner + 1] += 1
-        print(game_result, game_result[2] / sum(game_result))
+        game_result[player1.state.winner + 1] += 1
+
+        if player1.state.n_ply > 160:
+            game_result_180[player1.state.winner + 1] += 1
+
+        if game_result[0] + game_result[2] > 0:
+            w_rate = round(game_result[2] / (game_result[0] + game_result[2]), 3)
+        else:
+            w_rate = 0.5
+
+        if game_result_180[0] + game_result_180[2] > 0:
+            w_rate_180 = round(game_result_180[2] / (game_result_180[0] + game_result_180[2]), 3)
+        else:
+            w_rate_180 = 0.5
+
+        print(game_result, w_rate, game_result_180, w_rate_180)
 
 
 if __name__ == "__main__":

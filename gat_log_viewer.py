@@ -152,10 +152,14 @@ def load_actions(lines):
 
 def main():
     ckpt_dir = './checkpoints/run-2'
+    step = 500 * 12
+
+    print(f"model: {ckpt_dir}, step: {step}")
+
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(2300)
+    ckpt = checkpoint_manager.restore(step)
 
     model = TransformerDecoderWithCache(**ckpt['model'])
     params = ckpt['state']['params']
@@ -163,8 +167,8 @@ def main():
     np.random.seed(1444)
 
     mcts_params = mcts.SearchParameters(
-        num_simulations=50,
-        dirichlet_alpha=0.1,
+        num_simulations=100,
+        dirichlet_alpha=None,
         n_ply_to_apply_noise=0,
         max_duplicates=8,
         depth_search_checkmate_leaf=4,
@@ -189,13 +193,10 @@ def main():
         with open(file, mode='r') as f:
             lines = f.readlines()
 
-        # view_log(lines, player1, player2)
-        # print(f'num_lines: {len(lines)}')
-
         actions, color1, color2 = load_actions(lines)
 
         selected_won_cnt_i, won_cnt_i, selected_lst_cnt_i, lst_cnt_i =\
-            game_analytics.find_watershed_moments(player1, player2, color1, color2, actions)
+            game_analytics.find_watershed_moments(player1, player2, color1, color2, actions, print_info=False)
 
         selected_won_cnt += selected_won_cnt_i
         won_cnt += won_cnt_i

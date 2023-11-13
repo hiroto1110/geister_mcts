@@ -95,6 +95,8 @@ def find_watershed_moments(player1, player2, color1, color2, actions, print_info
             if WatershedMomentType.LOST in flags:
                 selected_lst_move.append(player_action in lst_moves)
 
+            # break
+
         player1.apply_action(log_action, player, state2.color_p)
         player2.apply_action(log_action, player, state1.color_p)
 

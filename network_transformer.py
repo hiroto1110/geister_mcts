@@ -4,6 +4,8 @@ import time
 import dataclasses
 import itertools
 
+from tqdm import tqdm
+
 import numpy as np
 import jax
 from jax import random, numpy as jnp
@@ -346,6 +348,10 @@ class TransformerDecoderWithCache(nn.Module):
     num_hidden_layers: int
     is_linear_attention: bool = False
 
+    has_state_encoder: bool = False
+    state_encoder_n_blocks: int = 1
+    state_encoder_n_filters: int = 64
+
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim)
         self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim, self.is_linear_attention)
@@ -396,6 +402,11 @@ class TransformerDecoderWithCache(nn.Module):
         return logits_pi, logits_v, logits_color, next_cache1, next_cache2
 
 
+class TrainState(train_state.TrainState):
+    epoch: int
+    dropout_rng: Any
+
+
 @partial(jax.jit, static_argnames=['eval'])
 def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
@@ -422,7 +433,7 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state, x, mask, y_pi, y_v, y_color, eval):
+def train_step(state: TrainState, x, mask, y_pi, y_v, y_color, eval):
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
         (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -439,7 +450,7 @@ def train_step(state, x, mask, y_pi, y_v, y_color, eval):
 
 def train_epoch(state, data_batched, eval):
     loss_history, info_history = [], []
-    for x, mask, y_pi, y_v, y_color in zip(*data_batched):
+    for x, mask, y_pi, y_v, y_color in tqdm(zip(*data_batched), total=len(data_batched[0])):
         state, loss, info = train_step(state, x, mask, y_pi, y_v, y_color, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
@@ -491,11 +502,6 @@ def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_s
     return state
 
 
-class TrainState(train_state.TrainState):
-    epoch: int
-    dropout_rng: Any
-
-
 def main_train(data, log_wandb=False):
     train_n = int(len(data[0]) * 0.8)
 
@@ -504,8 +510,8 @@ def main_train(data, log_wandb=False):
 
     key, key1, key2 = random.split(random.PRNGKey(0), 3)
 
-    heads = 8,
-    dims = 128,
+    heads = 4,
+    dims = 256,
     num_layers = 4,
 
     for h, d, n in itertools.product(heads, dims, num_layers):
@@ -528,7 +534,7 @@ def main_train(data, log_wandb=False):
             dropout_rng=key2,
             epoch=0)
 
-        ckpt_dir = f'./checkpoints/{h}_{d}_{n}'
+        ckpt_dir = f'./checkpoints/{h}_{d}_{n}_run2'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
@@ -539,7 +545,7 @@ def main_train(data, log_wandb=False):
         state = fit(state, model, checkpoint_manager,
                     train_data=train_data,
                     test_data=test_data,
-                    epochs=8, batch_size=32,
+                    epochs=8, batch_size=64,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -611,7 +617,7 @@ def main_test_performance(data):
 
 
 def main():
-    batch = load_batch(['replay_buffer/189.npz'], shuffle=True)
+    batch = load_batch(['replay_buffer/run-2.npz'], shuffle=True)
     data = batch.astuple()
 
     print(data[0].shape)
