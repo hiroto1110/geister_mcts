@@ -17,7 +17,7 @@ import optax
 
 import wandb
 
-from buffer import load_batch
+from buffer import load_batch, Batch
 
 
 class Embeddings(nn.Module):
@@ -310,8 +310,10 @@ class TransformerDecoder(nn.Module):
     state_encoder_n_blocks: int = 1
     state_encoder_n_filters: int = 64
 
+    max_n_ply: int = 220
+
     def setup(self):
-        self.embeddings = Embeddings(self.embed_dim)
+        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
 
         self.layers = [TransformerBlock(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
@@ -352,8 +354,10 @@ class TransformerDecoderWithCache(nn.Module):
     state_encoder_n_blocks: int = 1
     state_encoder_n_filters: int = 64
 
+    max_n_ply: int = 200
+
     def setup(self):
-        self.embeddings = Embeddings(self.embed_dim)
+        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
         self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim, self.is_linear_attention)
                        for _ in range(self.num_hidden_layers)]
 
@@ -463,6 +467,41 @@ def create_batches(data, batch_size):
     return data_batched
 
 
+def fit_as_rl_simulation(state: TrainState,
+                         model: TransformerDecoder,
+                         checkpoint_manager,
+                         batch: Batch,
+                         buffer_size=400000,
+                         batch_size=256,
+                         num_batches=8,
+                         update_period=200):
+
+    num_iter = (batch.tokens.shape[0] - buffer_size) // update_period
+    for step in range(num_iter):
+        indices = np.arange(buffer_size) + step * update_period
+
+        info = np.zeros((num_batches, 3))
+        loss = 0
+
+        for i in range(num_batches):
+            indices_batch = np.random.choice(indices, size=batch_size)
+            batch_i = batch.create_batch_from_indices(indices_batch)
+            state, loss_i, info_i = train_step(state, *batch_i.astuple(), eval=False)
+
+            loss += loss_i
+            info[i] = info_i
+
+        info = info.mean(axis=0)
+        loss /= num_batches
+
+        state = state.replace(epoch=state.epoch + 1)
+
+        if step % 1000 == 0:
+            save_checkpoint(state, model, checkpoint_manager)
+
+        print(step, loss, info)
+
+
 def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_size, log_wandb):
     train_data_batched = [create_batches(data, batch_size) for data in train_data]
     test_data_batched = [create_batches(data, batch_size) for data in test_data]
@@ -502,6 +541,39 @@ def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_s
     return state
 
 
+def main_train_as_rl_simulation(batch: Batch):
+    h = 4
+    d = 256
+    n = 4
+    model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False, max_n_ply=220)
+
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    checkpoint_manager = orbax.checkpoint.CheckpointManager('./checkpoints/4_256_4_run-2', checkpointer)
+
+    ckpt = checkpoint_manager.restore(8)
+
+    key, key1, key2 = random.split(random.PRNGKey(0), 3)
+
+    state = TrainState.create(
+        apply_fn=model.apply,
+        params=ckpt['state']['params'],
+        tx=optax.adam(learning_rate=0.0005),
+        dropout_rng=ckpt['state']['dropout_rng'],
+        epoch=ckpt['state']['epoch'])
+
+    ckpt_dir = f'./checkpoints/{h}_{d}_{n}_run-2-e'
+
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    options = orbax.checkpoint.CheckpointManagerOptions(create=True)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
+
+    save_checkpoint(state, model, checkpoint_manager)
+
+    fit_as_rl_simulation(state, model, checkpoint_manager, batch)
+
+    save_checkpoint(state, model, checkpoint_manager)
+
+
 def main_train(data, log_wandb=False):
     train_n = int(len(data[0]) * 0.8)
 
@@ -534,7 +606,7 @@ def main_train(data, log_wandb=False):
             dropout_rng=key2,
             epoch=0)
 
-        ckpt_dir = f'./checkpoints/{h}_{d}_{n}_run2'
+        ckpt_dir = f'./checkpoints/{h}_{d}_{n}_run-2'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
@@ -617,13 +689,15 @@ def main_test_performance(data):
 
 
 def main():
-    batch = load_batch(['replay_buffer/run-2.npz'], shuffle=True)
+    batch = load_batch(['replay_buffer/run-2-e.npz'], shuffle=False)
+    print(np.mean(np.sum(batch.mask, axis=1)))
     data = batch.astuple()
 
     print(data[0].shape)
 
     # main_test_performance(data)
-    main_train(data)
+    main_train_as_rl_simulation(batch)
+    # main_train(data)
 
 
 if __name__ == "__main__":

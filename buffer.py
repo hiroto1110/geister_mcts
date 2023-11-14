@@ -24,6 +24,16 @@ class Batch:
     def astuple(self):
         return astuple(self)
 
+    def create_batch_from_indices(self, indices):
+        tokens = self.tokens[indices]
+        policy = self.policy[indices]
+        reward = self.reward[indices]
+        colors = self.colors[indices]
+
+        mask = np.any(tokens != 0, axis=2)
+
+        return Batch(tokens, mask, policy, reward, colors)
+
 
 class ReplayBuffer:
     def __init__(self, buffer_size: int, seq_length: int, file_name: str = None):
@@ -125,17 +135,18 @@ class ReplayBuffer:
 
 
 def load_batch(file_names, shuffle: bool):
-    tokens = np.zeros((0, 200, game.TOKEN_SIZE), dtype=np.uint8)
-    policy = np.zeros((0, 200), dtype=np.uint8)
-    reward = np.zeros((0, 1), dtype=np.int8)
-    colors = np.zeros((0, 8), dtype=np.uint8)
-
-    for file_name in file_names:
+    for i, file_name in enumerate(file_names):
         with np.load(file_name) as data:
-            tokens = np.concatenate([data['t'], tokens])
-            policy = np.concatenate([data['p'], policy])
-            reward = np.concatenate([data['r'], reward])
-            colors = np.concatenate([data['c'], colors])
+            if i == 0:
+                tokens = data['t']
+                policy = data['p']
+                reward = data['r']
+                colors = data['c']
+            else:
+                tokens = np.concatenate([data['t'], tokens])
+                policy = np.concatenate([data['p'], policy])
+                reward = np.concatenate([data['r'], reward])
+                colors = np.concatenate([data['c'], colors])
 
     indices = np.arange(tokens.shape[0])
     if shuffle:
@@ -149,3 +160,13 @@ def load_batch(file_names, shuffle: bool):
     mask = np.any(tokens != 0, axis=2)
 
     return Batch(tokens, mask, policy, reward, colors)
+
+
+def save_batch(batch: Batch, file_name):
+    save_dict = {
+        't': batch.tokens,
+        'p': batch.policy,
+        'r': batch.reward,
+        'c': batch.colors,
+    }
+    np.savez(file_name, **save_dict)

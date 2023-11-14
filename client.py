@@ -4,6 +4,7 @@ import orbax.checkpoint
 
 import mcts
 import geister as game
+import game_analytics
 import server_util
 from network_transformer import TransformerDecoderWithCache
 
@@ -30,8 +31,8 @@ class Client:
         self.search_params = search_params
         self.win_count = [0, 0, 0]
 
-    def init_state(self, color: np.ndarray):
-        self.state = game.SimulationState(color, -1)
+    def init_state(self, color: np.ndarray, player: int):
+        self.state = game.SimulationState(color, player)
         self.node, _ = mcts.create_root_node(self.state, self.pred_state, self.model)
 
     def select_next_action(self):
@@ -41,7 +42,11 @@ class Client:
         assert self.state.win_type == game.WinType.ESCAPE
 
         for i in range(2):
-            escaping_pos = self.state.escape_pos_p[i]
+            if self.state.root_player == 1:
+                escaping_pos = self.state.escape_pos_p[i]
+            else:
+                escaping_pos = self.state.escape_pos_o[i]
+
             d_id = 1 if escaping_pos % 6 == 0 else 2
 
             escaped = escaping_pos == self.state.pieces_p
@@ -77,6 +82,10 @@ class Client:
         self.node, _ = mcts.expand(self.node, tokens, self.state, self.pred_state, self.search_params)
 
     def calc_opponent_action(self, pieces):
+        if np.all(pieces == self.state.pieces_o):
+            return -1
+
+        print(pieces, self.state.pieces_o)
         p_id = np.where(pieces != self.state.pieces_o)[0][0]
 
         d = pieces[p_id] - self.state.pieces_o[p_id]
@@ -89,7 +98,7 @@ class Client:
         if color is None:
             color = np.array([0.5]*8)
 
-        s = mcts.state_to_str(self.state, color, colored=True)
+        s = game_analytics.state_to_str(self.state, color, colored=True)
         print(s)
 
     def connect_and_start(self, ip: str, port: int):
@@ -100,23 +109,25 @@ class Client:
     def start(self, sock: socket.socket):
         set_msg = recv(sock)
 
-        set_msg = server_util.encode_set_message(self.state.color_p)
+        set_msg = server_util.encode_set_message(self.state.color_p, self.state.root_player)
         send(sock, set_msg)
 
         recv(sock)
         board_msg = recv(sock)
 
         while True:
-            pieces_o, _ = server_util.parse_board_str(board_msg)
+            pieces_o, _ = server_util.parse_board_str(board_msg, self.state.root_player)
             action_o = self.calc_opponent_action(pieces_o)
-            self.apply_opponent_action(action_o)
+
+            if action_o >= 0:
+                self.apply_opponent_action(action_o)
 
             print()
             self.print_board()
 
             action = self.select_next_action()
 
-            action_msg = server_util.format_action_message(action)
+            action_msg = server_util.format_action_message(action, self.state.root_player)
             send(sock, action_msg)
 
             action_responce = recv(sock)
@@ -140,35 +151,41 @@ class Client:
 
 
 def main(ip='127.0.0.1',
-         port=10001):
+         port=10000):
 
-    ckpt_dir = './checkpoints/dark-hill-285'
+    ckpt_dir = './checkpoints/run-2'
 
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(186)
+    ckpt = checkpoint_manager.restore(6500)
 
     params = ckpt['state']['params']
     model = TransformerDecoderWithCache(**ckpt['model'])
 
-    search_params = mcts.SearchParameters(num_simulations=100,
-                                          dirichlet_alpha=0.2,
+    search_params = mcts.SearchParameters(num_simulations=50,
+                                          dirichlet_alpha=0.1,
                                           n_ply_to_apply_noise=0,
-                                          depth_search_checkmate_leaf=5,
-                                          depth_search_checkmate_root=9,
-                                          max_duplicates=8)
+                                          depth_search_checkmate_leaf=4,
+                                          depth_search_checkmate_root=8,
+                                          max_duplicates=1,
+                                          should_do_visibilize_node_graph=False)
 
     client = Client(model, params, search_params)
 
-    for i in range(100):
+    if port == 10000:
+        player = 1
+    else:
+        player = -1
+
+    for i in range(10):
         try:
-            client.init_state(np.array([0, 0, 0, 0, 1, 1, 1, 1]))
+            # client.init_state(np.array([0, 0, 0, 0, 1, 1, 1, 1]))
+            client.init_state(game.create_random_color(), player)
             client.connect_and_start(ip, port)
         except Exception as e:
             raise e
-        finally:
-            print(client.win_count)
+            print(e)
 
 
 if __name__ == '__main__':

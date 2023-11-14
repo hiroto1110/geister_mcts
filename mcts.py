@@ -626,7 +626,7 @@ def BO_N(N, p):
 
 
 def test():
-    np.random.seed(4)
+    np.random.seed(20)
 
     mcts_params1 = SearchParameters(
         num_simulations=50,
@@ -649,13 +649,12 @@ def test():
     )
 
     player1 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params1)
-    # player2 = PlayerMCTS(*load_ckpt('./checkpoints/4_256_4', 12), mcts_params1)
-    player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
+    player2 = PlayerMCTS(*load_ckpt('./checkpoints/4_256_4', 12), mcts_params1)
+    # player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
 
     game_result = [0, 0, 0]
-    game_result_180 = [0, 0, 0]
 
-    while game_result[0] + game_result[2] < 200:
+    while game_result[0] + game_result[2] < 1000:
         if (game_result[0] + game_result[2]) % 2 == 0:
             play_game(player1, player2, game_length=200, print_board=False)
         else:
@@ -663,20 +662,12 @@ def test():
 
         game_result[player1.state.winner + 1] += 1
 
-        if player1.state.n_ply > 160:
-            game_result_180[player1.state.winner + 1] += 1
-
         if game_result[0] + game_result[2] > 0:
             w_rate = round(game_result[2] / (game_result[0] + game_result[2]), 3)
         else:
             w_rate = 0.5
 
-        if game_result_180[0] + game_result_180[2] > 0:
-            w_rate_180 = round(game_result_180[2] / (game_result_180[0] + game_result_180[2]), 3)
-        else:
-            w_rate_180 = 0.5
-
-        print(game_result, w_rate, game_result_180, w_rate_180)
+        print(game_result, w_rate)
 
 
 if __name__ == "__main__":

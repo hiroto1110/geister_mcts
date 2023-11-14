@@ -10,8 +10,11 @@ DIRECTION_NAMES = 'NWES'
 DIRECTION_DICT = {c: i for i, c in enumerate(DIRECTION_NAMES)}
 
 
-def encode_set_message(color: np.ndarray) -> str:
+def encode_set_message(color: np.ndarray, player: int) -> str:
     msg = ''
+
+    if player == 1:
+        color = color[::-1]
 
     for i in range(8):
         if color[i] == game.RED:
@@ -30,7 +33,10 @@ def decode_set_message(msg: str):
     return color
 
 
-def format_action_message(action: int) -> str:
+def format_action_message(action: int, player: int) -> str:
+    if player == 1:
+        action = 31 - action
+
     p_id = action // 4
     d_id = action % 4
 
@@ -101,7 +107,7 @@ def encode_board_str(state: game.SimulationState):
     return f'MOV?{msg}\r\n'
 
 
-def parse_board_str(s: str):
+def parse_board_str(s: str, player: int):
     pieces_o = np.zeros(8, dtype=np.int16)
     color_o = np.zeros(8, dtype=np.int16)
 
@@ -119,4 +125,8 @@ def parse_board_str(s: str):
 
         color_o[i] = COLOR_DICT[c]
 
-    return pieces_o[::-1], color_o[::-1]
+    if player == 1:
+        pieces_o[pieces_o >= 0] = 35 - pieces_o[pieces_o >= 0]
+        return pieces_o, color_o
+    else:
+        return pieces_o[::-1], color_o[::-1]
