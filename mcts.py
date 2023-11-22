@@ -67,7 +67,7 @@ class Node:
         self.invalid_actions = np.zeros(shape=0, dtype=np.uint8)
 
         self.predicted_color = None
-        self.predicted_v = 0
+        self.predicted_v = None
 
         self.children = [None] * game.ACTION_SPACE
         self.p = np.zeros(game.ACTION_SPACE)
@@ -125,7 +125,7 @@ class AfterStateNode:
         self.cache_k = None
 
         self.predicted_color = None
-        self.predicted_v = 0
+        self.predicted_v = None
 
         self.children = [None] * 2
         self.p = np.zeros(2)
@@ -619,9 +619,8 @@ def load_ckpt(ckpt_dir, step):
     return params, model
 
 
-def BO_N(N, p):
+def BO_N(n, p):
     import math
-    n = 1 + N // 2
     return sum([p ** n * (1 - p) ** i * math.comb(n + i - 1, i) for i in range(n)])
 
 

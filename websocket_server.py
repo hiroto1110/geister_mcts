@@ -1,5 +1,7 @@
 import asyncio
 import websockets
+import json
+from datetime import datetime
 
 import numpy as np
 import orbax.checkpoint
@@ -40,9 +42,14 @@ model = TransformerDecoderWithCache(**ckpt['model'])
 
 def select_next_action(player: mcts.PlayerMCTS):
     if player.state.winner == 0:
+        if player.state.n_ply < 8:
+            actions = game.get_valid_actions(player.state, 1)
+            return np.random.choice(actions)
+
         return player.select_next_action()
 
-    assert player.state.win_type == game.WinType.ESCAPE
+    if player.state.win_type != game.WinType.ESCAPE:
+        return -1
 
     for i in range(2):
         escaping_pos = player.state.escape_pos_p[i]
@@ -55,7 +62,7 @@ def select_next_action(player: mcts.PlayerMCTS):
             action = p_id * 4 + d_id
             return action
 
-    assert False
+    return -1
 
 
 async def echo(websocket, path):
@@ -69,34 +76,66 @@ async def echo(websocket, path):
         should_do_visibilize_node_graph=False
     )
 
-    async for message in websocket:
-        print(f"RECV: [{message}]")
+    action_history = []
 
-        if message.startswith("SET"):
-            color2, color1 = parse_set_message(message)
-            player = mcts.PlayerMCTS(params, model, mcts_params)
-            player.init_state(game.SimulationState(color1, -1))
+    try:
+        async for message in websocket:
+            print(f"RECV: [{message}]")
 
-        if message.startswith("MOV"):
-            action_o = parse_action_message(message)
-            player.apply_action(action_o, 1, color2)
+            if message.startswith("SET"):
+                color2, color1 = parse_set_message(message)
+                player = mcts.PlayerMCTS(params, model, mcts_params)
+                player.init_state(game.SimulationState(color1, -1))
 
-            print(game_analytics.state_to_str_objectively(
-                player.state.pieces_p, color1,
-                player.state.pieces_o, color2,
-                colored=True))
+            if message.startswith("MOV"):
+                action_o = parse_action_message(message)
+                action_history.append(action_o)
 
-            action_p = select_next_action(player)
+                player.apply_action(action_o, 1, color2)
 
-            if not player.state.is_done:
-                player.apply_action(action_p, -1, color2)
+                predicted_color = player.node.predicted_color
+                predicted_v = player.node.predicted_v
 
-            print(game_analytics.state_to_str_objectively(
-                player.state.pieces_p, color1,
-                player.state.pieces_o, color2,
-                colored=True))
+                print(game_analytics.state_to_str_objectively(
+                    player.state.pieces_p, color1,
+                    player.state.pieces_o, color2,
+                    colored=True))
 
-            await websocket.send(f"{action_p}")
+                action_p = select_next_action(player)
+                action_history.append(action_p)
+
+                if action_p == -1:
+                    break
+
+                if not player.state.is_done:
+                    player.apply_action(action_p, -1, color2)
+
+                print(game_analytics.state_to_str_objectively(
+                    player.state.pieces_p, color1,
+                    player.state.pieces_o, color2,
+                    colored=True))
+
+                def convert_to_list(a):
+                    if a is None:
+                        return None
+                    return [float(f) for f in a]
+
+                msg_data = {
+                    "action": int(action_p),
+                    "color": convert_to_list(predicted_color),
+                    "v": convert_to_list(predicted_v)
+                }
+                await websocket.send(json.dumps(msg_data))
+
+                if player.state.is_done:
+                    break
+    except Exception as e:
+        raise e
+
+    finally:
+        if len(action_history) > 10:
+            color = np.concatenate([color1, color2])
+            np.savez(f"log/{datetime.now().isoformat()}.npy", actions=np.array(action_history), color=color)
 
 
 async def main():
