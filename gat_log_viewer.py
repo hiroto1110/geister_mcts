@@ -173,7 +173,7 @@ def main():
         max_duplicates=8,
         depth_search_checkmate_leaf=4,
         depth_search_checkmate_root=6,
-        should_do_visibilize_node_graph=False
+        visibilize_node_graph=False
     )
 
     player1 = mcts.PlayerMCTS(params, model, mcts_params)

@@ -42,10 +42,7 @@ class Client:
         assert self.state.win_type == game.WinType.ESCAPE
 
         for i in range(2):
-            if self.state.root_player == 1:
-                escaping_pos = self.state.escape_pos_p[i]
-            else:
-                escaping_pos = self.state.escape_pos_o[i]
+            escaping_pos = self.state.escape_pos_p[i]
 
             d_id = 1 if escaping_pos % 6 == 0 else 2
 
@@ -85,7 +82,6 @@ class Client:
         if np.all(pieces == self.state.pieces_o):
             return -1
 
-        print(pieces, self.state.pieces_o)
         p_id = np.where(pieces != self.state.pieces_o)[0][0]
 
         d = pieces[p_id] - self.state.pieces_o[p_id]
@@ -151,7 +147,7 @@ class Client:
 
 
 def main(ip='127.0.0.1',
-         port=10000):
+         port=10001):
 
     ckpt_dir = './checkpoints/run-2'
 
@@ -169,7 +165,7 @@ def main(ip='127.0.0.1',
                                           depth_search_checkmate_leaf=4,
                                           depth_search_checkmate_root=8,
                                           max_duplicates=1,
-                                          should_do_visibilize_node_graph=False)
+                                          visibilize_node_graph=False)
 
     client = Client(model, params, search_params)
 
@@ -186,6 +182,8 @@ def main(ip='127.0.0.1',
         except Exception as e:
             raise e
             print(e)
+        finally:
+            print("win: {2}, draw: {1}, lost: {0}".format(*client.win_count))
 
 
 if __name__ == '__main__':

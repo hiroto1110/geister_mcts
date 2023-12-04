@@ -73,7 +73,7 @@ async def echo(websocket, path):
         max_duplicates=1,
         depth_search_checkmate_leaf=4,
         depth_search_checkmate_root=8,
-        should_do_visibilize_node_graph=False
+        visibilize_node_graph=False
     )
 
     action_history = []

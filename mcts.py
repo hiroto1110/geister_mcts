@@ -48,7 +48,7 @@ class SearchParameters:
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
     v_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
-    should_do_visibilize_node_graph: bool = False
+    visibilize_node_graph: bool = False
 
     def replace(self, **args):
         return replace(self, **args)
@@ -183,7 +183,7 @@ def expand_afterstate(node: Node,
 
     v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
 
-    if params.should_do_visibilize_node_graph:
+    if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
 
     next_node.p[1] = next_node.predicted_color[next_node.afterstate.piece_id]
@@ -203,14 +203,14 @@ def expand(node: Node,
     next_node.winner = state.winner
 
     if next_node.winner != 0:
-        if params.should_do_visibilize_node_graph:
+        if params.visibilize_node_graph:
             next_node.state_str = sim_state_to_str(state, [next_node.winner], [0.5]*8)
 
         return next_node, next_node.winner
 
     v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
 
-    if params.should_do_visibilize_node_graph:
+    if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
 
     return next_node, v
@@ -230,7 +230,7 @@ def try_expand_checkmate(node: Node,
         next_node = Node()
         next_node.winner = 1
 
-        if params.should_do_visibilize_node_graph:
+        if params.visibilize_node_graph:
             next_node.state_str = sim_state_to_str(state, [100], [0.5]*8)
 
         return True, next_node, 1
@@ -389,7 +389,7 @@ def select_action_with_mcts(node: Node,
                             params: SearchParameters,
                             pieces_history: np.ndarray = None):
 
-    if params.should_do_visibilize_node_graph:
+    if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
     action, e, escaped_id = find_checkmate(state, 1, depth=params.depth_search_checkmate_root)
@@ -435,7 +435,7 @@ def select_action_with_mcts(node: Node,
             policy = node.get_policy()
             action = np.random.choice(range(len(policy)), p=policy)
 
-        if params.should_do_visibilize_node_graph:
+        if params.visibilize_node_graph:
             dg = Digraph(format='png')
             dg.attr('node', fontname="Myrica M")
             dg.attr('edge', fontname="Myrica M")
@@ -629,12 +629,13 @@ def test():
 
     mcts_params1 = SearchParameters(
         num_simulations=50,
-        dirichlet_alpha=0.1,
+        dirichlet_alpha=0.2,
         n_ply_to_apply_noise=0,
         max_duplicates=1,
         depth_search_checkmate_leaf=4,
         depth_search_checkmate_root=8,
-        should_do_visibilize_node_graph=False
+        visibilize_node_graph=True,
+        c_base=25,
     )
 
     mcts_params2 = SearchParameters(
@@ -644,16 +645,17 @@ def test():
         max_duplicates=1,
         depth_search_checkmate_leaf=4,
         depth_search_checkmate_root=8,
-        should_do_visibilize_node_graph=False
+        visibilize_node_graph=False,
+        c_base=25,
     )
 
     player1 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params1)
-    player2 = PlayerMCTS(*load_ckpt('./checkpoints/4_256_4', 12), mcts_params1)
+    player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
     # player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
 
     game_result = [0, 0, 0]
 
-    while game_result[0] + game_result[2] < 1000:
+    while game_result[0] + game_result[2] < 1:
         if (game_result[0] + game_result[2]) % 2 == 0:
             play_game(player1, player2, game_length=200, print_board=False)
         else:
@@ -667,6 +669,39 @@ def test():
             w_rate = 0.5
 
         print(game_result, w_rate)
+
+
+def test_mcts():
+    def c(n, c_init, c_base):
+        return c_init * np.log((np.sum(n) + 1 + c_base) / c_base) * np.sqrt(np.sum(n) + 1) / (n + 1)
+
+    num_a = 10
+    num_sim = 50
+
+    p = nn.softmax(np.random.random(num_a))
+    w = np.random.random(num_a) - 0.5
+    n = np.zeros(num_a)
+
+    print("p:", [round(float(p_i), 2) for p_i in p])
+    print("w:", [round(p_i, 2) for p_i in w])
+
+    score_history = np.zeros((num_sim, num_a))
+    n_history = np.zeros((num_sim, num_a))
+
+    for i in range(num_sim):
+        score = w + p * c(n, c_init=1.25, c_base=25)
+        a = np.argmax(score)
+        n[a] += 1
+
+        score_history[i] = score
+        n_history[i] = n
+
+    print(n)
+
+    import matplotlib.pyplot as plt
+
+    plt.plot(np.arange(num_sim), score_history)
+    plt.savefig("test.png")
 
 
 if __name__ == "__main__":
