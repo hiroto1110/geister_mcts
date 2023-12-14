@@ -24,6 +24,21 @@ class Batch:
     def astuple(self):
         return astuple(self)
 
+    def to_npz(self, path):
+        save_dict = {
+            't': self.tokens,
+            'm': self.mask,
+            'p': self.policy,
+            'r': self.reward,
+            'c': self.colors,
+        }
+        np.savez(path, **save_dict)
+
+    @classmethod
+    def from_npz(cls, path):
+        with np.load(path) as data:
+            return Batch(data['t'], data['m'], data['p'], data['r'], data['c'])
+
     def create_batch_from_indices(self, indices):
         tokens = self.tokens[indices]
         policy = self.policy[indices]

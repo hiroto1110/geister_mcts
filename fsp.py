@@ -18,8 +18,7 @@ class FSP:
         self.match_buffer_size = match_buffer_size
         self.selfplay_p = selfplay_p
         self.agent_match_deques = [deque([0], maxlen=match_buffer_size) for _ in range(n_agents)]
-
-        self.score_func = lambda x: (1 - x) ** p
+        self.p = p
 
     def next_match(self) -> int:
         if self.n_agents == 0:
@@ -37,7 +36,7 @@ class FSP:
 
         win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
         win_rate = np.array(win_rate)
-        score = self.score_func(win_rate)
+        score = (1 - win_rate) ** self.p
 
         score = score / score.sum()
 
