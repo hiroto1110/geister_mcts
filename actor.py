@@ -8,8 +8,7 @@ def start_selfplay_process(
         ckpt_queue: multiprocessing.Queue,
         ckpt_dir: str,
         seed: int,
-        num_mcts_sim: int,
-        dirichlet_alpha: float
+        mcts_params
 ):
     os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
@@ -38,13 +37,6 @@ def start_selfplay_process(
         current_params = ckpt['state']['params']
 
         params_checkpoints = [current_params]
-
-        mcts_params = mcts.SearchParameters(num_mcts_sim,
-                                            dirichlet_alpha=dirichlet_alpha,
-                                            n_ply_to_apply_noise=20,
-                                            max_duplicates=3,
-                                            depth_search_checkmate_leaf=4,
-                                            depth_search_checkmate_root=7)
 
         while True:
             agent_id = match_request_queue.get()

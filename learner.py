@@ -23,8 +23,6 @@ def main(
         batch_size=64,
         num_batches=32,
         update_period=200,
-        num_mcts_sim=50,
-        dirichlet_alpha=0.3,
         fsp_threshold=0.6,
         minibatch_temp_path='replay_buffer/minibatch.npz'
 ):
@@ -54,8 +52,6 @@ def main(
     run_config = {
         "batch_size": batch_size,
         "num_batches": num_batches,
-        "num_mcts_sim": num_mcts_sim,
-        "dirichlet_alpha": dirichlet_alpha,
         }
     run_config.update(ckpt['model'])
 

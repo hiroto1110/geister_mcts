@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from tqdm import tqdm
 import orbax.checkpoint
 
+import mcts
 import fsp
 from buffer import ReplayBuffer, Sample
 
@@ -77,6 +78,7 @@ async def start(
         update_period: int,
         match_maker: fsp.FSP,
         fsp_threshold: float,
+        mcts_params: mcts.SearchParameters,
         ckpt_dir: str,
         minibatch_temp_path: str,
         learner_update_queue: multiprocessing.Queue,
@@ -106,6 +108,8 @@ async def start(
                     client_sock, address = await asyncio.wait_for(loop.sock_accept(server), 0.1)
                     client_sock.setblocking(False)
                     print(f"New client from {address}")
+
+                    client_sock.sendall(pickle.dumps(mcts_params))
 
                     client = TcpClient(match_maker, match_result_queue)
                     asyncio.create_task(client.handle_client(client_sock, loop))

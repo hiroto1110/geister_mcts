@@ -33,7 +33,7 @@ class Embeddings(nn.Module):
         id_embed = nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
         x_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
         y_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
-        t_embed = nn.Embed(200, self.embed_dim)(tokens[..., 4])
+        t_embed = nn.Embed(self.max_n_ply, self.embed_dim)(tokens[..., 4])
 
         embeddings = type_embed + id_embed + x_embed + y_embed + t_embed
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
@@ -310,7 +310,7 @@ class TransformerDecoder(nn.Module):
     state_encoder_n_blocks: int = 1
     state_encoder_n_filters: int = 64
 
-    max_n_ply: int = 220
+    max_n_ply: int = 200
 
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)

@@ -1,24 +1,42 @@
 import multiprocessing
 import socket
 import pickle
+import click
 
 import numpy as np
 import orbax.checkpoint
+
+import mcts
 
 import actor
 import collector
 
 
+@click.command()
+@click.argument('ip')
+@click.argument('port')
+@click.option(
+        "n",
+        type=int,
+        default=15,
+)
+@click.option(
+        "--ckpt_dir", "d",
+        type=str,
+        default="./checkpoints"
+)
 def main(
-        ip: str,
-        port: int,
-        n_clients: int,
-        ckpt_dir: str,
-        num_mcts_sim: int,
-        dirichlet_alpha: float
+    ip: str,
+    port: int,
+    n_clients: int,
+    ckpt_dir: str,
 ):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, port))
+
+    data = sock.recv(2**16)
+    mcts_params = pickle.loads(data)
+    print(mcts_params)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
@@ -38,8 +56,7 @@ def main(
                 ckpt_queues[i],
                 ckpt_dir,
                 seed,
-                num_mcts_sim,
-                dirichlet_alpha)
+                mcts_params)
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()
