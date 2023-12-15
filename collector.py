@@ -1,15 +1,20 @@
+from dataclasses import dataclass
 import pickle
 import multiprocessing
 import socket
 import asyncio
-from dataclasses import dataclass
+import nest_asyncio
 
 from tqdm import tqdm
 import orbax.checkpoint
 
+import socket_util
+
+from buffer import ReplayBuffer, Sample
 import mcts
 import fsp
-from buffer import ReplayBuffer, Sample
+
+nest_asyncio.apply()
 
 
 @dataclass
@@ -46,16 +51,19 @@ class MessageNextMatch:
 
 
 class TcpClient:
-    def __init__(self, match_maker: fsp.FSP, match_result_queue: asyncio.Queue):
+    def __init__(self, match_maker: fsp.FSP, match_result_queue: asyncio.Queue, mcts_params: mcts.SearchParameters):
         self.match_maker = match_maker
         self.match_result_queue = match_result_queue
+        self.mcts_params = mcts_params
         self.updated_msg = MessageUpdatedParameters(None, False, 0)
 
-    async def handle_client(self, client, loop):
-        while data := await loop.sock_recv(client, 1024):
-            recv_msg: MessageMatchResult = pickle.loads(data)
+    async def handle_client(self, client: socket.socket, loop: asyncio.AbstractEventLoop):
+        print("handle_client")
+        await socket_util.send_msg_async(loop, client, pickle.dumps(self.mcts_params))
+        await socket_util.send_msg_async(loop, client, pickle.dumps(self.updated_msg))
 
-            print(recv_msg)
+        while data := await socket_util.recv_msg_async(loop, client):
+            recv_msg: MessageMatchResult = pickle.loads(data)
 
             self.match_result_queue.put(recv_msg.result)
 
@@ -66,13 +74,23 @@ class TcpClient:
             else:
                 msg = MessageNextMatch(next_match, updated_message=self.updated_msg)
 
-            await loop.sock_sendall(client, pickle.dumps(msg))
+            await socket_util.send_msg_async(loop, client, pickle.dumps(msg))
         client.close()
 
 
+async def wait_accept(server: socket.socket, client: TcpClient, loop: asyncio.AbstractEventLoop):
+    while True:
+        client_sock, address = await loop.sock_accept(server)
+
+        client_sock.setblocking(False)
+        print(f"New client from {address}")
+
+        loop.create_task(client.handle_client(client_sock, loop))
+        await asyncio.sleep(2)
+
+
 async def start(
-        host: str,
-        port: int,
+        server: socket.socket,
         buffer_size: int,
         batch_size: int,
         update_period: int,
@@ -89,36 +107,23 @@ async def start(
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
 
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen()
+    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+
     loop = asyncio.get_event_loop()
 
-    clients: list[TcpClient] = []
-
     match_result_queue = asyncio.Queue()
+    client = TcpClient(match_maker, match_result_queue, mcts_params)
+    client.updated_msg = MessageUpdatedParameters(ckpt, False, ckpt['state']['epoch'])
 
-    current_updated_msg = MessageUpdatedParameters(None, False, 0)
+    loop.create_task(wait_accept(server, client, loop))
 
     while True:
         # recv_match_result
         for i in tqdm(range(update_period), desc='Collecting'):
             while match_result_queue.empty():
-                try:
-                    client_sock, address = await asyncio.wait_for(loop.sock_accept(server), 0.1)
-                    client_sock.setblocking(False)
-                    print(f"New client from {address}")
+                await asyncio.sleep(0.1)
 
-                    client_sock.sendall(pickle.dumps(mcts_params))
-
-                    client = TcpClient(match_maker, match_result_queue)
-                    asyncio.create_task(client.handle_client(client_sock, loop))
-
-                    clients.append(client)
-                except asyncio.TimeoutError:
-                    pass
-
-            result = match_result_queue.get()
+            result: MatchResult = match_result_queue.get()
             buffer.add_sample(result.sample)
 
             match_maker.apply_match_result(result.agent_id, result.is_won())
@@ -137,9 +142,7 @@ async def start(
         step = learner_update_queue.get()
         ckpt = checkpoint_manager.restore(step)
 
-        current_updated_msg = MessageUpdatedParameters(ckpt, is_league_member, step)
-        for client in clients:
-            client.updated_msg = current_updated_msg
+        client.updated_msg = MessageUpdatedParameters(ckpt, is_league_member, step)
 
         # send_training_minibatch
         batch = buffer.get_minibatch(batch_size)
@@ -155,21 +158,32 @@ def main(
     update_period: int,
     match_maker: fsp.FSP,
     fsp_threshold: float,
+    mcts_params: mcts.SearchParameters,
     ckpt_dir: str,
     minibatch_temp_path: str,
     learner_update_queue: multiprocessing.Queue,
     learner_request_queue: multiprocessing.Queue,
 ):
-    asyncio.run(start(
-        host,
-        port,
-        buffer_size,
-        batch_size,
-        update_period,
-        match_maker,
-        fsp_threshold,
-        ckpt_dir,
-        minibatch_temp_path,
-        learner_update_queue,
-        learner_request_queue
-    ))
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    try:
+        server.bind((host, port))
+        server.listen()
+
+        asyncio.run(start(
+            server,
+            buffer_size,
+            batch_size,
+            update_period,
+            match_maker,
+            fsp_threshold,
+            mcts_params,
+            ckpt_dir,
+            minibatch_temp_path,
+            learner_update_queue,
+            learner_request_queue
+        ))
+
+    except Exception as e:
+        server.close()
+        raise e

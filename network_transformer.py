@@ -33,7 +33,7 @@ class Embeddings(nn.Module):
         id_embed = nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
         x_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
         y_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
-        t_embed = nn.Embed(self.max_n_ply, self.embed_dim)(tokens[..., 4])
+        t_embed = nn.Embed(200, self.embed_dim)(tokens[..., 4])
 
         embeddings = type_embed + id_embed + x_embed + y_embed + t_embed
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
@@ -632,8 +632,12 @@ def save_checkpoint(state: TrainState,
                     model: TransformerDecoder,
                     checkpoint_manager: orbax.checkpoint.CheckpointManager):
     ckpt = create_ckpt(state, model)
+    save_ckpt(ckpt, state.epoch, checkpoint_manager)
+
+
+def save_ckpt(step, ckpt, checkpoint_manager: orbax.checkpoint.CheckpointManager):
     save_args = orbax_utils.save_args_from_target(ckpt)
-    checkpoint_manager.save(state.epoch, ckpt, save_kwargs={'save_args': save_args})
+    checkpoint_manager.save(step, ckpt, save_kwargs={'save_args': save_args})
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])

@@ -6,24 +6,27 @@ import click
 import numpy as np
 import orbax.checkpoint
 
+import socket_util
 import mcts
+
+import network_transformer as network
 
 import actor
 import collector
 
 
 @click.command()
-@click.argument('ip')
-@click.argument('port')
+@click.argument('ip', type=str)
+@click.argument('port', type=int)
 @click.option(
-        "n",
+        "--n_clients", "-n",
         type=int,
         default=15,
 )
 @click.option(
-        "--ckpt_dir", "d",
+        "--ckpt_dir", "-d",
         type=str,
-        default="./checkpoints"
+        default="/home/kuramitsu/lab/geister/checkpoints/test-3/"
 )
 def main(
     ip: str,
@@ -31,15 +34,22 @@ def main(
     n_clients: int,
     ckpt_dir: str,
 ):
+    print(ckpt_dir)
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, port))
 
-    data = sock.recv(2**16)
-    mcts_params = pickle.loads(data)
+    data = socket_util.recv_msg(sock)
+    mcts_params: mcts.SearchParameters = pickle.loads(data)
     print(mcts_params)
+
+    data = socket_util.recv_msg(sock)
+    updated_msg: collector.MessageUpdatedParameters = pickle.loads(data)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
+
+    network.save_ckpt(updated_msg.step, updated_msg.ckpt, checkpoint_manager)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
@@ -61,33 +71,23 @@ def main(
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()
 
-    prev_step = 0
-
     while True:
         result: collector.MatchResult = match_result_queue.get()
-        result_msg = collector.MessageMatchResult(result, prev_step)
+        result_msg = collector.MessageMatchResult(result, updated_msg.step)
 
-        data = pickle.dumps(result_msg)
-        sock.send(data)
+        socket_util.send_msg(sock, pickle.dumps(result_msg))
 
-        data = sock.recv()
+        data = socket_util.recv_msg(sock)
         msg: collector.MessageNextMatch = pickle.loads(data)
 
         match_request_queue.put(msg.next_match.agent_id)
 
-        updated_msg = msg.updated_message
+        if msg.updated_message is not None:
+            updated_msg = msg.updated_message
 
-        if updated_msg is not None:
             checkpoint_manager.save(updated_msg.step, updated_msg.ckpt)
             ckpt_queues.put((updated_msg.step, updated_msg.is_league_member))
 
 
 if __name__ == '__main__':
-    main(
-        ip='localhost',
-        port=23001,
-        n_clients=15,
-        ckpt_dir='./checkpoints/run-3',
-        num_mcts_sim=50,
-        dirichlet_alpha=0.3
-    )
+    main()

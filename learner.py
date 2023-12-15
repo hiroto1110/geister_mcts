@@ -12,6 +12,7 @@ import orbax.checkpoint
 import network_transformer as network
 import buffer
 import fsp
+import mcts
 
 import collector
 
@@ -62,6 +63,12 @@ def main(
 
     network.save_checkpoint(state, model, checkpoint_manager)
 
+    mcts_params = mcts.SearchParameters(
+        num_simulations=25,
+        dirichlet_alpha=0.3,
+        c_base=25
+    )
+
     ctx = multiprocessing.get_context('spawn')
     learner_update_queue = ctx.Queue(100)
     learner_request_queue = ctx.Queue(100)
@@ -71,8 +78,9 @@ def main(
         buffer_size,
         batch_size * num_batches,
         update_period,
-        fsp_threshold,
         fsp.FSP(n_agents=1, selfplay_p=0.3, match_buffer_size=2000, p=6),
+        fsp_threshold,
+        mcts_params,
         ckpt_dir,
         minibatch_temp_path,
         learner_update_queue,

@@ -39,10 +39,12 @@ def start_selfplay_process(
         params_checkpoints = [current_params]
 
         while True:
+            print("start")
             agent_id = match_request_queue.get()
             if agent_id >= len(params_checkpoints):
                 agent_id = len(params_checkpoints) - 1
                 print("agent_id is out of range")
+            print("agent:", agent_id)
 
             player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
 
@@ -52,11 +54,14 @@ def start_selfplay_process(
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
             else:
                 player2 = mcts.PlayerMCTS(params_checkpoints[agent_id], model, mcts_params)
+            
+            print("play game")
 
             if np.random.random() > 0.5:
                 actions, color1, color2 = mcts.play_game(player1, player2)
             else:
                 actions, color2, color1 = mcts.play_game(player2, player1)
+            print("finished game")
 
             sample1 = player1.create_sample(actions, color2)
 
