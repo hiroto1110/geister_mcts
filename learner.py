@@ -112,8 +112,10 @@ def train_and_log(state,
     info = np.zeros((num_batches, 3))
     loss = 0
 
+    train_batches = train_batch.divide(num_batches)
+
     for i in tqdm(range(num_batches), desc=' Training '):
-        state, loss_i, info_i = network.train_step(state, *train_batch.astuple(), eval=False)
+        state, loss_i, info_i = network.train_step(state, *train_batches[i].astuple(), eval=False)
 
         loss += loss_i
         info[i] = info_i
@@ -131,7 +133,7 @@ def train_and_log(state,
 
 if __name__ == "__main__":
     try:
-        main(host='localhost', port=23001)
+        main(host='localhost', port=23003)
 
     except Exception:
         import traceback

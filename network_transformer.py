@@ -412,9 +412,11 @@ class TrainState(train_state.TrainState):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
+def loss_fn(params, state, x, y_pi, y_v, y_color, dropout_rng, eval):
     pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
                                   rngs={'dropout': dropout_rng})
+
+    mask = jnp.any(x != 0, axis=2)
 
     # [Batch, SeqLen, 32]
     y_pi = y_pi.reshape(-1, x.shape[1])
@@ -437,16 +439,16 @@ def loss_fn(params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval):
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state: TrainState, x, mask, y_pi, y_v, y_color, eval):
+def train_step(state: TrainState, x, y_pi, y_v, y_color, eval):
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
         (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            state.params, state, x, mask, y_pi, y_v, y_color, dropout_rng, eval)
+            state.params, state, x, y_pi, y_v, y_color, dropout_rng, eval)
 
         new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
     else:
         loss, info = loss_fn(
-            state.params, state, x, mask, y_pi, y_v, y_color, random.PRNGKey(0), eval)
+            state.params, state, x, y_pi, y_v, y_color, random.PRNGKey(0), eval)
         new_state = state
 
     return new_state, loss, info
@@ -632,7 +634,7 @@ def save_checkpoint(state: TrainState,
                     model: TransformerDecoder,
                     checkpoint_manager: orbax.checkpoint.CheckpointManager):
     ckpt = create_ckpt(state, model)
-    save_ckpt(ckpt, state.epoch, checkpoint_manager)
+    save_ckpt(state.epoch, ckpt, checkpoint_manager)
 
 
 def save_ckpt(step, ckpt, checkpoint_manager: orbax.checkpoint.CheckpointManager):

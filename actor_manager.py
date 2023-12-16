@@ -86,7 +86,8 @@ def main(
             updated_msg = msg.updated_message
 
             checkpoint_manager.save(updated_msg.step, updated_msg.ckpt)
-            ckpt_queues.put((updated_msg.step, updated_msg.is_league_member))
+            for ckpt_queue in ckpt_queues:
+                ckpt_queue.put((updated_msg.step, updated_msg.is_league_member))
 
 
 if __name__ == '__main__':

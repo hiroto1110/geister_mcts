@@ -16,10 +16,12 @@ class Sample:
 @dataclass
 class Batch:
     tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    mask: np.ndarray = field(default_factory=lambda: np.zeros(0))
     policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
     reward: np.ndarray = field(default_factory=lambda: np.zeros(0))
     colors: np.ndarray = field(default_factory=lambda: np.zeros(0))
+
+    def __len__(self):
+        return self.tokens.shape[0]
 
     def astuple(self):
         return astuple(self)
@@ -27,7 +29,6 @@ class Batch:
     def to_npz(self, path):
         save_dict = {
             't': self.tokens,
-            'm': self.mask,
             'p': self.policy,
             'r': self.reward,
             'c': self.colors,
@@ -37,17 +38,27 @@ class Batch:
     @classmethod
     def from_npz(cls, path):
         with np.load(path) as data:
-            return Batch(data['t'], data['m'], data['p'], data['r'], data['c'])
+            return Batch(data['t'], data['p'], data['r'], data['c'])
 
-    def create_batch_from_indices(self, indices):
+    def divide(self, num_division: int) -> tuple["Batch"]:
+        assert len(self) % num_division == 0
+
+        indices = np.arange(len(self))
+        indices = indices.reshape(num_division, -1)
+
+        return tuple([self.create_batch_from_indices(i) for i in indices])
+
+    def create_minibatch(self, batch_size: int) -> "Batch":
+        indices = np.random.choice(range(self.tokens.shape[0]), size=batch_size)
+        return self.create_batch_from_indices(indices)
+
+    def create_batch_from_indices(self, indices) -> "Batch":
         tokens = self.tokens[indices]
         policy = self.policy[indices]
         reward = self.reward[indices]
         colors = self.colors[indices]
 
-        mask = np.any(tokens != 0, axis=2)
-
-        return Batch(tokens, mask, policy, reward, colors)
+        return Batch(tokens, policy, reward, colors)
 
 
 class ReplayBuffer:
@@ -87,9 +98,7 @@ class ReplayBuffer:
         reward = self.reward_buffer[indices]
         colors = self.colors_buffer[indices]
 
-        mask = np.any(tokens != 0, axis=2)
-
-        return Batch(tokens, mask, policy, reward, colors)
+        return Batch(tokens, policy, reward, colors)
 
     def add_sample(self, sample: Sample):
         self.tokens_buffer[self.index] = sample.tokens
