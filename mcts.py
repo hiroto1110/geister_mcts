@@ -14,7 +14,7 @@ from line_profiler import profile
 import geister as game
 import game_analytics
 import geister_lib
-from network_transformer import TransformerDecoderWithCache
+from network.transformer import TransformerDecoderWithCache
 from buffer import Sample
 import server_util
 import naotti2020

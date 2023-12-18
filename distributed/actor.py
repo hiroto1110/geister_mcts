@@ -18,7 +18,7 @@ def start_selfplay_process(
     import jax
     import orbax.checkpoint
 
-    import network_transformer as network
+    from network.train import Checkpoint
     import mcts
     import fsp
     import collector
@@ -31,12 +31,10 @@ def start_selfplay_process(
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
+        step = checkpoint_manager.latest_step()
+        ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
 
-        model = network.TransformerDecoderWithCache(**ckpt['model'])
-        current_params = ckpt['state']['params']
-
-        params_checkpoints = [current_params]
+        params_checkpoints = [ckpt.state.params]
 
         while True:
             print("start")
@@ -46,15 +44,15 @@ def start_selfplay_process(
                 print("agent_id is out of range")
             print("agent:", agent_id)
 
-            player1 = mcts.PlayerMCTS(current_params, model, mcts_params)
+            player1 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
 
             if agent_id == fsp.SELFPLAY_ID:
-                player2 = mcts.PlayerMCTS(current_params, model, mcts_params)
+                player2 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
             elif agent_id == 0:
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
             else:
-                player2 = mcts.PlayerMCTS(params_checkpoints[agent_id], model, mcts_params)
-            
+                player2 = mcts.PlayerMCTS(params_checkpoints[agent_id], ckpt.model, mcts_params)
+
             print("play game")
 
             if np.random.random() > 0.5:
@@ -68,10 +66,9 @@ def start_selfplay_process(
             match_result_queue.put(collector.MatchResult(sample1, agent_id))
 
             if not ckpt_queue.empty():
-                step, is_league_member = ckpt_queue.get()
-                if is_league_member:
-                    params_checkpoints.append(current_params)
+                step = ckpt_queue.get()
 
                 # print(f'update: {step}')
-                ckpt = checkpoint_manager.restore(step)
-                current_params = ckpt['state']['params']
+                ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+                if ckpt.is_league_member:
+                    params_checkpoints.append(ckpt.state.params)

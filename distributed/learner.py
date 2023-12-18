@@ -3,13 +3,15 @@ import multiprocessing
 
 from tqdm import tqdm
 import glob
+import click
 
 import numpy as np
-import wandb
+# import wandb
 
 import optax
 import orbax.checkpoint
-import network_transformer as network
+from network.transformer import TransformerDecoder
+from network.train import Checkpoint, TrainState, train_step
 import buffer
 import fsp
 import mcts
@@ -17,6 +19,9 @@ import mcts
 import collector
 
 
+@click.command()
+@click.argument('host', type=str)
+@click.argument('port', type=int)
 def main(
         host: str,
         port: int,
@@ -41,9 +46,9 @@ def main(
 
     ckpt = checkpoint_manager.restore(769)
 
-    model = network.TransformerDecoder(**ckpt['model'])
+    model = TransformerDecoder(**ckpt['model'])
 
-    state = network.TrainState.create(
+    state = TrainState.create(
         apply_fn=model.apply,
         params=ckpt['state']['params'],
         tx=optax.adam(learning_rate=0.0005),
@@ -61,7 +66,7 @@ def main(
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
 
-    network.save_checkpoint(state, model, checkpoint_manager)
+    Checkpoint(state, model).save(checkpoint_manager)
 
     mcts_params = mcts.SearchParameters(
         num_simulations=25,
@@ -96,26 +101,24 @@ def main(
 
         state = train_and_log(state, minibatch, num_batches, log_dict)
 
-        network.save_checkpoint(state, model, checkpoint_manager)
+        Checkpoint(state, model).save(checkpoint_manager)
 
         learner_update_queue.put(state.epoch)
 
         # wandb.log(log_dict)
 
 
-def train_and_log(state,
+def train_and_log(state: TrainState,
                   train_batch: buffer.Batch,
                   num_batches: int,
                   log_dict: dict):
-    import network_transformer as network
-
     info = np.zeros((num_batches, 3))
     loss = 0
 
     train_batches = train_batch.divide(num_batches)
 
     for i in tqdm(range(num_batches), desc=' Training '):
-        state, loss_i, info_i = network.train_step(state, *train_batches[i].astuple(), eval=False)
+        state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False)
 
         loss += loss_i
         info[i] = info_i
@@ -128,12 +131,12 @@ def train_and_log(state,
     log_dict["train/loss value"] = info[1]
     log_dict["train/loss color"] = info[2]
 
-    return state.replace(epoch=state.epoch + 1)
+    return state.replace(step=state.step + 1)
 
 
 if __name__ == "__main__":
     try:
-        main(host='localhost', port=23003)
+        main()
 
     except Exception:
         import traceback

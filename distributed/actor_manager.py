@@ -9,7 +9,7 @@ import orbax.checkpoint
 import socket_util
 import mcts
 
-import network_transformer as network
+from network.train import Checkpoint
 
 import actor
 import collector
@@ -44,12 +44,12 @@ def main(
     print(mcts_params)
 
     data = socket_util.recv_msg(sock)
-    updated_msg: collector.MessageUpdatedParameters = pickle.loads(data)
+    ckpt: Checkpoint = pickle.loads(data)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
 
-    network.save_ckpt(updated_msg.step, updated_msg.ckpt, checkpoint_manager)
+    ckpt.save(checkpoint_manager)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
@@ -73,7 +73,7 @@ def main(
 
     while True:
         result: collector.MatchResult = match_result_queue.get()
-        result_msg = collector.MessageMatchResult(result, updated_msg.step)
+        result_msg = collector.MessageMatchResult(result, ckpt.state.step)
 
         socket_util.send_msg(sock, pickle.dumps(result_msg))
 
@@ -82,12 +82,12 @@ def main(
 
         match_request_queue.put(msg.next_match.agent_id)
 
-        if msg.updated_message is not None:
-            updated_msg = msg.updated_message
+        if msg.ckpt is not None:
+            ckpt = msg.ckpt
 
-            checkpoint_manager.save(updated_msg.step, updated_msg.ckpt)
+            ckpt.save(checkpoint_manager)
             for ckpt_queue in ckpt_queues:
-                ckpt_queue.put((updated_msg.step, updated_msg.is_league_member))
+                ckpt_queue.put(ckpt.state.step)
 
 
 if __name__ == '__main__':

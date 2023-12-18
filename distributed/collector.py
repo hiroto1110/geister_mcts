@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-import time
 import pickle
 import multiprocessing
 import socket
@@ -12,6 +11,7 @@ import orbax.checkpoint
 import socket_util
 
 from buffer import ReplayBuffer, Sample
+from network.train import Checkpoint
 import mcts
 import fsp
 
@@ -37,16 +37,9 @@ class MessageMatchResult:
 
 
 @dataclass
-class MessageUpdatedParameters:
-    ckpt: dict
-    is_league_member: bool
-    step: int
-
-
-@dataclass
 class MessageNextMatch:
     next_match: MatchInfo
-    updated_message: MessageUpdatedParameters
+    ckpt: Checkpoint
 
 
 class TcpClient:
@@ -54,13 +47,15 @@ class TcpClient:
         self.match_maker = match_maker
         self.match_result_queue = match_result_queue
         self.mcts_params = mcts_params
-        self.updated_msg = MessageUpdatedParameters(None, False, 0)
+        self.ckpt: Checkpoint = None
+
+    def get_current_step(self) -> int:
+        return self.ckpt.state.step
 
 
 def handle_client(client: TcpClient, sock: socket.socket):
-    print("handle_client")
     socket_util.send_msg(sock, pickle.dumps(client.mcts_params))
-    socket_util.send_msg(sock, pickle.dumps(client.updated_msg))
+    socket_util.send_msg(sock, pickle.dumps(client.ckpt))
 
     while data := socket_util.recv_msg(sock):
         recv_msg: MessageMatchResult = pickle.loads(data)
@@ -69,10 +64,10 @@ def handle_client(client: TcpClient, sock: socket.socket):
 
         next_match = MatchInfo(client.match_maker.next_match())
 
-        if recv_msg.step == client.updated_msg.step:
-            msg = MessageNextMatch(next_match, updated_message=None)
+        if recv_msg.step == client.get_current_step():
+            msg = MessageNextMatch(next_match, ckpt=None)
         else:
-            msg = MessageNextMatch(next_match, updated_message=client.updated_msg)
+            msg = MessageNextMatch(next_match, ckpt=client.ckpt)
 
         socket_util.send_msg(sock, pickle.dumps(msg))
     sock.close()
@@ -106,11 +101,10 @@ def start(
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
 
-    ckpt = checkpoint_manager.restore(checkpoint_manager.latest_step())
-
     match_result_queue = queue.Queue()
+
     client = TcpClient(match_maker, match_result_queue, mcts_params)
-    client.updated_msg = MessageUpdatedParameters(ckpt, False, ckpt['state']['epoch'])
+    client.ckpt = Checkpoint.load(checkpoint_manager, checkpoint_manager.latest_step())
 
     thread = threading.Thread(target=wait_accept, args=(server, client))
     thread.start()
@@ -133,21 +127,14 @@ def start(
 
         # recv_match_result
         for i in tqdm(range(update_period), desc='Collecting'):
-            while match_result_queue.empty():
-                time.sleep(0.1)
-
             result: MatchResult = match_result_queue.get()
             buffer.add_sample(result.sample)
 
             match_maker.apply_match_result(result.agent_id, result.is_won())
 
         # recv_updated_params
-        while learner_update_queue.empty():
-            time.sleep(0.1)
-        step = learner_update_queue.get()
-        ckpt = checkpoint_manager.restore(step)
-
-        client.updated_msg = MessageUpdatedParameters(ckpt, is_league_member, step)
+        step: int = learner_update_queue.get()
+        client.ckpt = Checkpoint.load(checkpoint_manager, step)
 
 
 def main(
