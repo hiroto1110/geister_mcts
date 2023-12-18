@@ -11,12 +11,12 @@ from flax import core, struct
 from graphviz import Digraph
 from line_profiler import profile
 
-import geister as game
+import geister_lib.state as game
 import game_analytics
 import geister_lib
 from network.transformer import TransformerDecoderWithCache
 from buffer import Sample
-import server_util
+import gat.server_util
 import naotti2020
 
 
@@ -543,11 +543,11 @@ class PlayerNaotti2020:
         naotti2020.initGame(depth, self.print_log)
 
     def select_next_action(self) -> int:
-        board_msg = server_util.encode_board_str(self.state)
+        board_msg = gat.server_util.encode_board_str(self.state)
         naotti2020.recvBoard(board_msg)
 
         action_msg = naotti2020.solve(self.turn_count)
-        action = server_util.decode_action_message(action_msg)
+        action = gat.server_util.decode_action_message(action_msg)
 
         if self.state.root_player == 1:
             p_id = action // 4

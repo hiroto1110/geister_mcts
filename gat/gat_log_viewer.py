@@ -4,7 +4,7 @@ import time
 import numpy as np
 import orbax.checkpoint
 
-import geister as game
+import geister_state as game
 import mcts
 import game_analytics
 from network_transformer import TransformerDecoderWithCache

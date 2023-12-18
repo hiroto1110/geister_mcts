@@ -3,7 +3,7 @@ from enum import Flag, auto
 import numpy as np
 import termcolor
 
-import geister as game
+import geister_state as game
 import geister_objective_lib
 
 

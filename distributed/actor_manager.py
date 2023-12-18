@@ -6,7 +6,7 @@ import click
 import numpy as np
 import orbax.checkpoint
 
-import socket_util
+import distributed.socket_util as socket_util
 import mcts
 
 from network.train import Checkpoint
@@ -73,7 +73,7 @@ def main(
 
     while True:
         result: collector.MatchResult = match_result_queue.get()
-        result_msg = collector.MessageMatchResult(result, ckpt.state.step)
+        result_msg = collector.MessageMatchResult(result, ckpt.state.epoch)
 
         socket_util.send_msg(sock, pickle.dumps(result_msg))
 
@@ -87,7 +87,7 @@ def main(
 
             ckpt.save(checkpoint_manager)
             for ckpt_queue in ckpt_queues:
-                ckpt_queue.put(ckpt.state.step)
+                ckpt_queue.put(ckpt.state.epoch)
 
 
 if __name__ == '__main__':

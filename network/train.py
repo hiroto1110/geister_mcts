@@ -17,49 +17,62 @@ import optax
 import wandb
 
 from buffer import load_batch
-import transformer
+from network.transformer import TransformerDecoder, TransformerDecoderWithCache
 
 
 class TrainState(train_state.TrainState):
+    epoch: int
     dropout_rng: Any
 
 
 @dataclasses.dataclass
 class Checkpoint:
     state: TrainState
-    model: transformer.TransformerDecoder
+    model: TransformerDecoder
     is_league_member: bool = False
 
     def asdict(self):
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, ckpt_dict: dict, is_caching_model: bool = False) -> 'Checkpoint':
-        state = TrainState(**ckpt_dict['state'])
-
+    def from_dict(
+        cls,
+        ckpt_dict: dict,
+        tx: optax.GradientTransformation = optax.adam(learning_rate=0.0005),
+        is_caching_model: bool = False
+    ) -> 'Checkpoint':
         if is_caching_model:
-            model = transformer.TransformerDecoder(**ckpt_dict['model'])
+            model = TransformerDecoder(**ckpt_dict['model'])
         else:
-            model = transformer.TransformerDecoderWithCache(**ckpt_dict['model'])
+            model = TransformerDecoderWithCache(**ckpt_dict['model'])
+
+        state = TrainState.create(
+            apply_fn=model.apply,
+            params=ckpt_dict['state']['params'],
+            tx=tx,
+            dropout_rng=ckpt_dict['state']['dropout_rng'],
+            epoch=ckpt_dict['state']['epoch']
+        )
 
         is_league_member = ckpt_dict['is_league_member']
 
         return Checkpoint(state, model, is_league_member)
-
-    def save(self, checkpoint_manager: orbax.checkpoint.CheckpointManager):
-        ckpt = self.asdict()
-        save_args = orbax_utils.save_args_from_target(ckpt)
-        checkpoint_manager.save(self.state.step, ckpt, save_kwargs={'save_args': save_args})
 
     @classmethod
     def load(
         cls,
         checkpoint_manager: orbax.checkpoint.CheckpointManager,
         step: int,
+        tx: optax.GradientTransformation = optax.adam(learning_rate=0.0005),
         is_caching_model: bool = False
     ) -> 'Checkpoint':
         ckpt = checkpoint_manager.restore(step)
-        return Checkpoint.from_dict(ckpt, is_caching_model=is_caching_model)
+        return Checkpoint.from_dict(ckpt, tx=tx, is_caching_model=is_caching_model)
+
+    def save(self, checkpoint_manager: orbax.checkpoint.CheckpointManager):
+        ckpt = self.asdict()
+        save_args = orbax_utils.save_args_from_target(ckpt)
+        checkpoint_manager.save(self.state.epoch, ckpt, save_kwargs={'save_args': save_args})
 
 
 @partial(jax.jit, static_argnames=['eval'])
@@ -188,7 +201,7 @@ def main_train(data, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model = transformer.TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False)
+        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False)
 
         variables = model.init(key1, data[0][:1])
         state = TrainState.create(

@@ -8,12 +8,12 @@ import queue
 from tqdm import tqdm
 import orbax.checkpoint
 
-import socket_util
+import distributed.socket_util as socket_util
 
 from buffer import ReplayBuffer, Sample
 from network.train import Checkpoint
 import mcts
-import fsp
+import match_makers
 
 
 @dataclass
@@ -43,14 +43,19 @@ class MessageNextMatch:
 
 
 class TcpClient:
-    def __init__(self, match_maker: fsp.FSP, match_result_queue: queue.Queue, mcts_params: mcts.SearchParameters):
+    def __init__(
+            self,
+            match_maker: match_makers.MatchMaker,
+            match_result_queue: queue.Queue,
+            mcts_params: mcts.SearchParameters
+    ):
         self.match_maker = match_maker
         self.match_result_queue = match_result_queue
         self.mcts_params = mcts_params
         self.ckpt: Checkpoint = None
 
     def get_current_step(self) -> int:
-        return self.ckpt.state.step
+        return self.ckpt.state.epoch
 
 
 def handle_client(client: TcpClient, sock: socket.socket):
@@ -87,7 +92,7 @@ def start(
         buffer_size: int,
         batch_size: int,
         update_period: int,
-        match_maker: fsp.FSP,
+        match_maker: match_makers.MatchMaker,
         fsp_threshold: float,
         mcts_params: mcts.SearchParameters,
         ckpt_dir: str,
@@ -143,7 +148,7 @@ def main(
     buffer_size: int,
     batch_size: int,
     update_period: int,
-    match_maker: fsp.FSP,
+    match_maker: match_makers.MatchMaker,
     fsp_threshold: float,
     mcts_params: mcts.SearchParameters,
     ckpt_dir: str,

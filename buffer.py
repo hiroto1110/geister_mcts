@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass, astuple, field
 
 import numpy as np
-import geister as game
+import geister_state as game
 
 
 @dataclass

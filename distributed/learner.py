@@ -1,3 +1,4 @@
+from typing import Union
 import os
 import multiprocessing
 
@@ -6,14 +7,15 @@ import glob
 import click
 
 import numpy as np
-# import wandb
-
+import jax
 import optax
 import orbax.checkpoint
-from network.transformer import TransformerDecoder
+# import wandb
+
 from network.train import Checkpoint, TrainState, train_step
+from network.transformer import TransformerDecoder
 import buffer
-import fsp
+import match_makers
 import mcts
 
 import collector
@@ -30,36 +32,47 @@ def main(
         num_batches=32,
         update_period=200,
         fsp_threshold=0.6,
-        minibatch_temp_path='replay_buffer/minibatch.npz'
+        prev_run_dir: Union[str, None] = None,
+        prev_run_step: Union[int, None] = None,
+        minibatch_temp_path='replay_buffer/minibatch.npz',
 ):
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+
+    if prev_run_dir is not None:
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(prev_run_dir, checkpointer)
+        ckpt = Checkpoint.load(checkpoint_manager, prev_run_step, tx=optax.adam(learning_rate=0.0005))
+
+        model = ckpt.model
+        state = ckpt.state
+    else:
+        model = TransformerDecoder(
+            num_heads=4,
+            embed_dim=256,
+            num_hidden_layers=4
+        )
+
+        init_data = np.zeros((1, 200, 5), dtype=np.uint8)
+        variables = model.init(jax.random.PRNGKey(0), init_data)
+
+        state = TrainState.create(
+            apply_fn=model.apply,
+            params=variables['params'],
+            tx=optax.adam(learning_rate=0.0005),
+            dropout_rng=jax.random.PRNGKey(0),
+            epoch=0
+        )
+
     run_list = glob.glob("./checkpoints/run-*/")
     max_run_number = max([int(os.path.dirname(run)[-1]) for run in run_list])
     run_name = f'run-{max_run_number + 1}'
-    run_name = 'run-3'
-    prev_run_name = 'fresh-terrain-288'
+    # run_name = 'run-3'
 
     ckpt_dir = f'./checkpoints/{run_name}/'
-    prev_ckpt_dir = f'./checkpoints/{prev_run_name}/'
 
-    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(prev_ckpt_dir, checkpointer)
-
-    ckpt = checkpoint_manager.restore(769)
-
-    model = TransformerDecoder(**ckpt['model'])
-
-    state = TrainState.create(
-        apply_fn=model.apply,
-        params=ckpt['state']['params'],
-        tx=optax.adam(learning_rate=0.0005),
-        dropout_rng=ckpt['state']['dropout_rng'],
-        epoch=ckpt['state']['epoch'])
-
-    run_config = {
+    """run_config = {
         "batch_size": batch_size,
         "num_batches": num_batches,
-        }
-    run_config.update(ckpt['model'])
+    }"""
 
     # wandb.init(project="geister-zero", name=run_name, config=run_config)
 
@@ -83,7 +96,7 @@ def main(
         buffer_size,
         batch_size * num_batches,
         update_period,
-        fsp.FSP(n_agents=1, selfplay_p=0.3, match_buffer_size=2000, p=6),
+        match_makers.MatchMakerFSP(n_agents=1, selfplay_p=0.3, match_buffer_size=2000, p=6),
         fsp_threshold,
         mcts_params,
         ckpt_dir,
@@ -96,8 +109,6 @@ def main(
     while True:
         log_dict: dict = learner_request_queue.get()
         minibatch = buffer.Batch.from_npz(minibatch_temp_path)
-
-        log_dict['step'] = state.epoch
 
         state = train_and_log(state, minibatch, num_batches, log_dict)
 
@@ -131,7 +142,7 @@ def train_and_log(state: TrainState,
     log_dict["train/loss value"] = info[1]
     log_dict["train/loss color"] = info[2]
 
-    return state.replace(step=state.step + 1)
+    return state.replace(epoch=state.epoch + 1)
 
 
 if __name__ == "__main__":

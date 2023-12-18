@@ -12,7 +12,21 @@ class MatchResult:
 SELFPLAY_ID = -1
 
 
-class FSP:
+class MatchMaker:
+    def next_match(self) -> int:
+        pass
+
+    def apply_match_result(self, agent_id: int, win: bool):
+        pass
+
+    def is_winning_all_agents(self, win_rate_threshold: float) -> bool:
+        pass
+
+    def add_agent(self):
+        pass
+
+
+class MatchMakerFSP(MatchMaker):
     def __init__(self, n_agents: int, selfplay_p=0.5, match_buffer_size=1000, p=2) -> None:
         self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
@@ -66,7 +80,7 @@ class FSP:
 def main():
     true_p = np.array([0.9, 0.7, 0.61, 0.59, 0.58])
 
-    fsp = FSP(n_agents=true_p.shape[0], match_buffer_size=500, p=4)
+    fsp = MatchMakerFSP(n_agents=true_p.shape[0], match_buffer_size=500, p=4)
 
     for i in range(2000):
         id = fsp.next_match()
