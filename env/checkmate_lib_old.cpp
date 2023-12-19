@@ -573,6 +573,6 @@ py::tuple find_checkmate(py::array_t<int> pos_p, py::array_t<int> color_p,
 	return py::make_tuple(-1, e, -1);
 }
 
-PYBIND11_MODULE(geister_lib_old, m) {
+PYBIND11_MODULE(checkmate_lib_old, m) {
 	m.def("find_checkmate", &find_checkmate);
 }

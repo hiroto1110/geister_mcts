@@ -11,13 +11,13 @@ from flax import core, struct
 from graphviz import Digraph
 from line_profiler import profile
 
-import geister_lib.state as game
+import env.state as game
 import game_analytics
-import geister_lib
+import env.checkmate_lib as checkmate_lib
 from network.transformer import TransformerDecoderWithCache
 from buffer import Sample
 import gat.server_util
-import naotti2020
+import env.naotti2020 as naotti2020
 
 
 class PredictState(struct.PyTreeNode):
@@ -351,7 +351,7 @@ def simulate(node: Node,
 
 
 def find_checkmate(state: game.SimulationState, player: int, depth: int):
-    return geister_lib.find_checkmate(
+    return checkmate_lib.find_checkmate(
         state.pieces_p, state.color_p,
         state.pieces_o, state.color_o,
         player, state.root_player, depth
@@ -472,10 +472,7 @@ def create_root_node(state: game.SimulationState,
                      pred_state: PredictState,
                      model: TransformerDecoderWithCache) -> Node:
     node = Node()
-    if model.is_linear_attention:
-        cv, ck = model.create_linear_cache()
-    else:
-        cv, ck = model.create_cache(100)
+    cv, ck = model.create_cache(100)
 
     tokens = state.create_init_tokens()
 

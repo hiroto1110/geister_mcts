@@ -20,7 +20,7 @@ def start_selfplay_process(
 
     from network.train import Checkpoint
     import mcts
-    import fsp
+    import match_makers
     import collector
 
     jax.config.update('jax_platform_name', 'cpu')
@@ -46,7 +46,7 @@ def start_selfplay_process(
 
             player1 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
 
-            if agent_id == fsp.SELFPLAY_ID:
+            if agent_id == match_makers.SELFPLAY_ID:
                 player2 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
             elif agent_id == 0:
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)

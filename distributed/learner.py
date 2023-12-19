@@ -10,7 +10,7 @@ import numpy as np
 import jax
 import optax
 import orbax.checkpoint
-# import wandb
+import wandb
 
 from network.train import Checkpoint, TrainState, train_step
 from network.transformer import TransformerDecoder
@@ -34,7 +34,7 @@ def main(
         fsp_threshold=0.6,
         prev_run_dir: Union[str, None] = None,
         prev_run_step: Union[int, None] = None,
-        minibatch_temp_path='replay_buffer/minibatch.npz',
+        minibatch_temp_path='./data/replay_buffer/minibatch.npz',
 ):
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
@@ -62,19 +62,23 @@ def main(
             epoch=0
         )
 
-    run_list = glob.glob("./checkpoints/run-*/")
-    max_run_number = max([int(os.path.dirname(run)[-1]) for run in run_list])
-    run_name = f'run-{max_run_number + 1}'
+    run_list = glob.glob("./data/checkpoints/run-*/")
+
+    if len(run_list) > 0:
+        max_run_number = max([int(os.path.dirname(run)[-1]) for run in run_list])
+        run_name = f'run-{max_run_number + 1}'
+    else:
+        run_name = 'run-0'
     # run_name = 'run-3'
 
-    ckpt_dir = f'./checkpoints/{run_name}/'
+    ckpt_dir = f'./data/checkpoints/{run_name}/'
 
-    """run_config = {
+    run_config = {
         "batch_size": batch_size,
         "num_batches": num_batches,
-    }"""
+    }
 
-    # wandb.init(project="geister-zero", name=run_name, config=run_config)
+    wandb.init(project="geister-zero", name=run_name, config=run_config)
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
@@ -110,23 +114,28 @@ def main(
         log_dict: dict = learner_request_queue.get()
         minibatch = buffer.Batch.from_npz(minibatch_temp_path)
 
-        state = train_and_log(state, minibatch, num_batches, log_dict)
+        state, train_log_dict = train(state, minibatch, num_batches, batch_size)
+
+        log_dict.update(train_log_dict)
 
         Checkpoint(state, model).save(checkpoint_manager)
 
         learner_update_queue.put(state.epoch)
 
-        # wandb.log(log_dict)
+        wandb.log(log_dict)
 
 
-def train_and_log(state: TrainState,
-                  train_batch: buffer.Batch,
-                  num_batches: int,
-                  log_dict: dict):
+def train(
+        state: TrainState,
+        train_batch: buffer.Batch,
+        num_batches: int,
+        batch_size: int
+        ) -> tuple[TrainState, dict]:
+
     info = np.zeros((num_batches, 3))
     loss = 0
 
-    train_batches = train_batch.divide(num_batches)
+    train_batches = train_batch.divide(batch_size)
 
     for i in tqdm(range(num_batches), desc=' Training '):
         state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False)
@@ -137,12 +146,13 @@ def train_and_log(state: TrainState,
     info = info.mean(axis=0)
     loss /= num_batches
 
+    log_dict = {}
     log_dict["train/loss"] = loss
     log_dict["train/loss policy"] = info[0]
     log_dict["train/loss value"] = info[1]
     log_dict["train/loss color"] = info[2]
 
-    return state.replace(epoch=state.epoch + 1)
+    return state.replace(epoch=state.epoch + 1), log_dict
 
 
 if __name__ == "__main__":

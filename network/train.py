@@ -6,23 +6,28 @@ import itertools
 
 from tqdm import tqdm
 
-import numpy as np
 import jax
 from jax import random, numpy as jnp
 from flax.training import train_state
-import orbax.checkpoint
 from flax.training import orbax_utils
+import orbax.checkpoint
 import optax
 
 import wandb
 
-from buffer import load_batch
+from buffer import load_batch, Batch
 from network.transformer import TransformerDecoder, TransformerDecoderWithCache
 
 
 class TrainState(train_state.TrainState):
     epoch: int
     dropout_rng: Any
+
+    def __getstate__(self):
+        odict = self.__dict__.copy()
+        odict['tx'] = None
+        odict['apply_fn'] = None
+        return odict
 
 
 @dataclasses.dataclass
@@ -41,7 +46,7 @@ class Checkpoint:
         tx: optax.GradientTransformation = optax.adam(learning_rate=0.0005),
         is_caching_model: bool = False
     ) -> 'Checkpoint':
-        if is_caching_model:
+        if not is_caching_model:
             model = TransformerDecoder(**ckpt_dict['model'])
         else:
             model = TransformerDecoderWithCache(**ckpt_dict['model'])
@@ -110,7 +115,7 @@ def loss_fn(params,
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state: TrainState, x, y_pi, y_v, y_color, eval):
+def train_step(state: TrainState, x, y_pi, y_v, y_color, eval: bool):
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
         (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -125,30 +130,34 @@ def train_step(state: TrainState, x, y_pi, y_v, y_color, eval):
     return new_state, loss, info
 
 
-def train_epoch(state, data_batched, eval):
+def train_epoch(state: TrainState, batches: list[Batch], eval: bool):
     loss_history, info_history = [], []
-    for x, mask, y_pi, y_v, y_color in tqdm(zip(*data_batched), total=len(data_batched[0])):
-        state, loss, info = train_step(state, x, mask, y_pi, y_v, y_color, eval)
+
+    for batch in tqdm(batches):
+        state, loss, info = train_step(state, *batch.astuple(), eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
+
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
 
 
-def create_batches(data, batch_size):
-    n = len(data) // batch_size
-    data_batched = data[:n*batch_size].reshape(n, batch_size, *data.shape[1:])
-    return data_batched
-
-
-def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_size, log_wandb):
-    train_data_batched = [create_batches(data, batch_size) for data in train_data]
-    test_data_batched = [create_batches(data, batch_size) for data in test_data]
+def fit(state: TrainState,
+        model: TransformerDecoder,
+        checkpoint_manager: orbax.checkpoint.CheckpointManager,
+        train_batch: Batch,
+        test_batch: Batch,
+        epochs: int,
+        batch_size: int,
+        log_wandb: bool
+        ):
+    train_batches = train_batch.divide(batch_size)
+    test_batches = test_batch.divide(batch_size)
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         start = time.perf_counter()
 
-        state, loss_train, info_train = train_epoch(state, train_data_batched, eval=False)
-        _, loss_test, info_test = train_epoch(state, test_data_batched, eval=True)
+        state, loss_train, info_train = train_epoch(state, train_batches, eval=False)
+        _, loss_test, info_test = train_epoch(state, test_batches, eval=True)
 
         elapsed_time = time.perf_counter() - start
 
@@ -179,13 +188,8 @@ def fit(state, model, checkpoint_manager, train_data, test_data, epochs, batch_s
     return state
 
 
-def main_train(data, log_wandb=False):
-    train_n = int(len(data[0]) * 0.8)
-
-    train_data = [d[:train_n] for d in data]
-    test_data = [d[train_n:] for d in data]
-
-    key, key1, key2 = random.split(random.PRNGKey(0), 3)
+def main_train(batch: Batch, log_wandb=False):
+    train_batch, test_batch = batch.split(0.8)
 
     heads = 4,
     dims = 256,
@@ -201,17 +205,17 @@ def main_train(data, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n, is_linear_attention=False)
+        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n)
 
-        variables = model.init(key1, data[0][:1])
+        variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
         state = TrainState.create(
             apply_fn=model.apply,
             params=variables['params'],
             tx=optax.adam(learning_rate=0.0005),
-            dropout_rng=key2,
+            dropout_rng=random.PRNGKey(0),
             epoch=0)
 
-        ckpt_dir = f'./checkpoints/{h}_{d}_{n}_run-2'
+        ckpt_dir = f'./data/checkpoints/{h}_{d}_{n}'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
@@ -220,9 +224,9 @@ def main_train(data, log_wandb=False):
         Checkpoint(state, model).save(checkpoint_manager)
 
         state = fit(state, model, checkpoint_manager,
-                    train_data=train_data,
-                    test_data=test_data,
-                    epochs=8, batch_size=64,
+                    train_batch=train_batch,
+                    test_batch=test_batch,
+                    epochs=12, batch_size=64,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -230,12 +234,8 @@ def main_train(data, log_wandb=False):
 
 
 def main():
-    batch = load_batch(['replay_buffer/run-2-e.npz'], shuffle=False)
-    print(np.mean(np.sum(batch.mask, axis=1)))
-    data = batch.astuple()
-
-    print(data[0].shape)
-    # main_train(data)
+    batch = load_batch(['./data/replay_buffer/189.npz'], shuffle=True)
+    main_train(batch)
 
 
 if __name__ == "__main__":

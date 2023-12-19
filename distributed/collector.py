@@ -101,7 +101,7 @@ def start(
         learner_request_queue: multiprocessing.Queue,
 ):
     buffer = ReplayBuffer(buffer_size, seq_length=200)
-    buffer.load('replay_buffer/189.npz')
+    buffer.load('./data/replay_buffer/189.npz')
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
@@ -118,6 +118,8 @@ def start(
         is_league_member, win_rate = match_maker.is_winning_all_agents(fsp_threshold)
         if is_league_member:
             match_maker.add_agent()
+
+        print(win_rate)
 
         log_dict = {}
 

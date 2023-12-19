@@ -3,7 +3,7 @@ import numpy as np
 import orbax.checkpoint
 
 import mcts
-import geister as game
+import env.state as game
 import game_analytics
 import server_util
 from network_transformer import TransformerDecoderWithCache

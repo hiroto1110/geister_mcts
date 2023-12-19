@@ -1,5 +1,5 @@
 import numpy as np
-import geister_state as game
+import env.state as game
 
 COLOR_NAMES = 'rbu'
 CAPTURED_COLOR_NAMES = 'RB'

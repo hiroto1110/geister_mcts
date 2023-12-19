@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass, astuple, field
 
 import numpy as np
-import geister_state as game
+import env.state as game
 
 
 @dataclass
@@ -40,13 +40,25 @@ class Batch:
         with np.load(path) as data:
             return Batch(data['t'], data['p'], data['r'], data['c'])
 
-    def divide(self, num_division: int) -> tuple["Batch"]:
-        assert len(self) % num_division == 0
+    def split(self, r: float) -> tuple['Batch', 'Batch']:
+        assert 0 < r < 1
+
+        n = int(len(self) * r)
 
         indices = np.arange(len(self))
-        indices = indices.reshape(num_division, -1)
 
-        return tuple([self.create_batch_from_indices(i) for i in indices])
+        b1 = self.create_batch_from_indices(indices[:n])
+        b2 = self.create_batch_from_indices(indices[n:])
+
+        return b1, b2
+
+    def divide(self, batch_size: int) -> list["Batch"]:
+        n = len(self) // batch_size
+
+        indices = np.arange(n * batch_size)
+        indices = indices.reshape(n, -1)
+
+        return [self.create_batch_from_indices(i) for i in indices]
 
     def create_minibatch(self, batch_size: int) -> "Batch":
         indices = np.random.choice(range(self.tokens.shape[0]), size=batch_size)
@@ -181,9 +193,7 @@ def load_batch(file_names, shuffle: bool):
     reward = reward[indices]
     colors = colors[indices]
 
-    mask = np.any(tokens != 0, axis=2)
-
-    return Batch(tokens, mask, policy, reward, colors)
+    return Batch(tokens, policy, reward, colors)
 
 
 def save_batch(batch: Batch, file_name):

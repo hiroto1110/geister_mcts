@@ -26,7 +26,7 @@ import collector
 @click.option(
         "--ckpt_dir", "-d",
         type=str,
-        default="/home/kuramitsu/lab/geister/checkpoints/test-3/"
+        default="/home/kuramitsu/lab/geister/data/checkpoints/test-3/"
 )
 def main(
     ip: str,

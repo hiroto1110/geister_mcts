@@ -3,8 +3,8 @@ from enum import Flag, auto
 import numpy as np
 import termcolor
 
-import geister_state as game
-import geister_objective_lib
+import env.state as game
+import env.checkmate_objective_lib
 
 
 class WatershedMomentType(Flag):
@@ -28,7 +28,7 @@ def func(state1: game.SimulationState, state2: game.SimulationState, player: int
         if state1.winner != 0:
             e[i] = state1.winner * player
         else:
-            _, e[i] = geister_objective_lib.find_checkmate(
+            _, e[i] = env.checkmate_objective_lib.find_checkmate(
                 state1.pieces_p, state1.color_p,
                 state1.pieces_o, state2.color_p,
                 -player, 1, 6
