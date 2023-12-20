@@ -111,14 +111,14 @@ def main(
     collecor_process.start()
 
     while True:
-        log_dict: dict = learner_request_queue.get()
+        log_dict, is_league_member = learner_request_queue.get()
         minibatch = buffer.Batch.from_npz(minibatch_temp_path)
 
         state, train_log_dict = train(state, minibatch, num_batches, batch_size)
 
         log_dict.update(train_log_dict)
 
-        Checkpoint(state, model).save(checkpoint_manager)
+        Checkpoint(state, model, is_league_member).save(checkpoint_manager)
 
         learner_update_queue.put(state.epoch)
 

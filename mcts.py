@@ -15,7 +15,7 @@ import env.state as game
 import game_analytics
 import env.checkmate_lib as checkmate_lib
 from network.transformer import TransformerDecoderWithCache
-from buffer import Sample
+from buffer import Batch
 import gat.server_util
 import env.naotti2020 as naotti2020
 
@@ -516,14 +516,14 @@ class PlayerMCTS:
             self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
         self.tokens += tokens
 
-    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Sample:
+    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Batch:
         tokens = np.zeros((200, 5), dtype=np.uint8)
         tokens[:min(200, len(self.tokens))] = self.tokens[:200]
 
         actions = actions[tokens[:, 4]]
         reward = 3 + int(self.state.winner * self.state.win_type.value)
 
-        return Sample(tokens, actions, reward, true_color_o)
+        return Batch(tokens, actions, reward, true_color_o)
 
 
 class PlayerNaotti2020:

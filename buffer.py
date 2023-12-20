@@ -6,14 +6,6 @@ import env.state as game
 
 
 @dataclass
-class Sample:
-    tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    reward: int = 0
-    colors: np.ndarray = field(default_factory=lambda: np.zeros(0))
-
-
-@dataclass
 class Batch:
     tokens: np.ndarray = field(default_factory=lambda: np.zeros(0))
     policy: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -25,6 +17,15 @@ class Batch:
 
     def astuple(self):
         return astuple(self)
+
+    @classmethod
+    def stack(cls, samples: list['Batch']) -> 'Batch':
+        tokens = np.stack([sample.tokens for sample in samples])
+        policy = np.stack([sample.policy for sample in samples])
+        reward = np.stack([sample.reward for sample in samples])
+        colors = np.stack([sample.colors for sample in samples])
+
+        return Batch(tokens, policy, reward, colors)
 
     def to_npz(self, path):
         save_dict = {
@@ -74,16 +75,20 @@ class Batch:
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size: int, seq_length: int, file_name: str = None):
+    def __init__(
+            self,
+            buffer_size: int,
+            sample_shape: tuple,
+            seq_length: int
+            ):
         self.buffer_size = buffer_size
-        self.file_name = file_name
         self.index = 0
         self.n_samples = 0
 
-        self.tokens_buffer = np.zeros((buffer_size, seq_length, game.TOKEN_SIZE), dtype=np.uint8)
-        self.policy_buffer = np.zeros((buffer_size, seq_length), dtype=np.uint8)
-        self.reward_buffer = np.zeros((buffer_size, 1), dtype=np.int8)
-        self.colors_buffer = np.zeros((buffer_size, 8), dtype=np.uint8)
+        self.tokens = np.zeros((buffer_size, *sample_shape, seq_length, game.TOKEN_SIZE), dtype=np.uint8)
+        self.policy = np.zeros((buffer_size, *sample_shape, seq_length), dtype=np.uint8)
+        self.reward = np.zeros((buffer_size, *sample_shape, 1), dtype=np.int8)
+        self.colors = np.zeros((buffer_size, *sample_shape, 8), dtype=np.uint8)
 
     def __len__(self):
         return self.n_samples
@@ -105,30 +110,27 @@ class ReplayBuffer:
         return self.create_batch_from_indices(indices)
 
     def create_batch_from_indices(self, indices):
-        tokens = self.tokens_buffer[indices]
-        policy = self.policy_buffer[indices]
-        reward = self.reward_buffer[indices]
-        colors = self.colors_buffer[indices]
+        tokens = self.tokens[indices]
+        policy = self.policy[indices]
+        reward = self.reward[indices]
+        colors = self.colors[indices]
 
         return Batch(tokens, policy, reward, colors)
 
-    def add_sample(self, sample: Sample):
-        self.tokens_buffer[self.index] = sample.tokens
-        self.policy_buffer[self.index] = sample.policy
-        self.reward_buffer[self.index] = sample.reward
-        self.colors_buffer[self.index] = sample.colors
-
-        if self.file_name is not None and self.index == 0:
-            self.save(self.file_name, append=True)
+    def add_sample(self, sample: Batch):
+        self.tokens[self.index] = sample.tokens
+        self.policy[self.index] = sample.policy
+        self.reward[self.index] = sample.reward
+        self.colors[self.index] = sample.colors
 
         self.n_samples = max(self.n_samples, self.index + 1)
         self.index = (self.index + 1) % self.buffer_size
 
     def save(self, file_name: str, append: bool):
-        tokens = self.tokens_buffer
-        policy = self.policy_buffer
-        reward = self.reward_buffer
-        colors = self.colors_buffer
+        tokens = self.tokens
+        policy = self.policy
+        reward = self.reward
+        colors = self.colors
 
         if append and os.path.isfile(file_name):
             with np.load(file_name) as data:
@@ -161,46 +163,10 @@ class ReplayBuffer:
 
         indices = indices[-n_samples:]
 
-        self.tokens_buffer[:n_samples] = tokens[indices]
-        self.policy_buffer[:n_samples] = policy[indices]
-        self.reward_buffer[:n_samples] = reward[indices]
-        self.colors_buffer[:n_samples] = colors[indices]
+        self.tokens[:n_samples] = tokens[indices]
+        self.policy[:n_samples] = policy[indices]
+        self.reward[:n_samples] = reward[indices]
+        self.colors[:n_samples] = colors[indices]
 
         self.n_samples = n_samples
         self.index = self.n_samples % self.buffer_size
-
-
-def load_batch(file_names, shuffle: bool):
-    for i, file_name in enumerate(file_names):
-        with np.load(file_name) as data:
-            if i == 0:
-                tokens = data['t']
-                policy = data['p']
-                reward = data['r']
-                colors = data['c']
-            else:
-                tokens = np.concatenate([data['t'], tokens])
-                policy = np.concatenate([data['p'], policy])
-                reward = np.concatenate([data['r'], reward])
-                colors = np.concatenate([data['c'], colors])
-
-    indices = np.arange(tokens.shape[0])
-    if shuffle:
-        np.random.shuffle(indices)
-
-    tokens = tokens[indices]
-    policy = policy[indices]
-    reward = reward[indices]
-    colors = colors[indices]
-
-    return Batch(tokens, policy, reward, colors)
-
-
-def save_batch(batch: Batch, file_name):
-    save_dict = {
-        't': batch.tokens,
-        'p': batch.policy,
-        'r': batch.reward,
-        'c': batch.colors,
-    }
-    np.savez(file_name, **save_dict)

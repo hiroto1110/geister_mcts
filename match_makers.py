@@ -19,7 +19,10 @@ class MatchMaker:
     def apply_match_result(self, agent_id: int, win: bool):
         pass
 
-    def is_winning_all_agents(self, win_rate_threshold: float) -> bool:
+    def has_enough_matches(self) -> bool:
+        pass
+
+    def get_win_rates(self) -> np.ndarray:
         pass
 
     def add_agent(self):
@@ -62,15 +65,16 @@ class MatchMakerFSP(MatchMaker):
 
         self.agent_match_deques[agent_id].append(int(win))
 
-    def is_winning_all_agents(self, win_rate_threshold: float) -> bool:
-        win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
-        win_rate = np.array(win_rate)
-
+    def has_enough_matches(self) -> bool:
         for match_deque in self.agent_match_deques:
             if len(match_deque) < self.match_buffer_size:
-                return False, win_rate
+                return False
 
-        return np.all(win_rate > win_rate_threshold), win_rate
+        return True
+
+    def get_win_rates(self) -> np.ndarray:
+        win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
+        return np.array(win_rate)
 
     def add_agent(self):
         self.n_agents += 1

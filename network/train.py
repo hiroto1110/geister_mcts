@@ -15,7 +15,7 @@ import optax
 
 import wandb
 
-from buffer import load_batch, Batch
+from buffer import Batch
 from network.transformer import TransformerDecoder, TransformerDecoderWithCache
 
 
@@ -24,10 +24,10 @@ class TrainState(train_state.TrainState):
     dropout_rng: Any
 
     def __getstate__(self):
-        odict = self.__dict__.copy()
-        odict['tx'] = None
-        odict['apply_fn'] = None
-        return odict
+        state_dict = self.__dict__.copy()
+        state_dict['tx'] = None
+        state_dict['apply_fn'] = None
+        return state_dict
 
 
 @dataclasses.dataclass
@@ -234,7 +234,7 @@ def main_train(batch: Batch, log_wandb=False):
 
 
 def main():
-    batch = load_batch(['./data/replay_buffer/189.npz'], shuffle=True)
+    batch = Batch.from_npz('./data/replay_buffer/189.npz')
     main_train(batch)
 
 
