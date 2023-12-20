@@ -10,32 +10,28 @@ import numpy as np
 import jax
 import optax
 import orbax.checkpoint
-import wandb
+# import wandb
 
 from network.train import Checkpoint, TrainState, train_step
 from network.transformer import TransformerDecoder
 import buffer
-import match_makers
-import mcts
 
+from config import RunConfig
 import collector
 
 
 @click.command()
 @click.argument('host', type=str)
 @click.argument('port', type=int)
+@click.argument('config_path', type=str)
 def main(
         host: str,
         port: int,
-        buffer_size=400000,
-        batch_size=64,
-        num_batches=32,
-        update_period=200,
-        fsp_threshold=0.6,
+        config_path: str,
         prev_run_dir: Union[str, None] = None,
         prev_run_step: Union[int, None] = None,
-        minibatch_temp_path='./data/replay_buffer/minibatch.npz',
 ):
+    config = RunConfig.from_json_file(config_path)
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
     if prev_run_dir is not None:
@@ -73,38 +69,19 @@ def main(
 
     ckpt_dir = f'./data/checkpoints/{run_name}/'
 
-    run_config = {
-        "batch_size": batch_size,
-        "num_batches": num_batches,
-    }
-
-    wandb.init(project="geister-zero", name=run_name, config=run_config)
+    # wandb.init(project="geister-s", name=run_name)
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
 
     Checkpoint(state, model).save(checkpoint_manager)
 
-    mcts_params = mcts.SearchParameters(
-        num_simulations=25,
-        dirichlet_alpha=0.3,
-        c_base=25
-    )
-
     ctx = multiprocessing.get_context('spawn')
     learner_update_queue = ctx.Queue(100)
     learner_request_queue = ctx.Queue(100)
 
     collecor_process = ctx.Process(target=collector.main, args=(
-        host, port,
-        buffer_size,
-        batch_size * num_batches,
-        update_period,
-        match_makers.MatchMakerFSP(n_agents=1, selfplay_p=0.3, match_buffer_size=2000, p=6),
-        fsp_threshold,
-        mcts_params,
-        ckpt_dir,
-        minibatch_temp_path,
+        host, port, config,
         learner_update_queue,
         learner_request_queue,
     ))
@@ -112,9 +89,9 @@ def main(
 
     while True:
         log_dict, is_league_member = learner_request_queue.get()
-        minibatch = buffer.Batch.from_npz(minibatch_temp_path)
+        minibatch = buffer.Batch.from_npz(config.minibatch_temp_path)
 
-        state, train_log_dict = train(state, minibatch, num_batches, batch_size)
+        state, train_log_dict = train(state, minibatch, config.num_batches, config.batch_size)
 
         log_dict.update(train_log_dict)
 
@@ -122,7 +99,7 @@ def main(
 
         learner_update_queue.put(state.epoch)
 
-        wandb.log(log_dict)
+        # wandb.log(log_dict)
 
 
 def train(

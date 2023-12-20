@@ -10,6 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import orbax.checkpoint
 
+from distributed.config import RunConfig
 import distributed.socket_util as socket_util
 
 from buffer import ReplayBuffer, Batch
@@ -174,34 +175,26 @@ def wait_accept(server: socket.socket, client: TcpClient):
 
 def start(
         server: socket.socket,
-        series_length: int,
-        buffer_size: int,
-        batch_size: int,
-        update_period: int,
-        save_period: int,
-        match_maker: match_makers.MatchMaker,
-        fsp_threshold: float,
-        mcts_params: mcts.SearchParameters,
-        ckpt_dir: str,
-        minibatch_temp_path: str,
+        config: RunConfig,
         learner_update_queue: multiprocessing.Queue,
         learner_request_queue: multiprocessing.Queue,
 ):
     buffer = ReplayBuffer(
-        buffer_size,
-        sample_shape=(series_length,),
+        config.buffer_size,
+        sample_shape=(config.series_length,),
         seq_length=200
     )
     # buffer.load('./data/replay_buffer/189.npz')
 
-    match_series_manager = MatchSeriesManager(match_maker, series_length, fsp_threshold)
+    match_maker = config.match_maker.create_match_maker()
+    match_series_manager = MatchSeriesManager(match_maker, config.series_length, config.fsp_threshold)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer)
 
     match_result_queue = queue.Queue()
 
-    client = TcpClient(match_maker, match_result_queue, mcts_params)
+    client = TcpClient(match_maker, match_result_queue, config.mcts_params)
     client.ckpt = Checkpoint.load(checkpoint_manager, checkpoint_manager.latest_step())
 
     thread = threading.Thread(target=wait_accept, args=(server, client))
@@ -211,7 +204,7 @@ def start(
 
     for s in range(1000000):
         # recv_match_result
-        for i in tqdm(range(update_period), desc='Collecting'):
+        for i in tqdm(range(config.update_period), desc='Collecting'):
             series_batch = None
 
             while series_batch is None:
@@ -220,7 +213,7 @@ def start(
 
             buffer.add_sample(series_batch)
 
-        if s % save_period == 0:
+        if s % config.save_period == 0:
             buffer.save(append=True)
 
         if is_waiting_parameter_update:
@@ -238,26 +231,19 @@ def start(
                     log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
 
             # send_training_minibatch
-            batch = buffer.get_minibatch(batch_size)
-            batch.to_npz(minibatch_temp_path)
+            batch = buffer.get_minibatch(config.batch_size)
+            batch.to_npz(config.minibatch_temp_path)
             learner_request_queue.put((log_dict, is_league_member))
 
             is_waiting_parameter_update = True
 
 
 def main(
-    host: str,
-    port: int,
-    buffer_size: int,
-    batch_size: int,
-    update_period: int,
-    match_maker: match_makers.MatchMaker,
-    fsp_threshold: float,
-    mcts_params: mcts.SearchParameters,
-    ckpt_dir: str,
-    minibatch_temp_path: str,
-    learner_update_queue: multiprocessing.Queue,
-    learner_request_queue: multiprocessing.Queue,
+        host: str,
+        port: int,
+        config: RunConfig,
+        learner_update_queue: multiprocessing.Queue,
+        learner_request_queue: multiprocessing.Queue,
 ):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -267,14 +253,7 @@ def main(
 
         start(
             server,
-            buffer_size,
-            batch_size,
-            update_period,
-            match_maker,
-            fsp_threshold,
-            mcts_params,
-            ckpt_dir,
-            minibatch_temp_path,
+            config,
             learner_update_queue,
             learner_request_queue
         )

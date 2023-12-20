@@ -1,6 +1,6 @@
 from functools import partial
 from typing import List, Any, Callable
-from dataclasses import dataclass, replace, field
+from dataclasses import dataclass, replace
 
 import numpy as np
 import jax
@@ -47,7 +47,6 @@ class SearchParameters:
     c_base: int = 19652
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
-    v_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -181,7 +180,7 @@ def expand_afterstate(node: Node,
                       params: SearchParameters):
     next_node = AfterStateNode(afterstates)
 
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
+    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -208,7 +207,7 @@ def expand(node: Node,
 
         return next_node, next_node.winner
 
-    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k, params.v_weight)
+    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -244,7 +243,7 @@ def try_expand_checkmate(node: Node,
     return True, next_node, v
 
 
-def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck, v_weight):
+def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
@@ -259,7 +258,7 @@ def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck, v_weight):
     node.cache_v = cv
     node.cache_k = ck
 
-    v = np.sum(v * v_weight)
+    v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
 
     return jax.device_get(v), jax.device_get(pi)
 
