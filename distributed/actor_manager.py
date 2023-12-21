@@ -4,6 +4,7 @@ import pickle
 import click
 
 import numpy as np
+import jax
 import orbax.checkpoint
 
 import distributed.socket_util as socket_util
@@ -56,8 +57,13 @@ def main(
     match_result_queue = ctx.Queue(100)
     ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
-    for i in range(n_clients * 2):
-        match_request_queue.put(0)
+    socket_util.send_msg(sock, pickle.dumps(n_clients))
+    data = socket_util.recv_msg(sock)
+    matches: list[collector.MatchInfo] = pickle.loads(data)
+    print(matches)
+
+    for match in matches:
+        match_request_queue.put(match)
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
@@ -73,22 +79,25 @@ def main(
 
     while True:
         result: collector.MatchResult = match_result_queue.get()
-        result_msg = collector.MessageMatchResult(result, ckpt.state.epoch)
+        result_msg = collector.MessageMatchResult(result, ckpt.step)
 
         socket_util.send_msg(sock, pickle.dumps(result_msg))
 
         data = socket_util.recv_msg(sock)
         msg: collector.MessageNextMatch = pickle.loads(data)
 
-        match_request_queue.put(msg.next_match.agent_id)
+        match_request_queue.put(msg.next_match)
 
         if msg.ckpt is not None:
             ckpt = msg.ckpt
 
             ckpt.save(checkpoint_manager)
+
             for ckpt_queue in ckpt_queues:
-                ckpt_queue.put(ckpt.state.epoch)
+                ckpt_queue.put(ckpt.step)
 
 
 if __name__ == '__main__':
-    main()
+    jax.config.update('jax_platform_name', 'cpu')
+    with jax.default_device(jax.devices("cpu")[0]):
+        main()

@@ -18,6 +18,14 @@ class Batch:
     def astuple(self):
         return astuple(self)
 
+    def reshape(self, shape: tuple) -> 'Batch':
+        tokens = self.tokens.reshape((*shape, -1, game.TOKEN_SIZE))
+        policy = self.policy.reshape((*shape, -1))
+        reward = self.reward.reshape((*shape, -1))
+        colors = self.colors.reshape((*shape, -1))
+
+        return Batch(tokens, policy, reward, colors)
+
     @classmethod
     def stack(cls, samples: list['Batch']) -> 'Batch':
         tokens = np.stack([sample.tokens for sample in samples])
@@ -93,8 +101,11 @@ class ReplayBuffer:
     def __len__(self):
         return self.n_samples
 
+    def get_last_indices(self, n: int) -> np.ndarray:
+        return (self.index - n + np.arange(n)) % self.buffer_size
+
     def get_last_minibatch(self, batch_size):
-        indices = (self.index - batch_size + np.arange(batch_size)) % self.buffer_size
+        indices = self.get_last_indices(batch_size)
         return self.create_batch_from_indices(indices)
 
     def get_minibatch(self, batch_size):
@@ -126,11 +137,17 @@ class ReplayBuffer:
         self.n_samples = max(self.n_samples, self.index + 1)
         self.index = (self.index + 1) % self.buffer_size
 
-    def save(self, file_name: str, append: bool):
-        tokens = self.tokens
-        policy = self.policy
-        reward = self.reward
-        colors = self.colors
+    def save(self, file_name: str, append: bool, indices: np.ndarray = None):
+        if indices is not None:
+            tokens = self.tokens[indices]
+            policy = self.policy[indices]
+            reward = self.reward[indices]
+            colors = self.colors[indices]
+        else:
+            tokens = self.tokens
+            policy = self.policy
+            reward = self.reward
+            colors = self.colors
 
         if append and os.path.isfile(file_name):
             with np.load(file_name) as data:
@@ -156,17 +173,12 @@ class ReplayBuffer:
             reward = data['r']
             colors = data['c']
 
-        mask = np.any(colors != 0, axis=1)
-        indices = np.arange(len(colors))[mask]
+        n_samples = min(len(tokens), self.buffer_size)
 
-        n_samples = min(len(indices), self.buffer_size)
-
-        indices = indices[-n_samples:]
-
-        self.tokens[:n_samples] = tokens[indices]
-        self.policy[:n_samples] = policy[indices]
-        self.reward[:n_samples] = reward[indices]
-        self.colors[:n_samples] = colors[indices]
+        self.tokens[:n_samples] = tokens[-n_samples:]
+        self.policy[:n_samples] = policy[-n_samples:]
+        self.reward[:n_samples] = reward[-n_samples:]
+        self.colors[:n_samples] = colors[-n_samples:]
 
         self.n_samples = n_samples
         self.index = self.n_samples % self.buffer_size

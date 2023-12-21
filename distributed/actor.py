@@ -1,4 +1,5 @@
 import os
+import time
 import multiprocessing
 
 
@@ -34,41 +35,38 @@ def start_selfplay_process(
         step = checkpoint_manager.latest_step()
         ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
 
-        params_checkpoints = [ckpt.state.params]
+        params_checkpoints = {-1: None, 0: None}
 
         while True:
-            print("start")
-            agent_id = match_request_queue.get()
-            if agent_id >= len(params_checkpoints):
-                agent_id = len(params_checkpoints) - 1
-                print("agent_id is out of range")
-            print("agent:", agent_id)
+            start_t = time.perf_counter()
 
-            player1 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
+            match: collector.MatchInfo = match_request_queue.get()
+            if match.agent_id not in params_checkpoints:
+                ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+                params_checkpoints[match.agent_id] = ckpt.params
 
-            if agent_id == match_makers.SELFPLAY_ID:
-                player2 = mcts.PlayerMCTS(ckpt.state.params, ckpt.model, mcts_params)
-            elif agent_id == 0:
+            elapsed_t = time.perf_counter() - start_t
+            print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.agent_id}, series={match.series_id})")
+
+            player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+
+            if match.agent_id == match_makers.SELFPLAY_ID:
+                player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+            elif match.agent_id == 0:
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
             else:
-                player2 = mcts.PlayerMCTS(params_checkpoints[agent_id], ckpt.model, mcts_params)
-
-            print("play game")
+                player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params)
 
             if np.random.random() > 0.5:
                 actions, color1, color2 = mcts.play_game(player1, player2)
             else:
                 actions, color2, color1 = mcts.play_game(player2, player1)
-            print("finished game")
 
             sample1 = player1.create_sample(actions, color2)
 
-            match_result_queue.put(collector.MatchResult(sample1, agent_id))
+            match_result_queue.put(collector.MatchResult(sample1, match.series_id, match.agent_id))
 
             if not ckpt_queue.empty():
                 step = ckpt_queue.get()
-
-                # print(f'update: {step}')
                 ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
-                if ckpt.is_league_member:
-                    params_checkpoints.append(ckpt.state.params)
+                print(f'update: {step}')

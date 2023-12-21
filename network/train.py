@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 import jax
 from jax import random, numpy as jnp
+from flax.core.frozen_dict import FrozenDict
 from flax.training import train_state
 from flax.training import orbax_utils
 import orbax.checkpoint
@@ -32,18 +33,21 @@ class TrainState(train_state.TrainState):
 
 @dataclasses.dataclass
 class Checkpoint:
-    state: TrainState
+    step: int
+    params: FrozenDict
     model: TransformerDecoder
-    is_league_member: bool = False
 
     def asdict(self):
-        return dataclasses.asdict(self)
+        return {
+            'step': self.step,
+            'params': self.params,
+            'model': dataclasses.asdict(self.model),
+        }
 
     @classmethod
     def from_dict(
         cls,
         ckpt_dict: dict,
-        tx: optax.GradientTransformation = optax.adam(learning_rate=0.0005),
         is_caching_model: bool = False
     ) -> 'Checkpoint':
         if not is_caching_model:
@@ -51,33 +55,25 @@ class Checkpoint:
         else:
             model = TransformerDecoderWithCache(**ckpt_dict['model'])
 
-        state = TrainState.create(
-            apply_fn=model.apply,
-            params=ckpt_dict['state']['params'],
-            tx=tx,
-            dropout_rng=ckpt_dict['state']['dropout_rng'],
-            epoch=ckpt_dict['state']['epoch']
-        )
+        step = ckpt_dict['step']
+        params = ckpt_dict['params']
 
-        is_league_member = ckpt_dict['is_league_member']
-
-        return Checkpoint(state, model, is_league_member)
+        return Checkpoint(step, params, model)
 
     @classmethod
     def load(
         cls,
         checkpoint_manager: orbax.checkpoint.CheckpointManager,
         step: int,
-        tx: optax.GradientTransformation = optax.adam(learning_rate=0.0005),
         is_caching_model: bool = False
     ) -> 'Checkpoint':
         ckpt = checkpoint_manager.restore(step)
-        return Checkpoint.from_dict(ckpt, tx=tx, is_caching_model=is_caching_model)
+        return Checkpoint.from_dict(ckpt, is_caching_model=is_caching_model)
 
     def save(self, checkpoint_manager: orbax.checkpoint.CheckpointManager):
         ckpt = self.asdict()
         save_args = orbax_utils.save_args_from_target(ckpt)
-        checkpoint_manager.save(self.state.epoch, ckpt, save_kwargs={'save_args': save_args})
+        checkpoint_manager.save(self.step, ckpt, save_kwargs={'save_args': save_args})
 
 
 @partial(jax.jit, static_argnames=['eval'])
@@ -183,7 +179,7 @@ def fit(state: TrainState,
             wandb.log(log_dict)
 
         state = state.replace(epoch=state.epoch + 1)
-        Checkpoint(state, model).save(checkpoint_manager)
+        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
 
     return state
 
@@ -215,18 +211,18 @@ def main_train(batch: Batch, log_wandb=False):
             dropout_rng=random.PRNGKey(0),
             epoch=0)
 
-        ckpt_dir = f'./data/checkpoints/{h}_{d}_{n}'
+        ckpt_dir = f'./data/checkpoints/test_{h}_{d}_{n}'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
 
-        Checkpoint(state, model).save(checkpoint_manager)
+        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
 
         state = fit(state, model, checkpoint_manager,
                     train_batch=train_batch,
                     test_batch=test_batch,
-                    epochs=12, batch_size=64,
+                    epochs=12, batch_size=256,
                     log_wandb=log_wandb)
 
         if log_wandb:

@@ -1,16 +1,13 @@
-from typing import Union
-import os
 import multiprocessing
 
 from tqdm import tqdm
-import glob
 import click
 
 import numpy as np
 import jax
 import optax
 import orbax.checkpoint
-# import wandb
+import wandb
 
 from network.train import Checkpoint, TrainState, train_step
 from network.transformer import TransformerDecoder
@@ -21,25 +18,26 @@ import collector
 
 
 @click.command()
+@click.argument('config_path', type=str)
 @click.argument('host', type=str)
 @click.argument('port', type=int)
-@click.argument('config_path', type=str)
 def main(
-        host: str,
-        port: int,
         config_path: str,
-        prev_run_dir: Union[str, None] = None,
-        prev_run_step: Union[int, None] = None,
+        host: str,
+        port: int
 ):
     config = RunConfig.from_json_file(config_path)
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
-    if prev_run_dir is not None:
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(prev_run_dir, checkpointer)
-        ckpt = Checkpoint.load(checkpoint_manager, prev_run_step, tx=optax.adam(learning_rate=0.0005))
+    if not config.init_checkpoint_config.init_random:
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(config.init_checkpoint_config.dir_name, checkpointer)
+        ckpt = Checkpoint.load(
+            checkpoint_manager,
+            step=config.init_checkpoint_config.step
+        )
 
         model = ckpt.model
-        state = ckpt.state
+        params = ckpt.params
     else:
         model = TransformerDecoder(
             num_heads=4,
@@ -49,32 +47,22 @@ def main(
 
         init_data = np.zeros((1, 200, 5), dtype=np.uint8)
         variables = model.init(jax.random.PRNGKey(0), init_data)
+        params = variables['params']
 
-        state = TrainState.create(
-            apply_fn=model.apply,
-            params=variables['params'],
-            tx=optax.adam(learning_rate=0.0005),
-            dropout_rng=jax.random.PRNGKey(0),
-            epoch=0
-        )
+    state = TrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        tx=optax.adam(learning_rate=0.0005),
+        dropout_rng=jax.random.PRNGKey(0),
+        epoch=0
+    )
 
-    run_list = glob.glob("./data/checkpoints/run-*/")
-
-    if len(run_list) > 0:
-        max_run_number = max([int(os.path.dirname(run)[-1]) for run in run_list])
-        run_name = f'run-{max_run_number + 1}'
-    else:
-        run_name = 'run-0'
-    # run_name = 'run-3'
-
-    ckpt_dir = f'./data/checkpoints/{run_name}/'
-
-    # wandb.init(project="geister-s", name=run_name)
+    wandb.init(project="geister-s")
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer, options)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options)
 
-    Checkpoint(state, model).save(checkpoint_manager)
+    Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
 
     ctx = multiprocessing.get_context('spawn')
     learner_update_queue = ctx.Queue(100)
@@ -88,31 +76,31 @@ def main(
     collecor_process.start()
 
     while True:
-        log_dict, is_league_member = learner_request_queue.get()
+        log_dict = learner_request_queue.get()
         minibatch = buffer.Batch.from_npz(config.minibatch_temp_path)
+        minibatch = minibatch.reshape((config.batch_size * config.series_length * config.num_batches,))
 
-        state, train_log_dict = train(state, minibatch, config.num_batches, config.batch_size)
+        state, train_log_dict = train(state, minibatch, config.batch_size)
 
         log_dict.update(train_log_dict)
 
-        Checkpoint(state, model, is_league_member).save(checkpoint_manager)
+        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
 
         learner_update_queue.put(state.epoch)
 
-        # wandb.log(log_dict)
+        wandb.log(log_dict)
 
 
 def train(
         state: TrainState,
         train_batch: buffer.Batch,
-        num_batches: int,
         batch_size: int
         ) -> tuple[TrainState, dict]:
+    train_batches = train_batch.divide(batch_size)
+    num_batches = len(train_batches)
 
     info = np.zeros((num_batches, 3))
     loss = 0
-
-    train_batches = train_batch.divide(batch_size)
 
     for i in tqdm(range(num_batches), desc=' Training '):
         state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False)

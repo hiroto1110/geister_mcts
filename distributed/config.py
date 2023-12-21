@@ -21,6 +21,13 @@ class MatchMakerConfig:
                 raise NotImplementedError()
 
 
+@dataclass
+class InitCheckpointConfig:
+    init_random: bool
+    dir_name: str
+    step: int
+
+
 @serialize
 @deserialize
 @dataclass
@@ -30,12 +37,12 @@ class RunConfig:
     num_batches: int
     buffer_size: int
     update_period: int
-    save_period: int
     match_maker: MatchMakerConfig
     fsp_threshold: float
     mcts_params: mcts.SearchParameters
     ckpt_dir: str
-    minibatch_temp_path: str
+    init_checkpoint_config: InitCheckpointConfig
+    minibatch_temp_path: str = './data/replay_buffer/minibatch_tmp.npz'
 
     @classmethod
     def from_json_file(cls, path) -> 'RunConfig':

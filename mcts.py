@@ -243,7 +243,7 @@ def try_expand_checkmate(node: Node,
     return True, next_node, v
 
 
-def setup_node(node: Node, pred_state: PredictState, tokens, cv, ck):
+def setup_node(node: Node, pred_state: PredictState, tokens: list, cv, ck):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
@@ -278,13 +278,14 @@ def simulate_afterstate(node: AfterStateNode,
         if len(node.remaining_afterstates) > 0:
             child, v = expand_afterstate(node, tokens, node.remaining_afterstates, state, pred_state, params)
 
-        elif not state.is_done:
+        elif len(tokens) == 0 or state.is_done:
+            child, v = expand(node, tokens, state, pred_state, params)
+
+        else:
             exists_checkmate, child, v = try_expand_checkmate(node, tokens, state, player, pred_state, params)
 
             if not exists_checkmate:
                 child, v = expand(node, tokens, state, pred_state, params)
-        else:
-            child, v = expand(node, tokens, state, pred_state, params)
 
         node.children[color] = child
     else:
@@ -297,8 +298,9 @@ def simulate_afterstate(node: AfterStateNode,
 
     state.undo_step_afterstate(node.afterstate)
 
-    node.n[color] += 1
-    node.w[color] += v
+    if v is not None:
+        node.n[color] += 1
+        node.w[color] += v
 
     return v
 
@@ -475,7 +477,7 @@ def create_root_node(state: game.SimulationState,
 
     tokens = state.create_init_tokens()
 
-    setup_node(node, pred_state, tokens, cv, ck, 1)
+    setup_node(node, pred_state, tokens, cv, ck)
 
     return node, tokens
 
@@ -521,6 +523,7 @@ class PlayerMCTS:
 
         actions = actions[tokens[:, 4]]
         reward = 3 + int(self.state.winner * self.state.win_type.value)
+        reward = np.array([reward])
 
         return Batch(tokens, actions, reward, true_color_o)
 

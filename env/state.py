@@ -97,7 +97,7 @@ class SimulationState:
             pos = self.pieces_o[afterstate.piece_id]
 
             return [(
-                color + 2,
+                4,
                 afterstate.piece_id + 8,
                 pos % 6,
                 pos // 6,
