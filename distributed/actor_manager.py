@@ -42,7 +42,6 @@ def main(
 
     data = socket_util.recv_msg(sock)
     mcts_params: mcts.SearchParameters = pickle.loads(data)
-    print(mcts_params)
 
     data = socket_util.recv_msg(sock)
     ckpt: Checkpoint = pickle.loads(data)

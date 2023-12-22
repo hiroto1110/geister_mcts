@@ -18,6 +18,7 @@ from buffer import ReplayBuffer, Batch
 from network.train import Checkpoint
 import mcts
 import match_makers
+import training_logger
 
 
 @dataclass
@@ -261,29 +262,29 @@ def start(
 
             buffer.add_sample(series_batch)
 
-        buffer.save(
+        last_batch = buffer.get_last_minibatch(config.update_period)
+        last_batch.save(
             file_name='./data/replay_buffer/run-3.npz',
-            append=True,
-            indices=buffer.get_last_indices(config.update_period)
+            append=True
         )
+
+        win_rate = match_series_manager.next_step(client.ckpt.step)
+        print(win_rate)
 
         if is_waiting_parameter_update:
             # recv_updated_params
             step: int = learner_update_queue.get()
             client.ckpt = Checkpoint.load(checkpoint_manager, step)
 
-        win_rate = match_series_manager.next_step(client.ckpt.step)
-        print(win_rate)
-
         if len(buffer) >= config.batch_size:
-            log_dict = {}
-            for i in range(len(win_rate)):
-                if win_rate[i] > 0:
-                    log_dict[f'fsp/win_rate_{i}'] = win_rate[i]
+            log_dict = training_logger.create_log(
+                win_rates=win_rate,
+                last_games=last_batch
+            )
 
             # send_training_minibatch
-            batch = buffer.get_minibatch(config.batch_size * config.num_batches)
-            batch.to_npz(config.minibatch_temp_path)
+            train_batch = buffer.get_minibatch(config.batch_size * config.num_batches)
+            train_batch.to_npz(config.minibatch_temp_path)
             learner_request_queue.put(log_dict)
 
             is_waiting_parameter_update = True

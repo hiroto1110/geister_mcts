@@ -81,6 +81,27 @@ class Batch:
 
         return Batch(tokens, policy, reward, colors)
 
+    def save(self, file_name: str, append: bool):
+        tokens = self.tokens
+        policy = self.policy
+        reward = self.reward
+        colors = self.colors
+
+        if append and os.path.isfile(file_name):
+            with np.load(file_name) as data:
+                tokens = np.concatenate([data['t'], tokens])
+                policy = np.concatenate([data['p'], policy])
+                reward = np.concatenate([data['r'], reward])
+                colors = np.concatenate([data['c'], colors])
+
+        save_dict = {
+            't': tokens,
+            'p': policy,
+            'r': reward,
+            'c': colors,
+        }
+        np.savez(file_name, **save_dict)
+
 
 class ReplayBuffer:
     def __init__(
