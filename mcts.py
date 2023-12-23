@@ -27,13 +27,13 @@ class PredictState(struct.PyTreeNode):
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 # @jax.jit
-def predict(state: PredictState, tokens, cache_v, cache_k):
-    pi, v, c, cv, ck = state.apply_fn({'params': state.params}, tokens, cache_v, cache_k, eval=True)
+def predict(state: PredictState, tokens, cache):
+    pi, v, c, cache = state.apply_fn({'params': state.params}, tokens, cache, eval=True)
 
     v = nn.softmax(v)
     c = nn.sigmoid(c)
 
-    return pi, v, c, cv, ck
+    return pi, v, c, cache
 
 
 @dataclass
@@ -53,25 +53,36 @@ class SearchParameters:
         return replace(self, **args)
 
 
-class Node:
-    def __init__(self) -> None:
-        self.has_afterstate = False
+class NodeBase:
+    def __init__(self, action_space: int, has_afterstate: bool) -> None:
+        self.children: list[Node] = [None] * action_space
+        self.p = np.zeros(action_space)
+        self.w = np.zeros(action_space)
+        self.n = np.zeros(action_space, dtype=np.int16)
+
+        self.has_afterstate = has_afterstate
+
         self.winner = 0
 
         self.state_str = ""
 
-        self.cache_v = None
-        self.cache_k = None
+        self.cache: jnp.ndarray = None
+        self.predicted_color: jnp.ndarray = None
+        self.predicted_v: jnp.ndarray = None
+
+
+class Node(NodeBase):
+    def __init__(self) -> None:
+        super().__init__(
+            action_space=game.ACTION_SPACE,
+            has_afterstate=False
+        )
+
         self.valid_actions_mask = None
         self.invalid_actions = np.zeros(shape=0, dtype=np.uint8)
 
         self.predicted_color = None
         self.predicted_v = None
-
-        self.children = [None] * game.ACTION_SPACE
-        self.p = np.zeros(game.ACTION_SPACE)
-        self.w = np.zeros(game.ACTION_SPACE)
-        self.n = np.zeros(game.ACTION_SPACE, dtype=np.int16)
 
     def apply_invalid_actions(self):
         if self.valid_actions_mask is None:
@@ -110,26 +121,15 @@ class Node:
         return self.n / self.n.sum()
 
 
-class AfterStateNode:
+class AfterStateNode(NodeBase):
     def __init__(self, afterstates: List[game.Afterstate]):
+        super().__init__(
+            action_space=2,
+            has_afterstate=True
+        )
+
         self.afterstate = afterstates[0]
         self.remaining_afterstates = afterstates[1:]
-        self.has_afterstate = True
-
-        self.winner = 0
-
-        self.state_str = ""
-
-        self.cache_v = None
-        self.cache_k = None
-
-        self.predicted_color = None
-        self.predicted_v = None
-
-        self.children = [None] * 2
-        self.p = np.zeros(2)
-        self.w = np.zeros(2)
-        self.n = np.zeros(2, dtype=np.int16)
 
 
 def visibilize_node_graph(node: Node, g: Digraph):
@@ -180,7 +180,7 @@ def expand_afterstate(node: Node,
                       params: SearchParameters):
     next_node = AfterStateNode(afterstates)
 
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
+    v, _ = setup_node(next_node, pred_state, tokens, node.cache)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -207,7 +207,7 @@ def expand(node: Node,
 
         return next_node, next_node.winner
 
-    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache_v, node.cache_k)
+    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -243,20 +243,19 @@ def try_expand_checkmate(node: Node,
     return True, next_node, v
 
 
-def setup_node(node: Node, pred_state: PredictState, tokens: list, cv, ck):
+def setup_node(node: NodeBase, pred_state: PredictState, tokens: list, cache: jnp.ndarray):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
     for i in range(tokens.shape[0]):
-        pi, v, c, cv, ck = predict(pred_state, tokens[i], cv, ck)
+        pi, v, c, cache = predict(pred_state, tokens[i], cache)
 
     if np.isnan(c).any():
         c = np.full(shape=8, fill_value=0.5)
 
     node.predicted_color = c
     node.predicted_v = v
-    node.cache_v = cv
-    node.cache_k = ck
+    node.cache = cache
 
     v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
 
@@ -473,11 +472,11 @@ def create_root_node(state: game.SimulationState,
                      pred_state: PredictState,
                      model: TransformerDecoderWithCache) -> Node:
     node = Node()
-    cv, ck = model.create_cache(100)
+    cache = model.create_cache(200)
 
     tokens = state.create_init_tokens()
 
-    setup_node(node, pred_state, tokens, cv, ck)
+    setup_node(node, pred_state, tokens, cache)
 
     return node, tokens
 

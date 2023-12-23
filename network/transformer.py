@@ -59,7 +59,7 @@ class MultiHeadAttentionWithCache(nn.Module):
     embed_dim: int
 
     @nn.compact
-    def __call__(self, x, v, k):
+    def __call__(self, x, vk_cache):
         # x: [EmbedDim]
         # v: [SeqLen k, Head, Dim]
         # k: [SeqLen k, Head, Dim]
@@ -71,8 +71,8 @@ class MultiHeadAttentionWithCache(nn.Module):
         k_i = nn.Dense(features=self.embed_dim)(x).reshape(1, self.num_heads, head_dim)
 
         # [SeqLen k, Head, Dim]
-        v = jnp.concatenate((v[1:], v_i), axis=0)
-        k = jnp.concatenate((k[1:], k_i), axis=0)
+        v = jnp.concatenate((vk_cache[0, 1:], v_i), axis=0)
+        k = jnp.concatenate((vk_cache[1, 1:], k_i), axis=0)
 
         mask = jnp.any(v != 0, axis=(1, 2))
 
@@ -88,7 +88,7 @@ class MultiHeadAttentionWithCache(nn.Module):
         # [EmbedDim]
         out_i = nn.Dense(self.embed_dim)(values)
 
-        return out_i, v, k
+        return out_i, jnp.stack([v, k])
 
 
 class FeedForward(nn.Module):
@@ -135,15 +135,15 @@ class TransformerBlockWithCache(nn.Module):
         self.feed_forward = FeedForward(embed_dim=self.embed_dim)
 
     @nn.compact
-    def __call__(self, x, cache1, cache2, eval):
-        out, cache1, cache2 = self.attention(x, cache1, cache2)
+    def __call__(self, x, cache, eval):
+        out, cache = self.attention(x, cache)
 
         x = x + out
         x = nn.LayerNorm()(x)
         x = x + self.feed_forward(x, eval)
         x = nn.LayerNorm()(x)
 
-        return x, cache1, cache2
+        return x, cache
 
 
 class TransformerDecoder(nn.Module):
@@ -163,6 +163,8 @@ class TransformerDecoder(nn.Module):
     def __call__(self, x, eval=True):
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
+        mask = mask * jnp.any(x != 0, axis=-1)[:, jnp.newaxis, jnp.newaxis, :]
+
         x = self.embeddings(x, eval)
 
         for i in range(self.num_hidden_layers):
@@ -191,24 +193,19 @@ class TransformerDecoderWithCache(nn.Module):
     def create_cache(self, seq_len):
         head_dim = self.embed_dim // self.num_heads
 
-        # [Batch, Layer, SeqLen, Head, HeadDim]
-        v = jnp.zeros((self.num_hidden_layers, seq_len, self.num_heads, head_dim))
-        k = jnp.zeros((self.num_hidden_layers, seq_len, self.num_heads, head_dim))
+        # [2, Layer, SeqLen, Head, HeadDim]
+        cache = jnp.zeros((self.num_hidden_layers, 2, seq_len, self.num_heads, head_dim))
 
-        return v, k
+        return cache
 
     @nn.compact
-    def __call__(self, x, cache1, cache2, eval=True):
+    def __call__(self, x: jnp.ndarray, cache: jnp.ndarray, eval=True):
         x = self.embeddings(x, eval)
-
-        next_cache1, next_cache2 = cache1, cache2
 
         i = 0
         for layer in self.layers:
-            x, cache1_i, cache2_i = layer(x, cache1[i], cache2[i], eval=eval)
-
-            next_cache1 = next_cache1.at[i].set(cache1_i)
-            next_cache2 = next_cache2.at[i].set(cache2_i)
+            x, cache_i = layer(x, cache[i], eval=eval)
+            cache = cache.at[i].set(cache_i)
 
             i += 1
 
@@ -218,4 +215,110 @@ class TransformerDecoderWithCache(nn.Module):
         logits_v = nn.Dense(features=7)(x)
         logits_color = nn.Dense(features=8)(x)
 
-        return logits_pi, logits_v, logits_color, next_cache1, next_cache2
+        return logits_pi, logits_v, logits_color, cache
+
+
+class ReccurentMemoryTransformer(nn.Module):
+    num_heads: int
+    embed_dim: int
+    num_hidden_layers: int
+    length_memory_block: int
+    max_n_ply: int = 200
+
+    def setup(self):
+        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
+
+        self.read_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+        self.write_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+
+        self.layers = [TransformerBlock(self.num_heads, self.embed_dim)
+                       for _ in range(self.num_hidden_layers)]
+
+    @nn.compact
+    def __call__(self, x, read_memory=None, eval=True):
+        mem_len = self.length_memory_block
+
+        x_mask = jnp.any(x != 0, axis=-1)
+
+        x = self.embeddings(x, eval)
+
+        write_memory = self.write_memory_embeddings(jnp.arange(mem_len))
+        write_memory = jnp.tile(write_memory, (x.shape[0], 1, 1))
+
+        if read_memory is None:
+            read_memory = jnp.zeros((x.shape[0], mem_len, self.embed_dim))
+
+        read_memory += self.read_memory_embeddings(jnp.arange(mem_len).reshape(1, -1))
+
+        x = jnp.concatenate([read_memory, x, write_memory], axis=1)
+
+        # [Batch, 1, SeqLen, SeqLen]
+        mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
+
+        ones_mask = jnp.ones((x.shape[0], mem_len))
+        x_mask = jnp.concatenate([ones_mask, x_mask, ones_mask], axis=1)
+
+        mask = mask * x_mask[:, jnp.newaxis, jnp.newaxis, :]
+
+        for i in range(self.num_hidden_layers):
+            x = self.layers[i](x, mask, eval=eval)
+        x = nn.Dropout(0.1, deterministic=eval)(x)
+
+        write_memory_out = x[:, -mem_len:]
+        x = x[:, mem_len: -mem_len]
+
+        pi = nn.Dense(features=32)(x)
+        v = nn.Dense(features=7)(x)
+        color = nn.Dense(features=8)(x)
+
+        return pi, v, color, write_memory_out  # [Batch, SeqLen, ...]
+
+
+class RecrrentMemoryTransformerWithCache(nn.Module):
+    num_heads: int
+    embed_dim: int
+    num_hidden_layers: int
+    length_memory_block: int
+    max_n_ply: int = 200
+
+    def setup(self):
+        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
+
+        self.read_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+        self.write_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+
+        self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim)
+                       for _ in range(self.num_hidden_layers)]
+
+    def get_read_memory(self):
+        return self.read_memory_embeddings(jnp.arange(self.length_memory_block))
+
+    def get_write_memory(self):
+        return self.write_memory_embeddings(jnp.arange(self.length_memory_block))
+
+    def create_cache(self, seq_len):
+        head_dim = self.embed_dim // self.num_heads
+
+        # [2, Layer, SeqLen, Head, HeadDim]
+        cache = jnp.zeros((self.num_hidden_layers, 2, seq_len, self.num_heads, head_dim))
+
+        return cache
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, cache: jnp.ndarray, eval=True):
+        x = self.embeddings(x, eval)
+
+        i = 0
+        for layer in self.layers:
+            x, cache_i = layer(x, cache[i], eval=eval)
+            cache = cache.at[i].set(cache_i)
+
+            i += 1
+
+        x = nn.Dropout(0.1, deterministic=eval)(x)
+
+        logits_pi = nn.Dense(features=32)(x)
+        logits_v = nn.Dense(features=7)(x)
+        logits_color = nn.Dense(features=8)(x)
+
+        return x, logits_pi, logits_v, logits_color, cache

@@ -57,7 +57,7 @@ def main(
         epoch=0
     )
 
-    wandb.init(project="geister-s")
+    # wandb.init(project="geister-s")
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options)
@@ -88,7 +88,7 @@ def main(
 
         learner_update_queue.put(state.epoch)
 
-        wandb.log(log_dict)
+        # wandb.log(log_dict)
 
 
 def train(

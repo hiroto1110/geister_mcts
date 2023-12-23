@@ -17,7 +17,7 @@ import optax
 import wandb
 
 from buffer import Batch
-from network.transformer import TransformerDecoder, TransformerDecoderWithCache
+from network.transformer import TransformerDecoder, TransformerDecoderWithCache, ReccurentMemoryTransformer
 
 
 class TrainState(train_state.TrainState):
@@ -76,54 +76,105 @@ class Checkpoint:
         checkpoint_manager.save(self.step, ckpt, save_kwargs={'save_args': save_args})
 
 
-@partial(jax.jit, static_argnames=['eval'])
-def loss_fn(params,
-            state: TrainState,
-            x: jnp.ndarray,
-            y_pi: jnp.ndarray,
-            y_v: jnp.ndarray,
-            y_color: jnp.ndarray,
-            dropout_rng,
-            eval: bool):
-    pi, v, color = state.apply_fn({'params': params}, x, eval=eval,
-                                  rngs={'dropout': dropout_rng})
-
+@jax.jit
+def calc_loss(
+    x: jnp.ndarray,
+    p_pred: jnp.ndarray, v_pred: jnp.ndarray, c_pred: jnp.ndarray,
+    p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     mask = jnp.any(x != 0, axis=2)
 
     # [Batch, SeqLen, 32]
-    y_pi = y_pi.reshape(-1, x.shape[1])
-    y_v = y_v.reshape(-1, 1)
-    y_color = y_color.reshape(-1, 1, 8)
+    p_true = p_true.reshape(-1, x.shape[1])
+    v_true = v_true.reshape(-1, 1)
+    c_true = c_true.reshape(-1, 1, 8)
 
-    loss_pi = optax.softmax_cross_entropy_with_integer_labels(pi, y_pi)
-    loss_v = optax.softmax_cross_entropy_with_integer_labels(v, y_v)
-    loss_color = optax.sigmoid_binary_cross_entropy(color, y_color).mean(axis=2)
+    loss_p = optax.softmax_cross_entropy_with_integer_labels(p_pred, p_true)
+    loss_v = optax.softmax_cross_entropy_with_integer_labels(v_pred, v_true)
+    loss_c = optax.sigmoid_binary_cross_entropy(c_pred, c_true).mean(axis=2)
 
-    loss_pi = jnp.average(loss_pi, weights=mask)
+    loss_p = jnp.average(loss_p, weights=mask)
     loss_v = jnp.average(loss_v, weights=mask)
-    loss_color = jnp.average(loss_color, weights=mask)
+    loss_c = jnp.average(loss_c, weights=mask)
 
-    loss = loss_pi + loss_v + loss_color
+    loss = loss_p + loss_v + loss_c
+    losses = jnp.array([loss_p, loss_v, loss_c])
 
-    info = jnp.array([loss_pi, loss_v, loss_color])
-
-    return loss, info
+    return loss, losses
 
 
 @partial(jax.jit, static_argnames=['eval'])
-def train_step(state: TrainState, x, y_pi, y_v, y_color, eval: bool):
+def loss_fn(
+    params,
+    state: TrainState,
+    x: jnp.ndarray,
+    p_true: jnp.ndarray,
+    v_true: jnp.ndarray,
+    c_true: jnp.ndarray,
+    dropout_rng,
+    eval: bool
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    p, v, c = state.apply_fn(
+        {'params': params},
+        x, eval=eval,
+        rngs={'dropout': dropout_rng}
+    )
+
+    return calc_loss(x, p, v, c, p_true, v_true, c_true)
+
+
+@partial(jax.jit, static_argnames=['eval'])
+def loss_fn_rmt(
+    params,
+    state: TrainState,
+    x: jnp.ndarray,
+    p_true: jnp.ndarray,
+    v_true: jnp.ndarray,
+    c_true: jnp.ndarray,
+    dropout_rng,
+    eval: bool
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    # x: [Batch, Segments, Seq Len, 5]
+    seg_len = x.shape[1]
+
+    loss = jnp.zeros(seg_len, dtype=jnp.float32)
+    losses = jnp.zeros((seg_len, 3))
+
+    memory = None
+
+    for i in range(seg_len):
+        p, v, c, memory = state.apply_fn(
+            {'params': params},
+            x[:, i], read_memory=memory, eval=eval,
+            rngs={'dropout': dropout_rng}
+        )
+
+        loss_i, losses_i = calc_loss(x[:, i], p, v, c, p_true[:, i], v_true[:, i], c_true[:, i])
+
+        loss = loss.at[i].set(loss_i)
+        losses = losses.at[i].set(losses_i)
+
+    return loss.mean(), losses
+
+
+@partial(jax.jit, static_argnames=['eval'])
+def train_step(
+    state: TrainState,
+    x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
+    eval: bool
+) -> tuple[TrainState, jnp.ndarray, jnp.ndarray]:
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
-        (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            state.params, state, x, y_pi, y_v, y_color, dropout_rng, eval)
+        (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+            state.params, state, x, p_true, v_true, c_true, dropout_rng, eval
+        )
 
         new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
     else:
-        loss, info = loss_fn(
-            state.params, state, x, y_pi, y_v, y_color, random.PRNGKey(0), eval)
+        loss, losses = loss_fn(state.params, state, x, p_true, v_true, c_true, random.PRNGKey(0), eval)
         new_state = state
 
-    return new_state, loss, info
+    return new_state, loss, losses
 
 
 def train_epoch(state: TrainState, batches: list[Batch], eval: bool):
@@ -157,11 +208,11 @@ def fit(state: TrainState,
 
         elapsed_time = time.perf_counter() - start
 
-        print(f'Epoch: {epoch}, ', end='')
-        print(f'Loss: ({loss_train:.3f}, {loss_test:.3f}), ', end='')
-        print(f'P: ({info_train[0]:.3f}, {info_test[0]:.3f}), ', end='')
-        print(f'V: ({info_train[1]:.3f}, {info_test[1]:.3f}), ', end='')
-        print(f'C: ({info_train[2]:.3f}, {info_test[2]:.3f})')
+        print(f'Epoch: {epoch}')
+        print(f'Loss: ({loss_train:.3f}, {loss_test:.3f})')
+        print(f'P: ({info_train[0, 0]:.3f}_{info_train[-1, 0]:.3f}, {info_test[0, 0]:.3f}_{info_test[-1, 0]:.3f})')
+        print(f'V: ({info_train[0, 1]:.3f}_{info_train[-1, 1]:.3f}, {info_test[0, 1]:.3f}_{info_test[-1, 1]:.3f})')
+        print(f'C: ({info_train[0, 2]:.3f}_{info_train[-1, 2]:.3f}, {info_test[0, 2]:.3f}_{info_test[-1, 2]:.3f})')
 
         log_dict = {
             'epoch': epoch,
@@ -201,7 +252,8 @@ def main_train(batch: Batch, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n)
+        # model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n)
+        model = ReccurentMemoryTransformer(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
 
         variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
         state = TrainState.create(
@@ -211,7 +263,7 @@ def main_train(batch: Batch, log_wandb=False):
             dropout_rng=random.PRNGKey(0),
             epoch=0)
 
-        ckpt_dir = f'./data/checkpoints/test_{h}_{d}_{n}'
+        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}'
 
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         options = orbax.checkpoint.CheckpointManagerOptions(create=True)
@@ -222,7 +274,7 @@ def main_train(batch: Batch, log_wandb=False):
         state = fit(state, model, checkpoint_manager,
                     train_batch=train_batch,
                     test_batch=test_batch,
-                    epochs=12, batch_size=256,
+                    epochs=16, batch_size=64,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -230,7 +282,8 @@ def main_train(batch: Batch, log_wandb=False):
 
 
 def main():
-    batch = Batch.from_npz('./data/replay_buffer/189.npz')
+    batch = Batch.from_npz('./data/replay_buffer/run-3.npz', shuffle=True)
+
     main_train(batch)
 
 

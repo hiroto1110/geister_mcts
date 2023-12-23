@@ -9,7 +9,8 @@ def start_selfplay_process(
         ckpt_queue: multiprocessing.Queue,
         ckpt_dir: str,
         seed: int,
-        mcts_params
+        mcts_params,
+        series_length: int
 ):
     os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
@@ -46,25 +47,29 @@ def start_selfplay_process(
                 params_checkpoints[match.agent_id] = ckpt.params
 
             elapsed_t = time.perf_counter() - start_t
-            print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.agent_id}, series={match.series_id})")
+            print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.agent_id})")
 
-            player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+            samples = []
 
-            if match.agent_id == match_makers.SELFPLAY_ID:
-                player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
-            elif match.agent_id == 0:
-                player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
-            else:
-                player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params)
+            for i in range(series_length):
+                player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
 
-            if np.random.random() > 0.5:
-                actions, color1, color2 = mcts.play_game(player1, player2)
-            else:
-                actions, color2, color1 = mcts.play_game(player2, player1)
+                if match.agent_id == match_makers.SELFPLAY_ID:
+                    player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+                elif match.agent_id == 0:
+                    player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
+                else:
+                    player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params)
 
-            sample1 = player1.create_sample(actions, color2)
+                if np.random.random() > 0.5:
+                    actions, color1, color2 = mcts.play_game(player1, player2)
+                else:
+                    actions, color2, color1 = mcts.play_game(player2, player1)
 
-            match_result_queue.put(collector.MatchResult(sample1, match.series_id, match.agent_id))
+                sample = player1.create_sample(actions, color2)
+                samples.append(sample)
+
+            match_result_queue.put(collector.MatchResult(samples, match.agent_id))
 
             if not ckpt_queue.empty():
                 step = ckpt_queue.get()

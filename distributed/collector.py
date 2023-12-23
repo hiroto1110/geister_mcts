@@ -1,4 +1,3 @@
-from typing import Union
 from dataclasses import dataclass
 import pickle
 import multiprocessing
@@ -23,17 +22,12 @@ import training_logger
 
 @dataclass
 class MatchResult:
-    sample: Batch
-    series_id: int
+    samples: list[Batch]
     agent_id: int
-
-    def is_won(self):
-        return self.sample.reward > 3
 
 
 @dataclass
 class MatchInfo:
-    series_id: int
     agent_id: int
 
 
@@ -49,101 +43,32 @@ class MessageNextMatch:
     ckpt: Checkpoint
 
 
-class MatchSeries:
-    def __init__(self, series_id: int, agent_id: int, length: int) -> None:
-        self.series_id = series_id
-        self.agent_id = agent_id
-        self.length = length
-
-        self.samples: list[Batch] = []
-        self.assigned_client_id = -1
-
-    def is_ready(self):
-        return self.assigned_client_id == -1
-
-    def assign_client(self, client_id: int):
-        # print(f"assign {self.series_id}: {client_id}")
-        self.assigned_client_id = client_id
-
-    def apply_result(self, sample: Batch):
-        self.samples.append(sample)
-        # print(f"apply_result {self.series_id} (n={len(self.samples)}): {self.assigned_client_id}")
-        self.assigned_client_id = -1
-
-    def is_finished(self) -> bool:
-        return len(self.samples) == self.length
-
-    def create_batch(self) -> Batch:
-        assert self.is_finished()
-
-        return Batch.stack(self.samples)
-
-
-class MatchSeriesManager:
+class AgentManager:
     def __init__(
             self,
             match_maker: match_makers.MatchMaker,
             series_length: int,
-            fsp_threshold: float) -> None:
+            fsp_threshold: float
+    ) -> None:
 
         self.match_maker = match_maker
         self.series_length = series_length
         self.fsp_threshold = fsp_threshold
 
         self.agents: list[int] = [0]
-        self.series_list: list[MatchSeries] = []
 
-    def _get_ready_series(self) -> Union[MatchSeries, None]:
-        for series in self.series_list:
-            if series.is_ready():
-                return series
-        return None
-
-    def _get_next_match_agent_id(self):
+    def next_match(self):
         agent_index = self.match_maker.next_match()
         if agent_index >= 0:
             return self.agents[agent_index]
         else:
-            return -1
+            return agent_index
 
-    def next_match(self, client_id: int) -> MatchSeries:
-        series = self._get_ready_series()
+    def apply_match_result(self, result: MatchResult):
+        for sample in result.samples:
+            self.match_maker.apply_match_result(result.agent_id, sample.is_won())
 
-        if series is None:
-            agent_id = self._get_next_match_agent_id()
-            series_id = len(self.series_list)
-
-            series = MatchSeries(series_id, agent_id, self.series_length)
-            self.series_list.append(series)
-
-        series.assign_client(client_id)
-
-        return series
-
-    def apply_match_result(self, result: MatchResult) -> Union[Batch, None]:
-        self.match_maker.apply_match_result(result.agent_id, result.is_won())
-
-        series = self.series_list[result.series_id]
-        series.apply_result(result.sample)
-
-        if not series.is_finished():
-            return None
-
-        batch = series.create_batch()
-
-        agent_id = self.match_maker.next_match()
-        self.series_list[result.series_id] = MatchSeries(result.series_id, agent_id, self.series_length)
-
-        return batch
-
-    def client_disconnected(self, client_id: int):
-        print(f"dissconnected: {client_id}")
-
-        for series in self.series_list:
-            if series.assigned_client_id == client_id:
-                series.assigned_client_id = -1
-
-    def next_step(self, step: int) -> tuple[np.ndarray, bool]:
+    def next_step(self, step: int) -> np.ndarray:
         win_rates = self.match_maker.get_win_rates()
 
         if np.all(win_rates > self.fsp_threshold):
@@ -153,72 +78,59 @@ class MatchSeriesManager:
         return win_rates
 
 
-class TcpClient:
-    def __init__(
-            self,
-            match_series_manager: MatchSeriesManager,
-            match_result_queue: queue.Queue,
-            mcts_params: mcts.SearchParameters
-    ):
-        self.match_series_manager = match_series_manager
-        self.match_result_queue = match_result_queue
-        self.mcts_params = mcts_params
-        self.threading_lock = threading.Lock()
+class CheckpointHolder:
+    def __init__(self):
         self.ckpt: Checkpoint = None
-
-        self.n_clients = 0
-
-    def add_client(self):
-        self.n_clients += 1
-        return self.n_clients
 
     def get_current_step(self) -> int:
         return self.ckpt.step
 
 
-def handle_client(client: TcpClient, sock: socket.socket):
-    socket_util.send_msg(sock, pickle.dumps(client.mcts_params))
-    socket_util.send_msg(sock, pickle.dumps(client.ckpt))
+def handle_client(
+        sock: socket.socket,
+        match_result_queue: queue.Queue,
+        ckpt_holder: CheckpointHolder,
+        agent_manager: AgentManager,
+        mcts_params: mcts.SearchParameters
+        ):
+    socket_util.send_msg(sock, pickle.dumps(mcts_params))
+    socket_util.send_msg(sock, pickle.dumps(ckpt_holder.ckpt))
+    socket_util.send_msg(sock, pickle.dumps(agent_manager.series_length))
 
     n_processes: int = pickle.loads(socket_util.recv_msg(sock))
 
-    client.threading_lock.acquire()
-    client_id = client.add_client()
-    init_matches = [client.match_series_manager.next_match(client_id) for i in range(n_processes + 4)]
-    client.threading_lock.release()
+    init_matches = [MatchInfo(agent_manager.next_match()) for i in range(n_processes + 4)]
 
     socket_util.send_msg(sock, pickle.dumps(init_matches))
 
     while data := socket_util.recv_msg(sock):
         recv_msg: MessageMatchResult = pickle.loads(data)
 
-        client.match_result_queue.put(recv_msg.result)
+        match_result_queue.put(recv_msg.result)
 
-        client.threading_lock.acquire()
-        series = client.match_series_manager.next_match(client_id)
-        client.threading_lock.release()
+        next_match = MatchInfo(agent_manager.next_match())
 
-        next_match = MatchInfo(series.series_id, series.agent_id)
-
-        if recv_msg.step == client.get_current_step():
+        if recv_msg.step == ckpt_holder.get_current_step():
             msg = MessageNextMatch(next_match, ckpt=None)
         else:
-            msg = MessageNextMatch(next_match, ckpt=client.ckpt)
+            msg = MessageNextMatch(next_match, ckpt=ckpt_holder.ckpt)
 
         socket_util.send_msg(sock, pickle.dumps(msg))
     sock.close()
 
-    client.threading_lock.acquire()
-    series = client.match_series_manager.client_disconnected(client_id)
-    client.threading_lock.release()
 
-
-def wait_accept(server: socket.socket, client: TcpClient):
+def wait_accept(
+        server: socket.socket,
+        match_result_queue: queue.Queue,
+        ckpt_holder: CheckpointHolder,
+        agent_manager: AgentManager,
+        mcts_params: mcts.SearchParameters):
     while True:
         client_sock, address = server.accept()
         print(f"New client from {address}")
 
-        thread = threading.Thread(target=handle_client, args=(client, client_sock))
+        args = client_sock, match_result_queue, ckpt_holder, agent_manager, mcts_params
+        thread = threading.Thread(target=handle_client, args=args)
         thread.start()
 
 
@@ -236,17 +148,18 @@ def start(
     buffer.load('./data/replay_buffer/run-3.npz')
 
     match_maker = config.match_maker.create_match_maker()
-    match_series_manager = MatchSeriesManager(match_maker, config.series_length, config.fsp_threshold)
+    agent_manager = AgentManager(match_maker, config.series_length, config.fsp_threshold)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer)
 
     match_result_queue = queue.Queue()
 
-    client = TcpClient(match_series_manager, match_result_queue, config.mcts_params)
-    client.ckpt = Checkpoint.load(checkpoint_manager, checkpoint_manager.latest_step())
+    ckpt_holder = CheckpointHolder()
+    ckpt_holder.ckpt = Checkpoint.load(checkpoint_manager, checkpoint_manager.latest_step())
 
-    thread = threading.Thread(target=wait_accept, args=(server, client))
+    args = server, match_result_queue, ckpt_holder, agent_manager, config.mcts_params
+    thread = threading.Thread(target=wait_accept, args=args)
     thread.start()
 
     is_waiting_parameter_update = False
@@ -254,13 +167,9 @@ def start(
     for s in range(1000000):
         # recv_match_result
         for i in tqdm(range(config.update_period), desc='Collecting'):
-            series_batch = None
-
-            while series_batch is None:
-                result: MatchResult = match_result_queue.get()
-                series_batch = match_series_manager.apply_match_result(result)
-
-            buffer.add_sample(series_batch)
+            result: MatchResult = match_result_queue.get()
+            agent_manager.apply_match_result(result)
+            buffer.add_sample(Batch.stack(result.samples))
 
         last_batch = buffer.get_last_minibatch(config.update_period)
         last_batch.save(
@@ -268,13 +177,13 @@ def start(
             append=True
         )
 
-        win_rate = match_series_manager.next_step(client.ckpt.step)
+        win_rate = agent_manager.next_step(ckpt_holder.ckpt.step)
         print(win_rate)
 
         if is_waiting_parameter_update:
             # recv_updated_params
             step: int = learner_update_queue.get()
-            client.ckpt = Checkpoint.load(checkpoint_manager, step)
+            ckpt_holder.ckpt = Checkpoint.load(checkpoint_manager, step)
 
         if len(buffer) >= config.batch_size:
             log_dict = training_logger.create_log(

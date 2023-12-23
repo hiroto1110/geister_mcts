@@ -15,14 +15,17 @@ class Batch:
     def __len__(self):
         return self.tokens.shape[0]
 
+    def is_won(self):
+        return self.reward > 3
+
     def astuple(self):
         return astuple(self)
 
     def reshape(self, shape: tuple) -> 'Batch':
-        tokens = self.tokens.reshape((*shape, -1, game.TOKEN_SIZE))
-        policy = self.policy.reshape((*shape, -1))
-        reward = self.reward.reshape((*shape, -1))
-        colors = self.colors.reshape((*shape, -1))
+        tokens = self.tokens.reshape((*shape, self.tokens.shape[-2], game.TOKEN_SIZE))
+        policy = self.policy.reshape((*shape, self.policy.shape[-1]))
+        reward = self.reward.reshape((*shape, 1))
+        colors = self.colors.reshape((*shape, 8))
 
         return Batch(tokens, policy, reward, colors)
 
@@ -45,9 +48,23 @@ class Batch:
         np.savez(path, **save_dict)
 
     @classmethod
-    def from_npz(cls, path):
+    def from_npz(cls, path, shuffle=False):
         with np.load(path) as data:
-            return Batch(data['t'], data['p'], data['r'], data['c'])
+            tokens = data['t']
+            policy = data['p']
+            reward = data['r']
+            colors = data['c']
+
+            if shuffle:
+                indices = np.arange(len(tokens))
+                np.random.shuffle(indices)
+
+                tokens = tokens[indices]
+                policy = policy[indices]
+                reward = reward[indices]
+                colors = colors[indices]
+
+            return Batch(tokens, policy, reward, colors)
 
     def split(self, r: float) -> tuple['Batch', 'Batch']:
         assert 0 < r < 1

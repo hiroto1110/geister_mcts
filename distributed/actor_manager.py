@@ -46,6 +46,9 @@ def main(
     data = socket_util.recv_msg(sock)
     ckpt: Checkpoint = pickle.loads(data)
 
+    data = socket_util.recv_msg(sock)
+    series_length: int = pickle.loads(data)
+
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
 
@@ -71,7 +74,8 @@ def main(
                 ckpt_queues[i],
                 ckpt_dir,
                 seed,
-                mcts_params)
+                mcts_params,
+                series_length)
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()
