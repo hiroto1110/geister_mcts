@@ -7,7 +7,7 @@ import numpy as np
 import jax
 import optax
 import orbax.checkpoint
-import wandb
+# import wandb
 
 from network.train import Checkpoint, TrainState, train_step
 from network.transformer import TransformerDecoder

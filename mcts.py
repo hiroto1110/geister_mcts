@@ -14,7 +14,7 @@ from line_profiler import profile
 import env.state as game
 import game_analytics
 import env.checkmate_lib as checkmate_lib
-from network.transformer import TransformerDecoderWithCache
+from network.transformer import TransformerWithCache
 from buffer import Batch
 import gat.server_util
 import env.naotti2020 as naotti2020
@@ -22,18 +22,22 @@ import env.naotti2020 as naotti2020
 
 class PredictState(struct.PyTreeNode):
     apply_fn: Callable = struct.field(pytree_node=False)
+    model: TransformerWithCache = struct.field(pytree_node=False)
     params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 # @jax.jit
-def predict(state: PredictState, tokens, cache):
-    pi, v, c, cache = state.apply_fn({'params': state.params}, tokens, cache, eval=True)
+def predict(state: PredictState, x, cache, is_tokenized=False):
+    if not is_tokenized:
+        x = state.model.tokenize(x)
+
+    x, pi, v, c, cache = state.apply_fn({'params': state.params}, x, cache, eval=True)
 
     v = nn.softmax(v)
     c = nn.sigmoid(c)
 
-    return pi, v, c, cache
+    return x, pi, v, c, cache
 
 
 @dataclass
@@ -248,7 +252,7 @@ def setup_node(node: NodeBase, pred_state: PredictState, tokens: list, cache: jn
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
     for i in range(tokens.shape[0]):
-        pi, v, c, cache = predict(pred_state, tokens[i], cache)
+        _, pi, v, c, cache = predict(pred_state, tokens[i], cache)
 
     if np.isnan(c).any():
         c = np.full(shape=8, fill_value=0.5)
@@ -445,13 +449,15 @@ def select_action_with_mcts(node: Node,
     return action
 
 
-def apply_action(node: Node,
-                 state: game.SimulationState,
-                 action: int,
-                 player: int,
-                 true_color_o: np.ndarray,
-                 pred_state: PredictState,
-                 params: SearchParameters):
+def apply_action(
+        node: Node,
+        state: game.SimulationState,
+        action: int,
+        player: int,
+        true_color_o: np.ndarray,
+        pred_state: PredictState,
+        params: SearchParameters
+) -> tuple[Node, list[list[int]]]:
 
     tokens, afterstates = state.step(action, player * state.root_player)
 
@@ -468,13 +474,42 @@ def apply_action(node: Node,
     return child, tokens
 
 
-def create_root_node(state: game.SimulationState,
-                     pred_state: PredictState,
-                     model: TransformerDecoderWithCache) -> Node:
+def create_memory(node: Node, pred_state: PredictState) -> jnp.ndarray:
+    write_memory = pred_state.model.get_write_memory()
+    next_memory = jnp.zeros(write_memory.shape)
+
+    cache = node.cache
+
+    for i in range(len(write_memory)):
+        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, is_tokenized=True)
+        next_memory = next_memory.at[i].set(x)
+
+    return next_memory
+
+
+def create_root_node(
+        state: game.SimulationState,
+        pred_state: PredictState,
+        model: TransformerWithCache,
+        cache_length: int = 220,
+        prev_node: Node = None,
+) -> tuple[Node, list[list[int]]]:
     node = Node()
-    cache = model.create_cache(200)
 
     tokens = state.create_init_tokens()
+
+    if model.has_memory_block():
+        memory = model.get_read_memory()
+
+        if prev_node is not None:
+            memory += create_memory(prev_node, pred_state)
+
+        cache = model.create_cache(cache_length + model.length_memory_block * 2)
+
+        for i in range(len(memory)):
+            _, _, _, _, cache = predict(pred_state, memory[i], cache, is_tokenized=True)
+    else:
+        cache = model.create_cache(cache_length)
 
     setup_node(node, pred_state, tokens, cache)
 
@@ -482,15 +517,18 @@ def create_root_node(state: game.SimulationState,
 
 
 class PlayerMCTS:
-    def __init__(self,
-                 params,
-                 model: TransformerDecoderWithCache,
-                 search_params: SearchParameters) -> None:
-
+    def __init__(
+            self,
+            params,
+            model: TransformerWithCache,
+            search_params: SearchParameters
+    ) -> None:
         self.pred_state = PredictState(model.apply, params)
         self.model = model
         self.search_params = search_params
-        self.tokens = []
+
+        self.node: Node = None
+        self.tokens: list[list[int]] = []
 
     def update_params(self, params):
         self.pred_state = PredictState(self.model.apply, params)
@@ -500,7 +538,7 @@ class PlayerMCTS:
         self.pieces_history = np.zeros((101, 8), dtype=np.int8)
         self.tokens = []
 
-        self.node, tokens = create_root_node(state, self.pred_state, self.model)
+        self.node, tokens = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
         self.tokens += tokens
 
     def select_next_action(self) -> int:
@@ -611,7 +649,7 @@ def load_ckpt(ckpt_dir, step):
 
     ckpt = checkpoint_manager.restore(step)
 
-    model = TransformerDecoderWithCache(**ckpt['model'])
+    model = TransformerWithCache(**ckpt['model'])
     params = ckpt['state']['params']
 
     return params, model

@@ -17,7 +17,7 @@ import optax
 import wandb
 
 from buffer import Batch
-from network.transformer import TransformerDecoder, TransformerDecoderWithCache, ReccurentMemoryTransformer
+from network.transformer import Transformer, TransformerWithCache
 
 
 class TrainState(train_state.TrainState):
@@ -35,7 +35,7 @@ class TrainState(train_state.TrainState):
 class Checkpoint:
     step: int
     params: FrozenDict
-    model: TransformerDecoder
+    model: Transformer
 
     def asdict(self):
         return {
@@ -51,9 +51,9 @@ class Checkpoint:
         is_caching_model: bool = False
     ) -> 'Checkpoint':
         if not is_caching_model:
-            model = TransformerDecoder(**ckpt_dict['model'])
+            model = Transformer(**ckpt_dict['model'])
         else:
-            model = TransformerDecoderWithCache(**ckpt_dict['model'])
+            model = TransformerWithCache(**ckpt_dict['model'])
 
         step = ckpt_dict['step']
         params = ckpt_dict['params']
@@ -161,17 +161,22 @@ def loss_fn_rmt(
 def train_step(
     state: TrainState,
     x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
-    eval: bool
+    eval: bool, is_rmt: bool = False
 ) -> tuple[TrainState, jnp.ndarray, jnp.ndarray]:
+    if is_rmt:
+        fun = loss_fn_rmt
+    else:
+        fun = loss_fn
+
     if not eval:
         new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
-        (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+        (loss, losses), grads = jax.value_and_grad(fun, has_aux=True)(
             state.params, state, x, p_true, v_true, c_true, dropout_rng, eval
         )
 
         new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
     else:
-        loss, losses = loss_fn(state.params, state, x, p_true, v_true, c_true, random.PRNGKey(0), eval)
+        loss, losses = fun(state.params, state, x, p_true, v_true, c_true, random.PRNGKey(0), eval)
         new_state = state
 
     return new_state, loss, losses
@@ -189,7 +194,7 @@ def train_epoch(state: TrainState, batches: list[Batch], eval: bool):
 
 
 def fit(state: TrainState,
-        model: TransformerDecoder,
+        model: Transformer,
         checkpoint_manager: orbax.checkpoint.CheckpointManager,
         train_batch: Batch,
         test_batch: Batch,
@@ -252,8 +257,7 @@ def main_train(batch: Batch, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        # model = TransformerDecoder(num_heads=h, embed_dim=d, num_hidden_layers=n)
-        model = ReccurentMemoryTransformer(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
+        model = Transformer(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
 
         variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
         state = TrainState.create(
