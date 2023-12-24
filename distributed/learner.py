@@ -10,7 +10,7 @@ import orbax.checkpoint
 # import wandb
 
 from network.train import Checkpoint, TrainState, train_step
-from network.transformer import TransformerDecoder
+from network.transformer import Transformer
 import buffer
 
 from config import RunConfig
@@ -39,7 +39,7 @@ def main(
         model = ckpt.model
         params = ckpt.params
     else:
-        model = TransformerDecoder(
+        model = Transformer(
             num_heads=4,
             embed_dim=256,
             num_hidden_layers=4
@@ -103,7 +103,7 @@ def train(
     loss = 0
 
     for i in tqdm(range(num_batches), desc=' Training '):
-        state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False)
+        state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False, is_rmt=True)
 
         loss += loss_i
         info[i] = info_i

@@ -22,16 +22,12 @@ import env.naotti2020 as naotti2020
 
 class PredictState(struct.PyTreeNode):
     apply_fn: Callable = struct.field(pytree_node=False)
-    model: TransformerWithCache = struct.field(pytree_node=False)
     params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 # @jax.jit
-def predict(state: PredictState, x, cache, is_tokenized=False):
-    if not is_tokenized:
-        x = state.model.tokenize(x)
-
+def predict(state: PredictState, x, cache):
     x, pi, v, c, cache = state.apply_fn({'params': state.params}, x, cache, eval=True)
 
     v = nn.softmax(v)
@@ -474,17 +470,17 @@ def apply_action(
     return child, tokens
 
 
-def create_memory(node: Node, pred_state: PredictState) -> jnp.ndarray:
-    write_memory = pred_state.model.get_write_memory()
-    next_memory = jnp.zeros(write_memory.shape)
+def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCache) -> jnp.ndarray:
+    write_memory = model.create_zero_memory()
+    next_memory = []
 
     cache = node.cache
 
-    for i in range(len(write_memory)):
-        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, is_tokenized=True)
-        next_memory = next_memory.at[i].set(x)
+    for i in range(model.length_memory_block):
+        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=i)
+        next_memory.append(x)
 
-    return next_memory
+    return jnp.array(next_memory)
 
 
 def create_root_node(
@@ -499,15 +495,15 @@ def create_root_node(
     tokens = state.create_init_tokens()
 
     if model.has_memory_block():
-        memory = model.get_read_memory()
-
         if prev_node is not None:
-            memory += create_memory(prev_node, pred_state)
+            memory = create_memory(prev_node, pred_state, model)
+        else:
+            memory = jnp.zeros((model.length_memory_block, model.embed_dim))
 
         cache = model.create_cache(cache_length + model.length_memory_block * 2)
 
         for i in range(len(memory)):
-            _, _, _, _, cache = predict(pred_state, memory[i], cache, is_tokenized=True)
+            _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=i)
     else:
         cache = model.create_cache(cache_length)
 
@@ -523,7 +519,7 @@ class PlayerMCTS:
             model: TransformerWithCache,
             search_params: SearchParameters
     ) -> None:
-        self.pred_state = PredictState(model.apply, params)
+        self.pred_state = PredictState(model.apply, model, params)
         self.model = model
         self.search_params = search_params
 
@@ -531,7 +527,7 @@ class PlayerMCTS:
         self.tokens: list[list[int]] = []
 
     def update_params(self, params):
-        self.pred_state = PredictState(self.model.apply, params)
+        self.pred_state = PredictState(self.model.apply, self.model, params)
 
     def init_state(self, state: game.SimulationState):
         self.state = state

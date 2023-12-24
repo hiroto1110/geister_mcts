@@ -24,12 +24,6 @@ class TrainState(train_state.TrainState):
     epoch: int
     dropout_rng: Any
 
-    def __getstate__(self):
-        state_dict = self.__dict__.copy()
-        state_dict['tx'] = None
-        state_dict['apply_fn'] = None
-        return state_dict
-
 
 @dataclasses.dataclass
 class Checkpoint:
@@ -157,7 +151,7 @@ def loss_fn_rmt(
     return loss.mean(), losses
 
 
-@partial(jax.jit, static_argnames=['eval'])
+@partial(jax.jit, static_argnames=['eval', 'is_rmt'])
 def train_step(
     state: TrainState,
     x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
@@ -182,11 +176,11 @@ def train_step(
     return new_state, loss, losses
 
 
-def train_epoch(state: TrainState, batches: list[Batch], eval: bool):
+def train_epoch(state: TrainState, batches: list[Batch], eval: bool, is_rmt: bool):
     loss_history, info_history = [], []
 
     for batch in tqdm(batches):
-        state, loss, info = train_step(state, *batch.astuple(), eval)
+        state, loss, info = train_step(state, *batch.astuple(), eval, is_rmt)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
 
@@ -202,14 +196,16 @@ def fit(state: TrainState,
         batch_size: int,
         log_wandb: bool
         ):
+    is_rmt = model.has_memory_block()
+
     train_batches = train_batch.divide(batch_size)
     test_batches = test_batch.divide(batch_size)
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         start = time.perf_counter()
 
-        state, loss_train, info_train = train_epoch(state, train_batches, eval=False)
-        _, loss_test, info_test = train_epoch(state, test_batches, eval=True)
+        state, loss_train, info_train = train_epoch(state, train_batches, eval=False, is_rmt=is_rmt)
+        _, loss_test, info_test = train_epoch(state, test_batches, eval=True, is_rmt=is_rmt)
 
         elapsed_time = time.perf_counter() - start
 

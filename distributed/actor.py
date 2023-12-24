@@ -51,16 +51,16 @@ def start_selfplay_process(
 
             samples = []
 
+            player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+
+            if match.agent_id == match_makers.SELFPLAY_ID:
+                player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
+            elif match.agent_id == 0:
+                player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
+            else:
+                player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params)
+
             for i in range(series_length):
-                player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
-
-                if match.agent_id == match_makers.SELFPLAY_ID:
-                    player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params)
-                elif match.agent_id == 0:
-                    player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
-                else:
-                    player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params)
-
                 if np.random.random() > 0.5:
                     actions, color1, color2 = mcts.play_game(player1, player2)
                 else:

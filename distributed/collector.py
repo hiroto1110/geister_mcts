@@ -143,7 +143,7 @@ def start(
     buffer = ReplayBuffer(
         buffer_size=config.buffer_size,
         sample_shape=(config.series_length,),
-        seq_length=200
+        seq_length=220
     )
     buffer.load('./data/replay_buffer/run-3.npz')
 

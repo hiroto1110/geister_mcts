@@ -128,6 +128,7 @@ class ReplayBuffer:
             seq_length: int
             ):
         self.buffer_size = buffer_size
+        self.seq_length = seq_length
         self.index = 0
         self.n_samples = 0
 
@@ -211,10 +212,11 @@ class ReplayBuffer:
             reward = data['r']
             colors = data['c']
 
-        n_samples = min(len(tokens), self.buffer_size)
+        n_samples = min(self.buffer_size, tokens.shape[0])
+        seq_len = min(self.seq_length, tokens.shape[-2])
 
-        self.tokens[:n_samples] = tokens[-n_samples:]
-        self.policy[:n_samples] = policy[-n_samples:]
+        self.tokens[:n_samples, ..., :seq_len, :] = tokens[-n_samples:, ..., :seq_len, :]
+        self.policy[:n_samples, ..., :seq_len] = policy[-n_samples:, ..., :seq_len]
         self.reward[:n_samples] = reward[-n_samples:]
         self.colors[:n_samples] = colors[-n_samples:]
 

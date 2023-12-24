@@ -166,13 +166,12 @@ class Transformer(nn.Module):
         self.layers = [TransformerBlock(self.num_heads, self.embed_dim)
                        for _ in range(self.num_hidden_layers)]
 
-    def tokenize(self, x: jnp.ndarray, eval=True) -> tuple[jnp.ndarray, jnp.ndarray]:
-        mask = jnp.any(x != 0, axis=-1)
-        return self.embeddings(x, eval), mask
-
     @nn.compact
-    def __call__(self, x, mask, read_memory=None, eval=True):
+    def __call__(self, x, read_memory=None, eval=True):
         mem_len = self.length_memory_block
+
+        mask = mask = jnp.any(x != 0, axis=-1)
+        x = self.embeddings(x, eval)
 
         if self.has_memory_block():
             write_memory = self.write_memory_embeddings(jnp.arange(mem_len))
@@ -247,12 +246,31 @@ class TransformerWithCache(nn.Module):
                 _, _, _, _, cache = self(memory[j], cache)
 
         return cache
-
-    def tokenize(self, x: jnp.ndarray, eval=True) -> jnp.ndarray:
-        return self.embeddings(x, eval)
+    
+    def create_zero_memory(self):
+        return jnp.zeros((self.length_memory_block, self.embed_dim))
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, cache: jnp.ndarray, eval=True):
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        cache: jnp.ndarray,
+        read_memory_i: int = -1,
+        write_memory_i: int = -1,
+        eval=True
+    ):
+        if x.shape[0] == 5:
+            x = self.embeddings(x, eval)
+
+        elif x is None or x.shape[0] == self.embed_dim:
+            x = jnp.zeros(self.length_memory_block)
+
+            if read_memory_i >= 0:
+                x += self.read_memory_embeddings(read_memory_i)
+
+            if write_memory_i >= 0:
+                x += self.write_memory_embeddings(write_memory_i)
+
         for i, layer in enumerate(self.layers):
             x, cache_i = layer(x, cache[i], eval=eval)
             cache = cache.at[i].set(cache_i)
