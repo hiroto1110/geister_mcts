@@ -8,12 +8,12 @@ import jax
 import orbax.checkpoint
 
 import distributed.socket_util as socket_util
-import mcts
 
 from network.train import Checkpoint
 
 import actor
 import collector
+from config import RunConfig
 
 
 @click.command()
@@ -41,13 +41,10 @@ def main(
     sock.connect((ip, port))
 
     data = socket_util.recv_msg(sock)
-    mcts_params: mcts.SearchParameters = pickle.loads(data)
+    config: RunConfig = pickle.loads(data)
 
     data = socket_util.recv_msg(sock)
     ckpt: Checkpoint = pickle.loads(data)
-
-    data = socket_util.recv_msg(sock)
-    series_length: int = pickle.loads(data)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
@@ -62,7 +59,6 @@ def main(
     socket_util.send_msg(sock, pickle.dumps(n_clients))
     data = socket_util.recv_msg(sock)
     matches: list[collector.MatchInfo] = pickle.loads(data)
-    print(matches)
 
     for match in matches:
         match_request_queue.put(match)
@@ -74,8 +70,9 @@ def main(
                 ckpt_queues[i],
                 ckpt_dir,
                 seed,
-                mcts_params,
-                series_length)
+                config.mcts_params,
+                config.series_length,
+                config.tokens_length)
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()

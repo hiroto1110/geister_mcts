@@ -282,7 +282,10 @@ def main_train(batch: Batch, log_wandb=False):
 
 
 def main():
-    batch = Batch.from_npz('./data/replay_buffer/run-3.npz', shuffle=True)
+    batch = Batch.from_npz('./data/replay_buffer/run-2.npz', shuffle=True)
+
+    batch = batch.create_batch_from_indices(jnp.arange((len(batch) // 16) * 16))
+    batch = batch.reshape((-1, 16))
 
     main_train(batch)
 

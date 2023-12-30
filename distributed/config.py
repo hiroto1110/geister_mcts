@@ -33,6 +33,7 @@ class InitCheckpointConfig:
 @dataclass
 class RunConfig:
     series_length: int
+    tokens_length: int
     batch_size: int
     num_batches: int
     buffer_size: int

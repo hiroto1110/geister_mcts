@@ -15,7 +15,6 @@ import distributed.socket_util as socket_util
 
 from buffer import ReplayBuffer, Batch
 from network.train import Checkpoint
-import mcts
 import match_makers
 import training_logger
 
@@ -29,6 +28,9 @@ class MatchResult:
 @dataclass
 class MatchInfo:
     agent_id: int
+
+    def __post_init__(self):
+        self.agent_id = int(self.agent_id)
 
 
 @dataclass
@@ -47,26 +49,29 @@ class AgentManager:
     def __init__(
             self,
             match_maker: match_makers.MatchMaker,
-            series_length: int,
             fsp_threshold: float
     ) -> None:
-
         self.match_maker = match_maker
-        self.series_length = series_length
         self.fsp_threshold = fsp_threshold
 
         self.agents: list[int] = [0]
 
     def next_match(self):
         agent_index = self.match_maker.next_match()
+
         if agent_index >= 0:
             return self.agents[agent_index]
         else:
             return agent_index
 
     def apply_match_result(self, result: MatchResult):
+        if result.agent_id == match_makers.SELFPLAY_ID:
+            return
+
+        agent_index = self.agents.index(result.agent_id)
+
         for sample in result.samples:
-            self.match_maker.apply_match_result(result.agent_id, sample.is_won())
+            self.match_maker.apply_match_result(agent_index, sample.is_won())
 
     def next_step(self, step: int) -> np.ndarray:
         win_rates = self.match_maker.get_win_rates()
@@ -91,11 +96,10 @@ def handle_client(
         match_result_queue: queue.Queue,
         ckpt_holder: CheckpointHolder,
         agent_manager: AgentManager,
-        mcts_params: mcts.SearchParameters
+        config: RunConfig
         ):
-    socket_util.send_msg(sock, pickle.dumps(mcts_params))
+    socket_util.send_msg(sock, pickle.dumps(config))
     socket_util.send_msg(sock, pickle.dumps(ckpt_holder.ckpt))
-    socket_util.send_msg(sock, pickle.dumps(agent_manager.series_length))
 
     n_processes: int = pickle.loads(socket_util.recv_msg(sock))
 
@@ -124,12 +128,12 @@ def wait_accept(
         match_result_queue: queue.Queue,
         ckpt_holder: CheckpointHolder,
         agent_manager: AgentManager,
-        mcts_params: mcts.SearchParameters):
+        config: RunConfig):
     while True:
         client_sock, address = server.accept()
         print(f"New client from {address}")
 
-        args = client_sock, match_result_queue, ckpt_holder, agent_manager, mcts_params
+        args = client_sock, match_result_queue, ckpt_holder, agent_manager, config
         thread = threading.Thread(target=handle_client, args=args)
         thread.start()
 
@@ -143,12 +147,12 @@ def start(
     buffer = ReplayBuffer(
         buffer_size=config.buffer_size,
         sample_shape=(config.series_length,),
-        seq_length=220
+        seq_length=config.tokens_length
     )
-    buffer.load('./data/replay_buffer/run-3.npz')
+    buffer.load('./data/replay_buffer/run-3-220.npz')
 
     match_maker = config.match_maker.create_match_maker()
-    agent_manager = AgentManager(match_maker, config.series_length, config.fsp_threshold)
+    agent_manager = AgentManager(match_maker, config.fsp_threshold)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer)
@@ -158,7 +162,7 @@ def start(
     ckpt_holder = CheckpointHolder()
     ckpt_holder.ckpt = Checkpoint.load(checkpoint_manager, checkpoint_manager.latest_step())
 
-    args = server, match_result_queue, ckpt_holder, agent_manager, config.mcts_params
+    args = server, match_result_queue, ckpt_holder, agent_manager, config
     thread = threading.Thread(target=wait_accept, args=args)
     thread.start()
 
@@ -173,7 +177,7 @@ def start(
 
         last_batch = buffer.get_last_minibatch(config.update_period)
         last_batch.save(
-            file_name='./data/replay_buffer/run-3.npz',
+            file_name='./data/replay_buffer/run-3-220.npz',
             append=True
         )
 
@@ -185,7 +189,7 @@ def start(
             step: int = learner_update_queue.get()
             ckpt_holder.ckpt = Checkpoint.load(checkpoint_manager, step)
 
-        if len(buffer) >= config.batch_size:
+        if len(buffer) >= config.batch_size * config.num_batches:
             log_dict = training_logger.create_log(
                 win_rates=win_rate,
                 last_games=last_batch

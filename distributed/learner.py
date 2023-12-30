@@ -7,7 +7,7 @@ import numpy as np
 import jax
 import optax
 import orbax.checkpoint
-# import wandb
+import wandb
 
 from network.train import Checkpoint, TrainState, train_step
 from network.transformer import Transformer
@@ -42,7 +42,8 @@ def main(
         model = Transformer(
             num_heads=4,
             embed_dim=256,
-            num_hidden_layers=4
+            num_hidden_layers=4,
+            length_memory_block=8
         )
 
         init_data = np.zeros((1, 200, 5), dtype=np.uint8)
@@ -57,7 +58,7 @@ def main(
         epoch=0
     )
 
-    # wandb.init(project="geister-s")
+    wandb.init(project="geister-s")
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options)
@@ -76,9 +77,8 @@ def main(
     collecor_process.start()
 
     while True:
-        log_dict = learner_request_queue.get()
+        log_dict: dict = learner_request_queue.get()
         minibatch = buffer.Batch.from_npz(config.minibatch_temp_path)
-        minibatch = minibatch.reshape((config.batch_size * config.series_length * config.num_batches,))
 
         state, train_log_dict = train(state, minibatch, config.batch_size)
 
@@ -88,7 +88,7 @@ def main(
 
         learner_update_queue.put(state.epoch)
 
-        # wandb.log(log_dict)
+        wandb.log(log_dict)
 
 
 def train(
@@ -99,23 +99,28 @@ def train(
     train_batches = train_batch.divide(batch_size)
     num_batches = len(train_batches)
 
-    info = np.zeros((num_batches, 3))
     loss = 0
+    losses = []
 
     for i in tqdm(range(num_batches), desc=' Training '):
-        state, loss_i, info_i = train_step(state, *train_batches[i].astuple(), eval=False, is_rmt=True)
+        state, loss_i, losses_i = train_step(state, *train_batches[i].astuple(), eval=False, is_rmt=True)
 
         loss += loss_i
-        info[i] = info_i
+        losses.append(losses_i)
 
-    info = info.mean(axis=0)
     loss /= num_batches
 
-    log_dict = {}
-    log_dict["train/loss"] = loss
-    log_dict["train/loss policy"] = info[0]
-    log_dict["train/loss value"] = info[1]
-    log_dict["train/loss color"] = info[2]
+    num_division = 2
+    losses = np.reshape(losses, (num_batches, num_division, -1, 3))
+    losses = np.mean(losses, axis=(0, 2))
+
+    log_dict = {'train/loss': loss}
+
+    for i in range(num_division):
+        for j, name in enumerate(['policy', 'value', 'color']):
+            log_dict[f'train/loss {name} {i}'] = losses[i, j]
+
+    print(log_dict)
 
     return state.replace(epoch=state.epoch + 1), log_dict
 

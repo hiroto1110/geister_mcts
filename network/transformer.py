@@ -7,7 +7,7 @@ class Embeddings(nn.Module):
     piece_type: int = 5
     n_pieces: int = 16
     board_size: int = 7
-    max_n_ply: int = 200
+    max_n_ply: int = 201
 
     @nn.compact
     def __call__(self, tokens, eval):
@@ -151,7 +151,7 @@ class Transformer(nn.Module):
     embed_dim: int
     num_hidden_layers: int
     length_memory_block: int = 0
-    max_n_ply: int = 200
+    max_n_ply: int = 201
 
     def has_memory_block(self):
         return self.length_memory_block > 0
@@ -215,7 +215,7 @@ class TransformerWithCache(nn.Module):
     embed_dim: int
     num_hidden_layers: int
     length_memory_block: int = 0
-    max_n_ply: int = 200
+    max_n_ply: int = 201
 
     def has_memory_block(self):
         return self.length_memory_block > 0
@@ -246,7 +246,7 @@ class TransformerWithCache(nn.Module):
                 _, _, _, _, cache = self(memory[j], cache)
 
         return cache
-    
+
     def create_zero_memory(self):
         return jnp.zeros((self.length_memory_block, self.embed_dim))
 
@@ -255,20 +255,21 @@ class TransformerWithCache(nn.Module):
         self,
         x: jnp.ndarray,
         cache: jnp.ndarray,
-        read_memory_i: int = -1,
-        write_memory_i: int = -1,
+        read_memory_i: int = None,
+        write_memory_i: int = None,
         eval=True
     ):
         if x.shape[0] == 5:
             x = self.embeddings(x, eval)
 
         elif x is None or x.shape[0] == self.embed_dim:
-            x = jnp.zeros(self.length_memory_block)
+            if x is None:
+                x = jnp.zeros(self.embed_dim)
 
-            if read_memory_i >= 0:
+            if read_memory_i is not None:
                 x += self.read_memory_embeddings(read_memory_i)
 
-            if write_memory_i >= 0:
+            if write_memory_i is not None:
                 x += self.write_memory_embeddings(write_memory_i)
 
         for i, layer in enumerate(self.layers):
@@ -282,3 +283,48 @@ class TransformerWithCache(nn.Module):
         logits_color = nn.Dense(features=8)(x)
 
         return x, logits_pi, logits_v, logits_color, cache
+
+
+def test():
+    import jax.random
+    from buffer import Batch
+
+    model = Transformer(num_heads=4, embed_dim=128, num_hidden_layers=2, length_memory_block=4)
+    model_caching = TransformerWithCache(num_heads=4, embed_dim=128, num_hidden_layers=2, length_memory_block=4)
+
+    variables = model.init(jax.random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
+
+    batch = Batch.from_npz('./data/replay_buffer/run-3.npz', shuffle=True)
+
+    _, v, _, write_memory_out = model.apply(variables, batch.tokens[0, :1], eval=True)
+
+    print(write_memory_out.shape)
+
+    v_true = v.sum(axis=(0, 2))
+
+    cache = model_caching.create_cache(240)
+    mem = model_caching.create_zero_memory()
+
+    for i in range(len(mem)):
+        _, _, _, _, cache = model_caching.apply(
+            variables, mem[i], cache=cache, read_memory_i=jnp.array(i), eval=True
+        )
+
+    for i in range(batch.tokens.shape[-2]):
+        if jnp.all(batch.tokens[0, 0, i] == 0):
+            break
+
+        _, _, v, _, cache = model_caching.apply(
+            variables, batch.tokens[0, 0, i], cache=cache, eval=True
+        )
+        print((v.sum() - v_true[i]) ** 2)
+
+    for i in range(len(mem)):
+        x, _, _, _, cache = model_caching.apply(
+            variables, mem[i], cache=cache, write_memory_i=jnp.array(i), eval=True
+        )
+        print(jnp.sum((x - write_memory_out[0, i]) ** 2))
+
+
+if __name__ == '__main__':
+    test()

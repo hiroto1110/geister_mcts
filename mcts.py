@@ -15,6 +15,7 @@ import env.state as game
 import game_analytics
 import env.checkmate_lib as checkmate_lib
 from network.transformer import TransformerWithCache
+from network.train import Checkpoint
 from buffer import Batch
 import gat.server_util
 import env.naotti2020 as naotti2020
@@ -27,8 +28,11 @@ class PredictState(struct.PyTreeNode):
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
 # @jax.jit
-def predict(state: PredictState, x, cache):
-    x, pi, v, c, cache = state.apply_fn({'params': state.params}, x, cache, eval=True)
+def predict(state: PredictState, x, cache, read_memory_i=None, write_memory_i=None):
+    x, pi, v, c, cache = state.apply_fn(
+        {'params': state.params},
+        x, cache, read_memory_i, write_memory_i, eval=True
+    )
 
     v = nn.softmax(v)
     c = nn.sigmoid(c)
@@ -196,12 +200,13 @@ def expand(node: Node,
            tokens: List[List[int]],
            state: game.SimulationState,
            pred_state: PredictState,
-           params: SearchParameters):
+           params: SearchParameters,
+           force_to_setup=False):
 
     next_node = Node()
     next_node.winner = state.winner
 
-    if next_node.winner != 0:
+    if not force_to_setup and next_node.winner != 0:
         if params.visibilize_node_graph:
             next_node.state_str = sim_state_to_str(state, [next_node.winner], [0.5]*8)
 
@@ -463,9 +468,9 @@ def apply_action(
             tokens_afterstate = state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
             tokens += tokens_afterstate
 
-        child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state, params)
+        child, _ = expand(child_afterstate, tokens_afterstate, state, pred_state, params, force_to_setup=True)
     else:
-        child, _ = expand(node, tokens, state, pred_state, params)
+        child, _ = expand(node, tokens, state, pred_state, params, force_to_setup=True)
 
     return child, tokens
 
@@ -477,7 +482,7 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
     cache = node.cache
 
     for i in range(model.length_memory_block):
-        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=i)
+        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=jnp.array(i))
         next_memory.append(x)
 
     return jnp.array(next_memory)
@@ -498,12 +503,12 @@ def create_root_node(
         if prev_node is not None:
             memory = create_memory(prev_node, pred_state, model)
         else:
-            memory = jnp.zeros((model.length_memory_block, model.embed_dim))
+            memory = model.create_zero_memory()
 
         cache = model.create_cache(cache_length + model.length_memory_block * 2)
 
         for i in range(len(memory)):
-            _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=i)
+            _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=jnp.array(i))
     else:
         cache = model.create_cache(cache_length)
 
@@ -517,17 +522,19 @@ class PlayerMCTS:
             self,
             params,
             model: TransformerWithCache,
-            search_params: SearchParameters
+            search_params: SearchParameters,
+            num_tokens: int
     ) -> None:
-        self.pred_state = PredictState(model.apply, model, params)
+        self.pred_state = PredictState(model.apply, params)
         self.model = model
         self.search_params = search_params
+        self.num_tokens = num_tokens
 
         self.node: Node = None
         self.tokens: list[list[int]] = []
 
     def update_params(self, params):
-        self.pred_state = PredictState(self.model.apply, self.model, params)
+        self.pred_state = PredictState(self.model.apply, params)
 
     def init_state(self, state: game.SimulationState):
         self.state = state
@@ -551,8 +558,8 @@ class PlayerMCTS:
         self.tokens += tokens
 
     def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Batch:
-        tokens = np.zeros((200, 5), dtype=np.uint8)
-        tokens[:min(200, len(self.tokens))] = self.tokens[:200]
+        tokens = np.zeros((self.num_tokens, 5), dtype=np.uint8)
+        tokens[:min(self.num_tokens, len(self.tokens))] = self.tokens[:self.num_tokens]
 
         actions = actions[tokens[:, 4]]
         reward = 3 + int(self.state.winner * self.state.win_type.value)
@@ -598,12 +605,12 @@ class PlayerNaotti2020:
             _ = self.state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
 
 
-def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=180, print_board=False):
+def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
     state1, state2 = game.get_initial_state_pair()
     player1.init_state(state1)
     player2.init_state(state2)
 
-    action_history = np.zeros(200, dtype=np.int16)
+    action_history = np.zeros(game_length + 20, dtype=np.int16)
 
     player = 1
 
@@ -643,12 +650,9 @@ def load_ckpt(ckpt_dir, step):
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-    ckpt = checkpoint_manager.restore(step)
+    ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
 
-    model = TransformerWithCache(**ckpt['model'])
-    params = ckpt['state']['params']
-
-    return params, model
+    return ckpt.params, ckpt.model
 
 
 def BO_N(n, p):
@@ -681,26 +685,28 @@ def test():
         c_base=25,
     )
 
-    player1 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params1)
-    player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
-    # player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
+    player1 = PlayerMCTS(*load_ckpt('./data/checkpoints/rmt_4_256_4', 8), mcts_params1, num_tokens=220)
+    # player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
+    player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
 
-    game_result = [0, 0, 0]
+    seg_len = 3
+    game_result = np.zeros((seg_len, 3))
 
-    while game_result[0] + game_result[2] < 1:
-        if (game_result[0] + game_result[2]) % 2 == 0:
-            play_game(player1, player2, game_length=200, print_board=False)
-        else:
-            play_game(player2, player1, game_length=200, print_board=False)
+    for i in range(10):
+        for j in range(seg_len):
+            if j % 2 == 0:
+                play_game(player1, player2, game_length=200, print_board=False)
+            else:
+                play_game(player2, player1, game_length=200, print_board=False)
 
-        game_result[player1.state.winner + 1] += 1
+            game_result[j, player1.state.winner + 1] += 1
 
-        if game_result[0] + game_result[2] > 0:
-            w_rate = round(game_result[2] / (game_result[0] + game_result[2]), 3)
-        else:
-            w_rate = 0.5
+            count = game_result[:, 0] + game_result[:, 2]
+            count[count == 0] = 1
 
-        print(game_result, w_rate)
+            w_rate = np.round(game_result[:, 2] / count, 3)
+
+            print(i, w_rate)
 
 
 def test_mcts():
