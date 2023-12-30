@@ -30,12 +30,17 @@ def start_selfplay_process(
 
     np.random.seed(seed)
 
-    with jax.default_device(jax.devices("cpu")[0]):
+    def load(step: int) -> Checkpoint:
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
 
-        step = checkpoint_manager.latest_step()
-        ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+        if step == -1:
+            step = checkpoint_manager.latest_step()
+
+        return Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+
+    with jax.default_device(jax.devices("cpu")[0]):
+        ckpt = load(step=-1)
 
         params_checkpoints = {-1: None, 0: None}
 
@@ -44,8 +49,8 @@ def start_selfplay_process(
 
             match: collector.MatchInfo = match_request_queue.get()
             if match.agent_id not in params_checkpoints:
-                ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
-                params_checkpoints[match.agent_id] = ckpt.params
+                ckpt_tmp = load(step=match.agent_id)
+                params_checkpoints[match.agent_id] = ckpt_tmp.params
 
             elapsed_t = time.perf_counter() - start_t
             print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.agent_id})")
@@ -74,5 +79,5 @@ def start_selfplay_process(
 
             if not ckpt_queue.empty():
                 step = ckpt_queue.get()
-                ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+                ckpt = load(step)
                 print(f'update: {step}')
