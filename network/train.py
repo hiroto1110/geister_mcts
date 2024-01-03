@@ -23,6 +23,7 @@ from network.transformer import Transformer, TransformerWithCache
 class TrainState(train_state.TrainState):
     epoch: int
     dropout_rng: Any
+    init_memory: jnp.ndarray
 
 
 @dataclasses.dataclass
@@ -97,7 +98,7 @@ def calc_loss(
     return loss, losses
 
 
-@partial(jax.jit, static_argnames=['eval'])
+@partial(jax.jit, static_argnames=['eval', 'segment_offset', 'segment_length'])
 def loss_fn(
     params,
     state: TrainState,
@@ -105,107 +106,120 @@ def loss_fn(
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
+    init_memory: jnp.ndarray,
+    segment_offset: int,
+    segment_length: int,
     dropout_rng,
     eval: bool
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    p, v, c = state.apply_fn(
-        {'params': params},
-        x, eval=eval,
-        rngs={'dropout': dropout_rng}
-    )
-
-    return calc_loss(x, p, v, c, p_true, v_true, c_true)
-
-
-@partial(jax.jit, static_argnames=['eval'])
-def loss_fn_rmt(
-    params,
-    state: TrainState,
-    x: jnp.ndarray,
-    p_true: jnp.ndarray,
-    v_true: jnp.ndarray,
-    c_true: jnp.ndarray,
-    dropout_rng,
-    eval: bool
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
     # x: [Batch, Segments, Seq Len, 5]
-    seg_len = x.shape[1]
+    batch_size = x.shape[0]
 
-    loss = jnp.zeros(seg_len, dtype=jnp.float32)
-    losses = jnp.zeros((seg_len, 3))
-
-    memory = None
-
-    for i in range(seg_len):
-        p, v, c, memory = state.apply_fn(
+    @jax.checkpoint
+    def apply(_x, read_memory):
+        return state.apply_fn(
             {'params': params},
-            x[:, i], read_memory=memory, eval=eval,
+            _x, read_memory=read_memory, eval=eval,
             rngs={'dropout': dropout_rng}
         )
 
+    def scan_f(carry, i):
+        memory_c, loss_c = carry
+
+        p, v, c, memory_c = apply(x[:, i], memory_c)
         loss_i, losses_i = calc_loss(x[:, i], p, v, c, p_true[:, i], v_true[:, i], c_true[:, i])
 
-        loss = loss.at[i].set(loss_i)
-        losses = losses.at[i].set(losses_i)
+        loss_c += loss_i
 
-    return loss.mean(), losses
+        return (memory_c, loss_c), losses_i
+
+    init_memory = jnp.zeros((batch_size, *state.init_memory.shape))
+    indices = segment_offset + jnp.arange(segment_length)
+
+    (memory, loss), losses = jax.lax.scan(scan_f, init=(init_memory, 0), xs=indices)
+
+    loss /= segment_length
+
+    return loss, (losses, memory)
 
 
-@partial(jax.jit, static_argnames=['eval', 'is_rmt'])
+@partial(jax.jit, static_argnames=['eval', 'num_division_of_segment'])
 def train_step(
     state: TrainState,
     x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
-    eval: bool, is_rmt: bool = False
+    num_division_of_segment: int, eval: bool
 ) -> tuple[TrainState, jnp.ndarray, jnp.ndarray]:
-    if is_rmt:
-        fun = loss_fn_rmt
-    else:
-        fun = loss_fn
 
-    if not eval:
-        new_dropout_rng, dropout_rng = random.split(state.dropout_rng)
-        (loss, losses), grads = jax.value_and_grad(fun, has_aux=True)(
-            state.params, state, x, p_true, v_true, c_true, dropout_rng, eval
-        )
+    batch_size = x.shape[0]
+    segment_length = x.shape[1]
+    sub_segment_length = segment_length // num_division_of_segment
 
-        new_state = state.apply_gradients(grads=grads, dropout_rng=new_dropout_rng)
-    else:
-        loss, losses = fun(state.params, state, x, p_true, v_true, c_true, random.PRNGKey(0), eval)
-        new_state = state
+    def scan_f(carry, i):
+        current_state: TrainState = carry[0]
+        current_memory = carry[1]
+        current_loss = carry[2]
 
-    return new_state, loss, losses
+        offset = i * sub_segment_length
+
+        if not eval:
+            (loss_i, (losses, next_memory)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+                current_state.params, current_state,
+                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
+                current_state.dropout_rng, eval=eval
+            )
+            next_state = current_state.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(current_state.epoch))
+        else:
+            loss_i, (losses, next_memory) = loss_fn(
+                current_state.params, current_state,
+                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
+                current_state.dropout_rng, eval=eval
+            )
+            next_state = current_state
+
+        next_loss = current_loss + loss_i
+
+        return (next_state, next_memory, next_loss), losses
+
+    init_memory = jnp.zeros((batch_size, *state.init_memory.shape))
+    indices = jnp.arange(num_division_of_segment)
+
+    (state, _, loss), losses = jax.lax.scan(scan_f, init=(state, init_memory, 0), xs=indices)
+
+    losses = losses.reshape((segment_length, *losses.shape[2:]))
+
+    return state, loss, losses
 
 
-def train_epoch(state: TrainState, batches: list[Batch], eval: bool, is_rmt: bool):
+def train_epoch(state: TrainState, batches: list[Batch], num_division_of_segment: int, eval: bool):
     loss_history, info_history = [], []
 
     for batch in tqdm(batches):
-        state, loss, info = train_step(state, *batch.astuple(), eval, is_rmt)
+        state, loss, info = train_step(state, *batch.astuple(), num_division_of_segment, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
 
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
 
 
-def fit(state: TrainState,
-        model: Transformer,
-        checkpoint_manager: orbax.checkpoint.CheckpointManager,
-        train_batch: Batch,
-        test_batch: Batch,
-        epochs: int,
-        batch_size: int,
-        log_wandb: bool
-        ):
-    is_rmt = model.has_memory_block()
-
+def fit(
+    state: TrainState,
+    model: Transformer,
+    checkpoint_manager: orbax.checkpoint.CheckpointManager,
+    train_batch: Batch,
+    test_batch: Batch,
+    epochs: int,
+    batch_size: int,
+    num_division_of_segment: int,
+    log_wandb: bool
+):
     train_batches = train_batch.divide(batch_size)
     test_batches = test_batch.divide(batch_size)
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         start = time.perf_counter()
 
-        state, loss_train, info_train = train_epoch(state, train_batches, eval=False, is_rmt=is_rmt)
-        _, loss_test, info_test = train_epoch(state, test_batches, eval=True, is_rmt=is_rmt)
+        state, loss_train, info_train = train_epoch(state, train_batches, num_division_of_segment, eval=False)
+        _, loss_test, info_test = train_epoch(state, test_batches, num_division_of_segment, eval=True)
 
         elapsed_time = time.perf_counter() - start
 
@@ -261,7 +275,8 @@ def main_train(batch: Batch, log_wandb=False):
             params=variables['params'],
             tx=optax.adam(learning_rate=0.0005),
             dropout_rng=random.PRNGKey(0),
-            epoch=0)
+            epoch=0,
+            init_memory=model.create_zero_memory())
 
         ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}'
 
@@ -274,7 +289,7 @@ def main_train(batch: Batch, log_wandb=False):
         state = fit(state, model, checkpoint_manager,
                     train_batch=train_batch,
                     test_batch=test_batch,
-                    epochs=16, batch_size=64,
+                    epochs=16, batch_size=4, num_division_of_segment=4,
                     log_wandb=log_wandb)
 
         if log_wandb:
@@ -282,7 +297,7 @@ def main_train(batch: Batch, log_wandb=False):
 
 
 def main():
-    batch = Batch.from_npz('./data/replay_buffer/run-2.npz', shuffle=True)
+    batch = Batch.from_npz('./data/replay_buffer/189.npz', shuffle=True)
 
     batch = batch.create_batch_from_indices(jnp.arange((len(batch) // 16) * 16))
     batch = batch.reshape((-1, 16))

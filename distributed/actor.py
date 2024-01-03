@@ -23,7 +23,7 @@ def start_selfplay_process(
 
     from network.train import Checkpoint
     import mcts
-    import match_makers
+    from match_makers import SELFPLAY_ID
     import collector
 
     jax.config.update('jax_platform_name', 'cpu')
@@ -42,29 +42,31 @@ def start_selfplay_process(
     with jax.default_device(jax.devices("cpu")[0]):
         ckpt = load(step=-1)
 
-        params_checkpoints = {-1: None, 0: None}
+        model = ckpt.model
+
+        params_checkpoints = {-2: None, SELFPLAY_ID: ckpt.params}
 
         while True:
             start_t = time.perf_counter()
 
             match: collector.MatchInfo = match_request_queue.get()
             if match.agent_id not in params_checkpoints:
-                ckpt_tmp = load(step=match.agent_id)
-                params_checkpoints[match.agent_id] = ckpt_tmp.params
+                params_checkpoints[match.agent_id] = load(step=match.agent_id).params
+                print(match.agent_id, type(match.agent_id))
 
             elapsed_t = time.perf_counter() - start_t
             print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.agent_id})")
 
             samples = []
 
-            player1 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params, tokens_length)
+            player1 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
 
-            if match.agent_id == match_makers.SELFPLAY_ID:
-                player2 = mcts.PlayerMCTS(ckpt.params, ckpt.model, mcts_params, tokens_length)
-            elif match.agent_id == 0:
+            if match.agent_id == SELFPLAY_ID:
+                player2 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
+            elif match.agent_id == -2:
                 player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
             else:
-                player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], ckpt.model, mcts_params, tokens_length)
+                player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], model, mcts_params, tokens_length)
 
             for i in range(series_length):
                 if np.random.random() > 0.5:
@@ -77,7 +79,11 @@ def start_selfplay_process(
 
             match_result_queue.put(collector.MatchResult(samples, match.agent_id))
 
-            if not ckpt_queue.empty():
+            if ckpt_queue.empty():
+                continue
+
+            while not ckpt_queue.empty():
                 step = ckpt_queue.get()
-                ckpt = load(step)
-                print(f'update: {step}')
+
+            params_checkpoints[SELFPLAY_ID] = load(step).params
+            print(f'update: {step}')

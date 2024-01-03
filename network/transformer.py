@@ -156,6 +156,9 @@ class Transformer(nn.Module):
     def has_memory_block(self):
         return self.length_memory_block > 0
 
+    def create_zero_memory(self):
+        return jnp.zeros((self.length_memory_block, self.embed_dim))
+
     def setup(self):
         self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
 

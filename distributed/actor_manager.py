@@ -2,6 +2,7 @@ import multiprocessing
 import socket
 import pickle
 import click
+import tempfile
 
 import numpy as np
 import jax
@@ -19,21 +20,24 @@ from config import RunConfig
 @click.command()
 @click.argument('ip', type=str)
 @click.argument('port', type=int)
-@click.option(
-        "--n_clients", "-n",
-        type=int,
-        default=15,
-)
-@click.option(
-        "--ckpt_dir", "-d",
-        type=str,
-        default="/home/kuramitsu/lab/geister/data/checkpoints/test-3/"
-)
+@click.argument("n_clients", type=int)
 def main(
     ip: str,
     port: int,
+    n_clients: int
+):
+    jax.config.update('jax_platform_name', 'cpu')
+
+    with jax.default_device(jax.devices("cpu")[0]):
+        with tempfile.TemporaryDirectory() as ckpt_dir:
+            start_actor_manager(ip, port, n_clients, str(ckpt_dir))
+
+
+def start_actor_manager(
+    ip: str,
+    port: int,
     n_clients: int,
-    ckpt_dir: str,
+    ckpt_dir: str
 ):
     print(ckpt_dir)
 
@@ -98,6 +102,4 @@ def main(
 
 
 if __name__ == '__main__':
-    jax.config.update('jax_platform_name', 'cpu')
-    with jax.default_device(jax.devices("cpu")[0]):
-        main()
+    main()

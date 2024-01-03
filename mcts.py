@@ -12,13 +12,14 @@ from graphviz import Digraph
 from line_profiler import profile
 
 import env.state as game
-import game_analytics
 import env.checkmate_lib as checkmate_lib
+import env.naotti2020 as naotti2020
+
+import game_analytics
 from network.transformer import TransformerWithCache
 from network.train import Checkpoint
 from buffer import Batch
 import gat.server_util
-import env.naotti2020 as naotti2020
 
 
 class PredictState(struct.PyTreeNode):
@@ -27,7 +28,6 @@ class PredictState(struct.PyTreeNode):
 
 
 @partial(jax.jit, device=jax.devices("cpu")[0])
-# @jax.jit
 def predict(state: PredictState, x, cache, read_memory_i=None, write_memory_i=None):
     x, pi, v, c, cache = state.apply_fn(
         {'params': state.params},
@@ -483,6 +483,7 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
 
     for i in range(model.length_memory_block):
         x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=jnp.array(i))
+        # x, _, _, _, cache = predict(pred_state, write_memory[i], cache)
         next_memory.append(x)
 
     return jnp.array(next_memory)
@@ -509,6 +510,7 @@ def create_root_node(
 
         for i in range(len(memory)):
             _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=jnp.array(i))
+            # _, _, _, _, cache = predict(pred_state, memory[i], cache)
     else:
         cache = model.create_cache(cache_length)
 
@@ -674,7 +676,7 @@ def test():
         c_base=25,
     )
 
-    mcts_params2 = SearchParameters(
+    SearchParameters(
         num_simulations=50,
         dirichlet_alpha=0.2,
         n_ply_to_apply_noise=0,

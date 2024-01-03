@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 import pickle
 import multiprocessing
 import socket
@@ -54,7 +55,7 @@ class AgentManager:
         self.match_maker = match_maker
         self.fsp_threshold = fsp_threshold
 
-        self.agents: list[int] = [0]
+        self.agents: list[int] = [-2]
 
     def next_match(self):
         agent_index = self.match_maker.next_match()
@@ -149,7 +150,7 @@ def start(
         sample_shape=(config.series_length,),
         seq_length=config.tokens_length
     )
-    buffer.load('./data/replay_buffer/run-3-220.npz')
+    buffer.load(config.load_replay_buffer_path)
 
     match_maker = config.match_maker.create_match_maker()
     agent_manager = AgentManager(match_maker, config.fsp_threshold)
@@ -171,21 +172,24 @@ def start(
     for s in range(1000000):
         # recv_match_result
         for i in tqdm(range(config.update_period), desc='Collecting'):
+            while match_result_queue.empty():
+                time.sleep(0.1)
+
             result: MatchResult = match_result_queue.get()
             agent_manager.apply_match_result(result)
             buffer.add_sample(Batch.stack(result.samples))
 
         last_batch = buffer.get_last_minibatch(config.update_period)
-        last_batch.save(
-            file_name='./data/replay_buffer/run-3-220.npz',
-            append=True
-        )
+        last_batch.save(file_name=config.save_replay_buffer_path, append=True)
 
         win_rate = agent_manager.next_step(ckpt_holder.ckpt.step)
         print(win_rate)
 
         if is_waiting_parameter_update:
             # recv_updated_params
+            while learner_update_queue.empty():
+                time.sleep(0.1)
+
             step: int = learner_update_queue.get()
             ckpt_holder.ckpt = Checkpoint.load(checkpoint_manager, step)
 

@@ -6,6 +6,8 @@ from serde.json import from_json, to_json
 import match_makers
 import mcts
 
+from network.transformer import Transformer
+
 
 @dataclass
 class MatchMakerConfig:
@@ -22,8 +24,7 @@ class MatchMakerConfig:
 
 
 @dataclass
-class InitCheckpointConfig:
-    init_random: bool
+class CheckpointConfig:
     dir_name: str
     step: int
 
@@ -32,17 +33,22 @@ class InitCheckpointConfig:
 @deserialize
 @dataclass
 class RunConfig:
+    project_name: str
     series_length: int
     tokens_length: int
     batch_size: int
     num_batches: int
     buffer_size: int
     update_period: int
+    learning_rate: float
     match_maker: MatchMakerConfig
     fsp_threshold: float
     mcts_params: mcts.SearchParameters
     ckpt_dir: str
-    init_checkpoint_config: InitCheckpointConfig
+    load_replay_buffer_path: str
+    save_replay_buffer_path: str
+    init_params: CheckpointConfig = None
+    model: Transformer = None
     minibatch_temp_path: str = './data/replay_buffer/minibatch_tmp.npz'
 
     @classmethod

@@ -10,7 +10,6 @@ import orbax.checkpoint
 import wandb
 
 from network.train import Checkpoint, TrainState, train_step
-from network.transformer import Transformer
 import buffer
 
 from config import RunConfig
@@ -29,22 +28,17 @@ def main(
     config = RunConfig.from_json_file(config_path)
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
-    if not config.init_checkpoint_config.init_random:
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(config.init_checkpoint_config.dir_name, checkpointer)
+    if config.init_params is not None:
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(config.init_params.dir_name, checkpointer)
         ckpt = Checkpoint.load(
             checkpoint_manager,
-            step=config.init_checkpoint_config.step
+            step=config.init_params.step
         )
 
         model = ckpt.model
         params = ckpt.params
     else:
-        model = Transformer(
-            num_heads=4,
-            embed_dim=256,
-            num_hidden_layers=4,
-            length_memory_block=8
-        )
+        model = config.model
 
         init_data = np.zeros((1, 200, 5), dtype=np.uint8)
         variables = model.init(jax.random.PRNGKey(0), init_data)
@@ -53,12 +47,12 @@ def main(
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
-        tx=optax.adam(learning_rate=0.0005),
+        tx=optax.adam(learning_rate=config.learning_rate),
         dropout_rng=jax.random.PRNGKey(0),
         epoch=0
     )
 
-    wandb.init(project="geister-s")
+    wandb.init(project=config.project_name)
 
     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
     checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options)
