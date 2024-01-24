@@ -13,30 +13,20 @@ class MatchResult:
 SELFPLAY_ID = -1
 
 
+class MatchMakingMethod:
+    def next_match(self, won: np.ndarray, won_individual: np.ndarray) -> int:
+        pass
+
+
 class MatchMaker:
-    def next_match(self) -> int:
-        pass
-
-    def apply_match_result(self, agent_id: int, is_won: bool):
-        pass
-
-    def has_enough_matches(self) -> bool:
-        pass
-
-    def get_win_rates(self) -> np.ndarray:
-        pass
-
-    def add_agent(self):
-        pass
-
-
-class MatchMakerPFSPThompsonSampling(MatchMaker):
-    def __init__(self, n_agents: int, selfplay_p=0.5, match_buffer_size=1000) -> None:
+    def __init__(self, method: MatchMakingMethod, n_agents: int, selfplay_p=0.5, match_buffer_size=1000) -> None:
+        self.match_making_method = method
         self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
         self.selfplay_p = selfplay_p
 
-        self.agent_match_deques = deque([], maxlen=match_buffer_size * n_agents)
+        self.match_deques_individual = [deque([0], maxlen=match_buffer_size) for _ in range(n_agents)]
+        self.match_deque = deque([], maxlen=match_buffer_size * n_agents)
         self.won = np.zeros(n_agents, dtype=np.int32)
         self.lst = np.zeros(n_agents, dtype=np.int32)
 
@@ -51,49 +41,52 @@ class MatchMakerPFSPThompsonSampling(MatchMaker):
             return 0
 
         for i in range(self.n_agents):
-            if (self.won[i] + self.lst[i]) < 100:
+            if len(self.match_deques_individual[i]) < self.match_buffer_size:
                 return i
 
-        score = scipy.stats.beta.rvs(self.won + 1, self.lst + 1)
-        # print(score, np.argmin(score))
-        return np.argmin(score)
-
-    def _delete_last_match(self):
-        agent_id, is_won = self.agent_match_deques.pop()
-
-        if is_won:
-            self.won[agent_id] -= 1
-        else:
-            self.lst[agent_id] -= 1
+        return self.match_making_method.next_match()
 
     def apply_match_result(self, agent_id: int, is_won: bool):
         if agent_id == SELFPLAY_ID:
             return
 
-        if len(self.agent_match_deques) == self.agent_match_deques.maxlen:
+        self.match_deques_individual[agent_id].append(int(is_won))
+
+        if len(self.match_deque) == self.match_deque.maxlen:
             self._delete_last_match()
 
-        self.agent_match_deques.appendleft((agent_id, is_won))
+        self.match_deque.appendleft((agent_id, is_won))
 
         if is_won:
             self.won[agent_id] += 1
         else:
             self.lst[agent_id] += 1
 
+    def _delete_last_match(self):
+        agent_id, is_won = self.match_deque.pop()
+
+        if is_won:
+            self.won[agent_id] -= 1
+        else:
+            self.lst[agent_id] -= 1
+
     def has_enough_matches(self) -> bool:
+        for match_deque in self.match_deques_individual:
+            if len(match_deque) < self.match_buffer_size:
+                return False
+
         return True
 
     def get_win_rates(self) -> np.ndarray:
-        return scipy.stats.beta.ppf(
-            q=0.2,
-            a=self.won + 1,
-            b=self.lst + 1
-        )
+        win_rate = [np.mean(match_deque) for match_deque in self.match_deques_individual]
+        return np.array(win_rate)
 
     def add_agent(self):
         self.n_agents += 1
-        self.agent_match_deques = deque(
-            self.agent_match_deques,
+        self.match_deques_individual.append(deque([0], maxlen=self.match_buffer_size))
+
+        self.match_deque = deque(
+            self.match_deque,
             maxlen=self.match_buffer_size * self.n_agents
         )
 
@@ -101,57 +94,27 @@ class MatchMakerPFSPThompsonSampling(MatchMaker):
         self.lst = np.concatenate([self.lst, [0]], dtype=np.int32)
 
 
-class MatchMakerFSP(MatchMaker):
-    def __init__(self, n_agents: int, selfplay_p=0.5, match_buffer_size=1000, p=2) -> None:
-        self.n_agents = n_agents
-        self.match_buffer_size = match_buffer_size
-        self.selfplay_p = selfplay_p
-        self.agent_match_deques = [deque([0], maxlen=match_buffer_size) for _ in range(n_agents)]
-        self.p = p
+@dataclass
+class MatchMakingMethodThompsonSampling(MatchMakingMethod):
+    def next_match(self, n: int, won: np.ndarray, won_individual: np.ndarray) -> int:
+        lost = n - won
+        score = scipy.stats.beta.rvs(won, lost)
+        # print(score, np.argmin(score))
+        return np.argmin(score)
 
-    def next_match(self) -> int:
-        if self.n_agents == 0:
-            return SELFPLAY_ID
 
-        if np.random.random() < self.selfplay_p:
-            return SELFPLAY_ID
+@dataclass
+class MatchMakingMethodPFSP(MatchMakingMethod):
+    p: float
 
-        if self.n_agents == 1:
-            return 0
-
-        for i in range(self.n_agents):
-            if len(self.agent_match_deques[i]) < self.match_buffer_size:
-                return i
-
-        win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
-        win_rate = np.array(win_rate)
+    def next_match(self, n: int, won: np.ndarray, won_individual: np.ndarray) -> int:
+        win_rate = won_individual / n
         score = (1 - win_rate) ** self.p
 
         score = score / score.sum()
 
         agent_id = np.random.choice(range(self.n_agents), p=score)
         return int(agent_id)
-
-    def apply_match_result(self, agent_id: int, is_won: bool):
-        if agent_id == SELFPLAY_ID:
-            return
-
-        self.agent_match_deques[agent_id].append(int(is_won))
-
-    def has_enough_matches(self) -> bool:
-        for match_deque in self.agent_match_deques:
-            if len(match_deque) < self.match_buffer_size:
-                return False
-
-        return True
-
-    def get_win_rates(self) -> np.ndarray:
-        win_rate = [np.mean(match_deque) for match_deque in self.agent_match_deques]
-        return np.array(win_rate)
-
-    def add_agent(self):
-        self.n_agents += 1
-        self.agent_match_deques.append(deque([0], maxlen=self.match_buffer_size))
 
 
 def main():

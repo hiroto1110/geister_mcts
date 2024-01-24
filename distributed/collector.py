@@ -14,7 +14,7 @@ import orbax.checkpoint
 from distributed.config import RunConfig
 import distributed.socket_util as socket_util
 
-from buffer import ReplayBuffer, Batch
+from batch import ReplayBuffer
 from network.train import Checkpoint
 import match_makers
 import training_logger
@@ -22,7 +22,7 @@ import training_logger
 
 @dataclass
 class MatchResult:
-    samples: list[Batch]
+    samples: list[np.ndarray]
     agent_id: int
 
 
@@ -177,7 +177,7 @@ def start(
 
             result: MatchResult = match_result_queue.get()
             agent_manager.apply_match_result(result)
-            buffer.add_sample(Batch.stack(result.samples))
+            buffer.add_sample(np.stack(result.samples))
 
         last_batch = buffer.get_last_minibatch(config.update_period)
         last_batch.save(file_name=config.save_replay_buffer_path, append=True)

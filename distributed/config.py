@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
-from serde import serialize, deserialize
+from serde import serde
+from serde.core import InternalTagging
 from serde.json import from_json, to_json
 
 import match_makers
@@ -24,13 +25,20 @@ class MatchMakerConfig:
 
 
 @dataclass
-class CheckpointConfig:
+class InitWithCheckpointConfig:
     dir_name: str
     step: int
 
 
-@serialize
-@deserialize
+@dataclass
+class InitWithRandomConfig:
+    model: Transformer
+
+
+InitModelConfig = InitWithCheckpointConfig | InitWithRandomConfig
+
+
+@serde(tagging=InternalTagging(tag='type'))
 @dataclass
 class RunConfig:
     project_name: str
@@ -47,8 +55,7 @@ class RunConfig:
     ckpt_dir: str
     load_replay_buffer_path: str
     save_replay_buffer_path: str
-    init_params: CheckpointConfig = None
-    model: Transformer = None
+    init_params: InitModelConfig
     minibatch_temp_path: str = './data/replay_buffer/minibatch_tmp.npz'
 
     @classmethod

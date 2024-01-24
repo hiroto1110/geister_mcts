@@ -64,7 +64,7 @@ def start_selfplay_process(
             if match.agent_id == SELFPLAY_ID:
                 player2 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
             elif match.agent_id == -2:
-                player2 = mcts.PlayerNaotti2020(depth_min=4, depth_max=6)
+                player2 = mcts.PlayerNaotti2020(depth_min=3, depth_max=6)
             else:
                 player2 = mcts.PlayerMCTS(params_checkpoints[match.agent_id], model, mcts_params, tokens_length)
 

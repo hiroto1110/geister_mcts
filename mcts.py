@@ -16,9 +16,9 @@ import env.checkmate_lib as checkmate_lib
 import env.naotti2020 as naotti2020
 
 import game_analytics
+import batch
 from network.transformer import TransformerWithCache
 from network.train import Checkpoint
-from buffer import Batch
 import gat.server_util
 
 
@@ -519,7 +519,24 @@ def create_root_node(
     return node, tokens
 
 
-class PlayerMCTS:
+class PlayerBase:
+    def __init__(self) -> None:
+        self.state: game.SimulationState = None
+
+    def init_state(self, state: game.SimulationState):
+        pass
+
+    def select_next_action(self) -> int:
+        pass
+
+    def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
+        pass
+
+    def clear_cache(self):
+        pass
+
+
+class PlayerMCTS(PlayerBase):
     def __init__(
             self,
             params,
@@ -546,6 +563,12 @@ class PlayerMCTS:
         self.node, tokens = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
         self.tokens += tokens
 
+    def clear_cache(self):
+        self.state = None
+        self.pieces_history = np.zeros((101, 8), dtype=np.int8)
+        self.tokens = []
+        self.node = None
+
     def select_next_action(self) -> int:
         self.pieces_history[self.state.n_ply // 2] = self.state.pieces_p
 
@@ -559,7 +582,7 @@ class PlayerMCTS:
             self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
         self.tokens += tokens
 
-    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> Batch:
+    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> np.ndarray:
         tokens = np.zeros((self.num_tokens, 5), dtype=np.uint8)
         tokens[:min(self.num_tokens, len(self.tokens))] = self.tokens[:self.num_tokens]
 
@@ -567,10 +590,10 @@ class PlayerMCTS:
         reward = 3 + int(self.state.winner * self.state.win_type.value)
         reward = np.array([reward])
 
-        return Batch(tokens, actions, reward, true_color_o)
+        return batch.create_batch(tokens, actions, reward, true_color_o)
 
 
-class PlayerNaotti2020:
+class PlayerNaotti2020(PlayerBase):
     def __init__(self, depth_min, depth_max, print_log=False) -> None:
         self.depth_min = depth_min
         self.depth_max = depth_max
@@ -666,7 +689,7 @@ def test():
     np.random.seed(20)
 
     mcts_params1 = SearchParameters(
-        num_simulations=50,
+        num_simulations=25,
         dirichlet_alpha=0.2,
         n_ply_to_apply_noise=0,
         max_duplicates=1,
@@ -687,14 +710,16 @@ def test():
         c_base=25,
     )
 
-    player1 = PlayerMCTS(*load_ckpt('./data/checkpoints/rmt_4_256_4', 8), mcts_params1, num_tokens=220)
-    # player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
-    player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
+    ckpt1 = load_ckpt('./data/checkpoints/run-5', 128)
 
-    seg_len = 3
+    seg_len = 4
     game_result = np.zeros((seg_len, 3))
 
-    for i in range(10):
+    for i in range(200):
+        player1 = PlayerMCTS(*ckpt1, mcts_params1, num_tokens=220)
+        # player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
+        player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
+
         for j in range(seg_len):
             if j % 2 == 0:
                 play_game(player1, player2, game_length=200, print_board=False)
