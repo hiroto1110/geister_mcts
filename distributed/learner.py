@@ -10,7 +10,7 @@ import orbax.checkpoint
 import wandb
 
 from network.train import Checkpoint, TrainState, train_step
-import buffer
+from batch import load, astuple
 
 from config import RunConfig
 import collector
@@ -21,41 +21,27 @@ import collector
 @click.argument('host', type=str)
 @click.argument('port', type=int)
 def main(
-        config_path: str,
-        host: str,
-        port: int
+    config_path: str,
+    host: str,
+    port: int
 ):
     config = RunConfig.from_json_file(config_path)
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
-    if config.init_params is not None:
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(config.init_params.dir_name, checkpointer)
-        ckpt = Checkpoint.load(
-            checkpoint_manager,
-            step=config.init_params.step
-        )
-
-        model = ckpt.model
-        params = ckpt.params
-    else:
-        model = config.model
-
-        init_data = np.zeros((1, 200, 5), dtype=np.uint8)
-        variables = model.init(jax.random.PRNGKey(0), init_data)
-        params = variables['params']
+    model, params = config.init_params.create_model_and_params()
 
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optax.adam(learning_rate=config.learning_rate),
         dropout_rng=jax.random.PRNGKey(0),
-        epoch=0
+        epoch=0,
+        init_memory=TrainState.create_init_memory(model)
     )
 
     wandb.init(project=config.project_name)
 
-    options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=25, keep_period=50, create=True)
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options)
+    checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options=config.ckpt_options)
 
     Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
 
@@ -72,7 +58,7 @@ def main(
 
     while True:
         log_dict: dict = learner_request_queue.get()
-        minibatch = buffer.Batch.from_npz(config.minibatch_temp_path)
+        minibatch = load(config.minibatch_temp_path)
 
         state, train_log_dict = train(state, minibatch, config.batch_size)
 
@@ -86,18 +72,18 @@ def main(
 
 
 def train(
-        state: TrainState,
-        train_batch: buffer.Batch,
-        batch_size: int
-        ) -> tuple[TrainState, dict]:
-    train_batches = train_batch.divide(batch_size)
+    state: TrainState,
+    train_batch: np.ndarray,
+    batch_size: int
+) -> tuple[TrainState, dict]:
+    train_batches = np.split(train_batch, len(train_batch) // batch_size)
     num_batches = len(train_batches)
 
     loss = 0
     losses = []
 
     for i in tqdm(range(num_batches), desc=' Training '):
-        state, loss_i, losses_i = train_step(state, *train_batches[i].astuple(), eval=False, is_rmt=True)
+        state, loss_i, losses_i = train_step(state, *astuple(train_batches[i]), num_division_of_segment=4, eval=False)
 
         loss += loss_i
         losses.append(losses_i)

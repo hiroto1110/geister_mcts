@@ -13,13 +13,14 @@ class MatchResult:
 SELFPLAY_ID = -1
 
 
-class MatchMakingMethod:
-    def next_match(self, won: np.ndarray, won_individual: np.ndarray) -> int:
+@dataclass
+class MatchMakingMethodBase:
+    def next_match(self, latest_games: np.ndarray, individual_latest_games: np.ndarray) -> int:
         pass
 
 
 class MatchMaker:
-    def __init__(self, method: MatchMakingMethod, n_agents: int, selfplay_p=0.5, match_buffer_size=1000) -> None:
+    def __init__(self, method: MatchMakingMethodBase, n_agents: int, selfplay_p=0.5, match_buffer_size=1000) -> None:
         self.match_making_method = method
         self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
@@ -44,7 +45,12 @@ class MatchMaker:
             if len(self.match_deques_individual[i]) < self.match_buffer_size:
                 return i
 
-        return self.match_making_method.next_match()
+        latest_games = np.stack([self.won, self.lst])
+
+        won = np.array([np.sum(game) for game in self.match_deques_individual])
+        individual_latest_games = np.stack([won, self.match_buffer_size - won])
+
+        return self.match_making_method.next_match(latest_games, individual_latest_games)
 
     def apply_match_result(self, agent_id: int, is_won: bool):
         if agent_id == SELFPLAY_ID:
@@ -95,32 +101,36 @@ class MatchMaker:
 
 
 @dataclass
-class MatchMakingMethodThompsonSampling(MatchMakingMethod):
-    def next_match(self, n: int, won: np.ndarray, won_individual: np.ndarray) -> int:
-        lost = n - won
-        score = scipy.stats.beta.rvs(won, lost)
+class ThompsonSampling(MatchMakingMethodBase):
+    def next_match(self, latest_games: np.ndarray, individual_latest_games: np.ndarray) -> int:
+        score = scipy.stats.beta.rvs(latest_games[0] + 1, latest_games[1] + 1)
         # print(score, np.argmin(score))
         return np.argmin(score)
 
 
 @dataclass
-class MatchMakingMethodPFSP(MatchMakingMethod):
+class PFSP(MatchMakingMethodBase):
     p: float
 
-    def next_match(self, n: int, won: np.ndarray, won_individual: np.ndarray) -> int:
-        win_rate = won_individual / n
+    def next_match(self, latest_games: np.ndarray, individual_latest_games: np.ndarray) -> int:
+        win_rate = individual_latest_games[0] / individual_latest_games.sum(axis=0)
         score = (1 - win_rate) ** self.p
 
         score = score / score.sum()
 
-        agent_id = np.random.choice(range(self.n_agents), p=score)
+        agent_id = np.random.choice(range(len(score)), p=score)
         return int(agent_id)
+
+
+MatchMakingMethod = ThompsonSampling | PFSP
 
 
 def main():
     true_p = np.array([0.9, 0.7, 0.61, 0.59, 0.58])
 
-    match_maker = MatchMakerPFSPThompsonSampling(n_agents=true_p.shape[0], selfplay_p=0, match_buffer_size=1000)
+    match_making = ThompsonSampling()
+    # match_making = MatchMakingMethodPFSP(p=6)
+    match_maker = MatchMaker(match_making, n_agents=true_p.shape[0], selfplay_p=0, match_buffer_size=1000)
 
     for i in range(5000):
         id = match_maker.next_match()

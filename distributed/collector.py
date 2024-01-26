@@ -14,7 +14,7 @@ import orbax.checkpoint
 from distributed.config import RunConfig
 import distributed.socket_util as socket_util
 
-from batch import ReplayBuffer
+from batch import ReplayBuffer, save, is_won
 from network.train import Checkpoint
 import match_makers
 import training_logger
@@ -72,7 +72,7 @@ class AgentManager:
         agent_index = self.agents.index(result.agent_id)
 
         for sample in result.samples:
-            self.match_maker.apply_match_result(agent_index, sample.is_won())
+            self.match_maker.apply_match_result(agent_index, is_won(sample))
 
     def next_step(self, step: int) -> np.ndarray:
         win_rates = self.match_maker.get_win_rates()
@@ -93,12 +93,12 @@ class CheckpointHolder:
 
 
 def handle_client(
-        sock: socket.socket,
-        match_result_queue: queue.Queue,
-        ckpt_holder: CheckpointHolder,
-        agent_manager: AgentManager,
-        config: RunConfig
-        ):
+    sock: socket.socket,
+    match_result_queue: queue.Queue,
+    ckpt_holder: CheckpointHolder,
+    agent_manager: AgentManager,
+    config: RunConfig
+):
     socket_util.send_msg(sock, pickle.dumps(config))
     socket_util.send_msg(sock, pickle.dumps(ckpt_holder.ckpt))
 
@@ -125,11 +125,12 @@ def handle_client(
 
 
 def wait_accept(
-        server: socket.socket,
-        match_result_queue: queue.Queue,
-        ckpt_holder: CheckpointHolder,
-        agent_manager: AgentManager,
-        config: RunConfig):
+    server: socket.socket,
+    match_result_queue: queue.Queue,
+    ckpt_holder: CheckpointHolder,
+    agent_manager: AgentManager,
+    config: RunConfig
+):
     while True:
         client_sock, address = server.accept()
         print(f"New client from {address}")
@@ -140,10 +141,10 @@ def wait_accept(
 
 
 def start(
-        server: socket.socket,
-        config: RunConfig,
-        learner_update_queue: multiprocessing.Queue,
-        learner_request_queue: multiprocessing.Queue,
+    server: socket.socket,
+    config: RunConfig,
+    learner_update_queue: multiprocessing.Queue,
+    learner_request_queue: multiprocessing.Queue,
 ):
     buffer = ReplayBuffer(
         buffer_size=config.buffer_size,
@@ -152,7 +153,12 @@ def start(
     )
     buffer.load(config.load_replay_buffer_path)
 
-    match_maker = config.match_maker.create_match_maker()
+    match_maker = match_makers.MatchMaker(
+        method=config.match_making,
+        n_agents=1,
+        selfplay_p=config.selfplay_p,
+        match_buffer_size=config.match_maker_buffer_size
+    )
     agent_manager = AgentManager(match_maker, config.fsp_threshold)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
@@ -169,7 +175,7 @@ def start(
 
     is_waiting_parameter_update = False
 
-    for s in range(1000000):
+    for s in range(100000000):
         # recv_match_result
         for i in tqdm(range(config.update_period), desc='Collecting'):
             while match_result_queue.empty():
@@ -180,7 +186,7 @@ def start(
             buffer.add_sample(np.stack(result.samples))
 
         last_batch = buffer.get_last_minibatch(config.update_period)
-        last_batch.save(file_name=config.save_replay_buffer_path, append=True)
+        save(config.save_replay_buffer_path, last_batch, append=True)
 
         win_rate = agent_manager.next_step(ckpt_holder.ckpt.step)
         print(win_rate)
@@ -201,18 +207,18 @@ def start(
 
             # send_training_minibatch
             train_batch = buffer.get_minibatch(config.batch_size * config.num_batches)
-            train_batch.to_npz(config.minibatch_temp_path)
+            save(config.minibatch_temp_path, train_batch, append=False)
             learner_request_queue.put(log_dict)
 
             is_waiting_parameter_update = True
 
 
 def main(
-        host: str,
-        port: int,
-        config: RunConfig,
-        learner_update_queue: multiprocessing.Queue,
-        learner_request_queue: multiprocessing.Queue,
+    host: str,
+    port: int,
+    config: RunConfig,
+    learner_update_queue: multiprocessing.Queue,
+    learner_request_queue: multiprocessing.Queue,
 ):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 

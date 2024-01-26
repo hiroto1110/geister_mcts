@@ -16,14 +16,18 @@ import optax
 
 import wandb
 
-from buffer import Batch
 from network.transformer import Transformer, TransformerWithCache
+from batch import load
 
 
 class TrainState(train_state.TrainState):
     epoch: int
     dropout_rng: Any
     init_memory: jnp.ndarray
+
+    @classmethod
+    def create_init_memory(cls, model: Transformer) -> jnp.ndarray:
+        return jnp.zeros((model.length_memory_block, model.embed_dim))
 
 
 @dataclasses.dataclass
@@ -190,7 +194,7 @@ def train_step(
     return state, loss, losses
 
 
-def train_epoch(state: TrainState, batches: list[Batch], num_division_of_segment: int, eval: bool):
+def train_epoch(state: TrainState, batches: list[jnp.ndarray], num_division_of_segment: int, eval: bool):
     loss_history, info_history = [], []
 
     for batch in tqdm(batches):
@@ -205,8 +209,8 @@ def fit(
     state: TrainState,
     model: Transformer,
     checkpoint_manager: orbax.checkpoint.CheckpointManager,
-    train_batch: Batch,
-    test_batch: Batch,
+    train_batch: jnp.ndarray,
+    test_batch: jnp.ndarray,
     epochs: int,
     batch_size: int,
     num_division_of_segment: int,
@@ -250,7 +254,7 @@ def fit(
     return state
 
 
-def main_train(batch: Batch, log_wandb=False):
+def main_train(batch: jnp.ndarray, log_wandb=False):
     train_batch, test_batch = batch.split(0.8)
 
     heads = 4,
@@ -297,10 +301,7 @@ def main_train(batch: Batch, log_wandb=False):
 
 
 def main():
-    batch = Batch.from_npz('./data/replay_buffer/189.npz', shuffle=True)
-
-    batch = batch.create_batch_from_indices(jnp.arange((len(batch) // 16) * 16))
-    batch = batch.reshape((-1, 16))
+    batch = load('./data/replay_buffer/189.npz', shuffle=True)
 
     main_train(batch)
 

@@ -74,7 +74,8 @@ def start_actor_manager(
                 ckpt_queues[i],
                 ckpt_dir,
                 seed,
-                config.mcts_params,
+                config.mcts_params_min,
+                config.mcts_params_max,
                 config.series_length,
                 config.tokens_length)
 

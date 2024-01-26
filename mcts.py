@@ -56,6 +56,27 @@ class SearchParameters:
     def replace(self, **args):
         return replace(self, **args)
 
+    @classmethod
+    def interpolate(cls, p1: "SearchParameters", p2: "SearchParameters", p: float) -> "SearchParameters":
+        def interpolate_f(a1, a2):
+            return a1 + (a2 - a1) * p
+
+        def interpolate_i(a1, a2):
+            return int(np.round(interpolate_f(a1, a2), 0))
+
+        return SearchParameters(
+            num_simulations=interpolate_i(p1.num_simulations, p2.num_simulations),
+            dirichlet_alpha=interpolate_f(p1.dirichlet_alpha, p2.dirichlet_alpha),
+            dirichlet_eps=interpolate_f(p1.dirichlet_eps, p2.dirichlet_eps),
+            n_ply_to_apply_noise=interpolate_i(p1.n_ply_to_apply_noise, p2.n_ply_to_apply_noise),
+            max_duplicates=interpolate_i(p1.max_duplicates, p2.max_duplicates),
+            c_init=interpolate_f(p1.c_init, p2.c_init),
+            c_base=interpolate_f(p1.c_base, p2.c_base),
+            depth_search_checkmate_root=interpolate_i(p1.depth_search_checkmate_root, p2.depth_search_checkmate_root),
+            depth_search_checkmate_leaf=interpolate_i(p1.depth_search_checkmate_leaf, p2.depth_search_checkmate_leaf),
+            visibilize_node_graph=p1.visibilize_node_graph and p2.visibilize_node_graph,
+        )
+
 
 class NodeBase:
     def __init__(self, action_space: int, has_afterstate: bool) -> None:
@@ -93,9 +114,6 @@ class Node(NodeBase):
             return
 
         self.valid_actions_mask[self.invalid_actions] = 0
-
-        # self.valid_actions = np.where(self.valid_actions_mask)[0]
-
         self.p = np.where(self.valid_actions_mask, self.p, 0)
 
     def setup_valid_actions(self, state, player):
@@ -324,8 +342,11 @@ def simulate(node: Node,
 
     node.setup_valid_actions(state, player)
 
-    scores = node.calc_scores(player, params)
-    action = np.argmax(scores)
+    if player == 1:
+        scores = node.calc_scores(player, params)
+        action = np.argmax(scores)
+    else:
+        action = np.random.choice(range(game.ACTION_SPACE), p=node.p)
 
     tokens, afterstates = state.step(action, player)
 
@@ -397,6 +418,10 @@ def select_action_with_mcts(node: Node,
     if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
+    if state.n_ply < 8:
+        node.setup_valid_actions(state, 1)
+        return np.random.choice(node.valid_actions)
+
     action, e, escaped_id = find_checkmate(state, 1, depth=params.depth_search_checkmate_root)
 
     if e < 0:
@@ -445,7 +470,7 @@ def select_action_with_mcts(node: Node,
             dg.attr('node', fontname="Myrica M")
             dg.attr('edge', fontname="Myrica M")
             visibilize_node_graph(node, dg)
-            dg.render(f'./graph/n_ply_{state.n_ply}')
+            dg.render(f'./data/graph/n_ply_{state.n_ply}')
 
     return action
 
@@ -588,9 +613,14 @@ class PlayerMCTS(PlayerBase):
 
         actions = actions[tokens[:, 4]]
         reward = 3 + int(self.state.winner * self.state.win_type.value)
-        reward = np.array([reward])
+        reward = np.array([reward], dtype=np.uint8)
 
-        return batch.create_batch(tokens, actions, reward, true_color_o)
+        return batch.create_batch(
+            tokens.astype(np.uint8),
+            actions.astype(np.uint8),
+            reward.astype(np.uint8),
+            true_color_o.astype(np.uint8)
+        )
 
 
 class PlayerNaotti2020(PlayerBase):

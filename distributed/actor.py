@@ -9,7 +9,8 @@ def start_selfplay_process(
         ckpt_queue: multiprocessing.Queue,
         ckpt_dir: str,
         seed: int,
-        mcts_params,
+        mcts_params_min,
+        mcts_params_max,
         series_length: int,
         tokens_length: int,
 ):
@@ -59,6 +60,8 @@ def start_selfplay_process(
 
             samples = []
 
+            mcts_params = mcts.SearchParameters.interpolate(mcts_params_min, mcts_params_max, p=np.random.random())
+            print(mcts_params)
             player1 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
 
             if match.agent_id == SELFPLAY_ID:

@@ -1,7 +1,8 @@
+import os
 import numpy as np
 
 
-def load(path: str):
+def load(path: str) -> np.ndarray:
     if path.endswith('.npy'):
         return np.load(path)
 
@@ -16,6 +17,14 @@ def _load_npz(path: str) -> np.ndarray:
     return create_batch(data['t'], data['p'], data['r'], data['c'])
 
 
+def save(path: str, batch: np.ndarray, append: bool):
+    if append and os.path.exists(path):
+        old_batch = load(path)
+        batch = np.concatenate([old_batch, batch])
+
+    np.save(path, batch)
+
+
 def create_batch(x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: np.ndarray) -> np.ndarray:
     """
     x: [..., seq_len, 5]
@@ -25,9 +34,10 @@ def create_batch(x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: n
     """
     seq_len = x.shape[-2]
 
-    x_flatten = x.reshape(-1, seq_len * 5)
+    x_flatten = x.reshape((*x.shape[:-2], seq_len * 5))
+    action_flatten = action.reshape((*x.shape[:-2], seq_len))
 
-    return np.concatenate([x_flatten, action, reward, color], axis=-1, dtype=np.uint8)
+    return np.concatenate([x_flatten, action_flatten, reward.astype(np.uint8), color], axis=-1, dtype=np.uint8)
 
 
 def astuple(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -42,11 +52,38 @@ def astuple(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         splited.append(batch[..., total: total + length])
         total += length
 
-    return tuple(splited)
+    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
+
+
+def get_tokens(batch: np.ndarray) -> np.ndarray:
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., :seq_len * 5].reshape((*batch.shape[:-1], seq_len, 5))
+
+
+def get_action(batch: np.ndarray) -> np.ndarray:
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., seq_len * 5: seq_len * 6].reshape((*batch.shape[:-1], seq_len))
+
+
+def get_reward(batch: np.ndarray) -> np.ndarray:
+    return batch[..., -9]
+
+
+def get_color(batch: np.ndarray) -> np.ndarray:
+    return batch[..., -8:]
+
+
+def is_won(batch: np.ndarray) -> bool:
+    return get_reward(batch) > 3
 
 
 def get_length_of_one_sample(seq_len: int) -> int:
     return seq_len * 6 + 9
+
+
+def get_seq_len(length_of_one_sample: int) -> int:
+    assert (length_of_one_sample - 9) % 6 == 0
+    return (length_of_one_sample - 9) // 6
 
 
 class ReplayBuffer:
@@ -88,9 +125,7 @@ class ReplayBuffer:
         self.index = (self.index + 1) % self.buffer_size
 
     def load(self, file_name: str):
-        assert file_name.endswith('.npy')
-
-        buffer = np.load(file_name)
+        buffer = load(file_name)
 
         n_samples = min(self.buffer_size, buffer.shape[0])
 

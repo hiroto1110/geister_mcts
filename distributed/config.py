@@ -4,38 +4,47 @@ from serde import serde
 from serde.core import InternalTagging
 from serde.json import from_json, to_json
 
+import jax
+import jax.numpy as jnp
+
+import orbax.checkpoint
+
 import match_makers
 import mcts
 
 from network.transformer import Transformer
+from network.train import Checkpoint
 
 
 @dataclass
-class MatchMakerConfig:
-    type: str
-    parameters: dict
-
-    def create_match_maker(self) -> match_makers.MatchMaker:
-        match self.type:
-            case 'fsp':
-                return match_makers.MatchMakerFSP(n_agents=1, **self.parameters)
-
-            case _:
-                raise NotImplementedError()
-
-
-@dataclass
-class InitWithCheckpointConfig:
+class InitFromCheckpoint:
     dir_name: str
     step: int
 
+    def create_model_and_params(self):
+        checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        checkpoint_manager = orbax.checkpoint.CheckpointManager(self.dir_name, checkpointer)
+        ckpt = Checkpoint.load(
+            checkpoint_manager,
+            step=self.step
+        )
+
+        return ckpt.model, ckpt.params
+
 
 @dataclass
-class InitWithRandomConfig:
+class InitWithRandom:
     model: Transformer
 
+    def create_model_and_params(self):
+        init_data = jnp.zeros((1, 200, 5), dtype=jnp.uint8)
+        variables = self.model.init(jax.random.PRNGKey(0), init_data)
+        params = variables['params']
 
-InitModelConfig = InitWithCheckpointConfig | InitWithRandomConfig
+        return self.model, params
+
+
+InitModelConfig = InitFromCheckpoint | InitWithRandom
 
 
 @serde(tagging=InternalTagging(tag='type'))
@@ -49,10 +58,14 @@ class RunConfig:
     buffer_size: int
     update_period: int
     learning_rate: float
-    match_maker: MatchMakerConfig
+    selfplay_p: float
+    match_maker_buffer_size: int
+    match_making: match_makers.MatchMakingMethod
     fsp_threshold: float
-    mcts_params: mcts.SearchParameters
+    mcts_params_min: mcts.SearchParameters
+    mcts_params_max: mcts.SearchParameters
     ckpt_dir: str
+    ckpt_options: orbax.checkpoint.CheckpointManagerOptions
     load_replay_buffer_path: str
     save_replay_buffer_path: str
     init_params: InitModelConfig
