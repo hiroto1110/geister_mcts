@@ -80,7 +80,7 @@ class SearchParameters:
 
 class NodeBase:
     def __init__(self, action_space: int, has_afterstate: bool) -> None:
-        self.children: list[Node] = [None] * action_space
+        self.children: list[NodeBase] = [None] * action_space
         self.p = np.zeros(action_space)
         self.w = np.zeros(action_space)
         self.n = np.zeros(action_space, dtype=np.int16)
@@ -94,6 +94,9 @@ class NodeBase:
         self.cache: jnp.ndarray = None
         self.predicted_color: jnp.ndarray = None
         self.predicted_v: jnp.ndarray = None
+
+    def visualize_graph(self, g: Digraph):
+        pass
 
 
 class Node(NodeBase):
@@ -142,6 +145,17 @@ class Node(NodeBase):
     def get_policy(self):
         return self.n / self.n.sum()
 
+    def visualize_graph(self, g: Digraph):
+        for child, w, n, p in zip(self.children, self.w, self.n, self.p):
+            if child is None:
+                continue
+
+            v = w / n if n > 0 else 0
+            label = f"w = {v:.3f}\r\np = {p:.3f}"
+            g.edge(self.state_str, child.state_str, label)
+
+            child.visualize_graph(g)
+
 
 class AfterStateNode(NodeBase):
     def __init__(self, afterstates: List[game.Afterstate]):
@@ -153,34 +167,21 @@ class AfterStateNode(NodeBase):
         self.afterstate = afterstates[0]
         self.remaining_afterstates = afterstates[1:]
 
-
-def visibilize_node_graph(node: Node, g: Digraph):
-    if isinstance(node, Node):
-        for child, w, n, p in zip(node.children, node.w, node.n, node.p):
-            if child is None:
-                continue
-
-            v = w / n if n > 0 else 0
-            label = f"w = {v:.3f}\r\np = {p:.3f}"
-            g.edge(node.state_str, child.state_str, label)
-
-            visibilize_node_graph(child, g)
-
-    else:
-        for i in range(2):
-            child = node.children[i]
+    def visualize_graph(self, g: Digraph):
+        for i in range(len(self.children)):
+            child = self.children[i]
 
             if child is None:
                 continue
 
             color = 'blue' if i == 1 else 'red'
 
-            v = node.w[i] / node.n[i] if node.n[i] > 0 else 0
-            p = node.p[i]
+            v = self.w[i] / self.n[i] if self.n[i] > 0 else 0
+            p = self.p[i]
             label = f"{color}\r\nw = {v:.3f}\r\np = {p:.3f}"
-            g.edge(node.state_str, child.state_str, label=label)
+            g.edge(self.state_str, child.state_str, label=label)
 
-            visibilize_node_graph(child, g)
+            child.visualize_graph(g)
 
 
 def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
@@ -194,12 +195,15 @@ def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
 
 
 @profile
-def expand_afterstate(node: Node,
-                      tokens: List[List[int]],
-                      afterstates: List[game.Afterstate],
-                      state: game.SimulationState,
-                      pred_state: PredictState,
-                      params: SearchParameters):
+def expand_afterstate(
+    node: Node,
+    tokens: List[List[int]],
+    afterstates: List[game.Afterstate],
+    state: game.SimulationState,
+    pred_state: PredictState,
+    params: SearchParameters
+) -> tuple[AfterStateNode, float]:
+
     next_node = AfterStateNode(afterstates)
 
     v, _ = setup_node(next_node, pred_state, tokens, node.cache)
@@ -214,12 +218,14 @@ def expand_afterstate(node: Node,
 
 
 @profile
-def expand(node: Node,
-           tokens: List[List[int]],
-           state: game.SimulationState,
-           pred_state: PredictState,
-           params: SearchParameters,
-           force_to_setup=False):
+def expand(
+    node: Node,
+    tokens: List[List[int]],
+    state: game.SimulationState,
+    pred_state: PredictState,
+    params: SearchParameters,
+    force_to_setup=False
+) -> tuple[Node, float]:
 
     next_node = Node()
     next_node.winner = state.winner
@@ -239,12 +245,14 @@ def expand(node: Node,
 
 
 @profile
-def try_expand_checkmate(node: Node,
-                         tokens: List[List[int]],
-                         state: game.SimulationState,
-                         player: int,
-                         pred_state: PredictState,
-                         params: SearchParameters):
+def try_expand_checkmate(
+    node: Node,
+    tokens: List[List[int]],
+    state: game.SimulationState,
+    player: int,
+    pred_state: PredictState,
+    params: SearchParameters
+) -> tuple[bool, Node, float]:
 
     action, e, escaped_id = find_checkmate(state, player, depth=params.depth_search_checkmate_leaf)
 
@@ -286,11 +294,13 @@ def setup_node(node: NodeBase, pred_state: PredictState, tokens: list, cache: jn
 
 
 @profile
-def simulate_afterstate(node: AfterStateNode,
-                        state: game.SimulationState,
-                        player: int,
-                        pred_state: PredictState,
-                        params: SearchParameters) -> float:
+def simulate_afterstate(
+    node: AfterStateNode,
+    state: game.SimulationState,
+    player: int,
+    pred_state: PredictState,
+    params: SearchParameters
+) -> float:
     p = 0.5 + (node.p - 0.5) * 1
     color = np.random.choice([game.RED, game.BLUE], p=p)
 
@@ -328,11 +338,13 @@ def simulate_afterstate(node: AfterStateNode,
 
 
 @profile
-def simulate(node: Node,
-             state: game.SimulationState,
-             player: int,
-             pred_state: PredictState,
-             params: SearchParameters) -> float:
+def simulate(
+    node: Node,
+    state: game.SimulationState,
+    player: int,
+    pred_state: PredictState,
+    params: SearchParameters
+) -> float:
 
     if state.is_done:
         return state.winner
@@ -409,11 +421,13 @@ def create_invalid_actions(actions, state: game.SimulationState, pieces_history:
 
 
 @profile
-def select_action_with_mcts(node: Node,
-                            state: game.SimulationState,
-                            pred_state: PredictState,
-                            params: SearchParameters,
-                            pieces_history: np.ndarray = None):
+def select_action_with_mcts(
+    node: Node,
+    state: game.SimulationState,
+    pred_state: PredictState,
+    params: SearchParameters,
+    pieces_history: np.ndarray = None
+) -> int:
 
     if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
@@ -469,20 +483,20 @@ def select_action_with_mcts(node: Node,
             dg = Digraph(format='png')
             dg.attr('node', fontname="Myrica M")
             dg.attr('edge', fontname="Myrica M")
-            visibilize_node_graph(node, dg)
+            node.visualize_graph(dg)
             dg.render(f'./data/graph/n_ply_{state.n_ply}')
 
     return action
 
 
 def apply_action(
-        node: Node,
-        state: game.SimulationState,
-        action: int,
-        player: int,
-        true_color_o: np.ndarray,
-        pred_state: PredictState,
-        params: SearchParameters
+    node: Node,
+    state: game.SimulationState,
+    action: int,
+    player: int,
+    true_color_o: np.ndarray,
+    pred_state: PredictState,
+    params: SearchParameters
 ) -> tuple[Node, list[list[int]]]:
 
     tokens, afterstates = state.step(action, player * state.root_player)
@@ -515,11 +529,11 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
 
 
 def create_root_node(
-        state: game.SimulationState,
-        pred_state: PredictState,
-        model: TransformerWithCache,
-        cache_length: int = 220,
-        prev_node: Node = None,
+    state: game.SimulationState,
+    pred_state: PredictState,
+    model: TransformerWithCache,
+    cache_length: int = 220,
+    prev_node: Node = None,
 ) -> tuple[Node, list[list[int]]]:
     node = Node()
 
@@ -563,11 +577,11 @@ class PlayerBase:
 
 class PlayerMCTS(PlayerBase):
     def __init__(
-            self,
-            params,
-            model: TransformerWithCache,
-            search_params: SearchParameters,
-            num_tokens: int
+        self,
+        params,
+        model: TransformerWithCache,
+        search_params: SearchParameters,
+        num_tokens: int
     ) -> None:
         self.pred_state = PredictState(model.apply, params)
         self.model = model

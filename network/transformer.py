@@ -288,18 +288,56 @@ class TransformerWithCache(nn.Module):
         return x, logits_pi, logits_v, logits_color, cache
 
 
+def test_performance():
+    import jax.random
+    import time
+    from batch import load, get_tokens
+
+    model = Transformer(num_heads=4, embed_dim=256, num_hidden_layers=4, length_memory_block=4)
+    model_caching = TransformerWithCache(num_heads=4, embed_dim=256, num_hidden_layers=4, length_memory_block=4)
+
+    variables = model.init(jax.random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
+
+    batch = load('./data/replay_buffer/run-3.npz')
+    tokens = get_tokens(batch)
+
+    cache = model_caching.create_cache(240)
+    mem = model_caching.create_zero_memory()
+
+    for i in range(len(mem)):
+        _, _, _, _, cache = model_caching.apply(
+            variables, mem[i], cache=cache, read_memory_i=jnp.array(i), eval=True
+        )
+
+    start = time.perf_counter()
+
+    for seq_i in range(tokens.shape[1]):
+        for i in range(tokens.shape[-2]):
+            if jnp.all(tokens[0, 0, i] == 0):
+                break
+
+            _, _, v, _, cache = model_caching.apply(
+                variables, tokens[0, 0, i], cache=cache, eval=True
+            )
+            print(seq_i, i, v.sum())
+    print(time.perf_counter() - start)
+
+
 def test():
     import jax.random
-    from buffer import Batch
+    from batch import load, get_tokens
+
+    jax.config.update("jax_debug_nans", True)
 
     model = Transformer(num_heads=4, embed_dim=128, num_hidden_layers=2, length_memory_block=4)
     model_caching = TransformerWithCache(num_heads=4, embed_dim=128, num_hidden_layers=2, length_memory_block=4)
 
     variables = model.init(jax.random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
 
-    batch = Batch.from_npz('./data/replay_buffer/run-3.npz', shuffle=True)
+    batch = load('./data/replay_buffer/run-3.npz')
+    tokens = get_tokens(batch)
 
-    _, v, _, write_memory_out = model.apply(variables, batch.tokens[0, :1], eval=True)
+    _, v, _, write_memory_out = model.apply(variables, tokens[0, :1], eval=True)
 
     print(write_memory_out.shape)
 
@@ -313,12 +351,12 @@ def test():
             variables, mem[i], cache=cache, read_memory_i=jnp.array(i), eval=True
         )
 
-    for i in range(batch.tokens.shape[-2]):
-        if jnp.all(batch.tokens[0, 0, i] == 0):
+    for i in range(tokens.shape[-2]):
+        if jnp.all(tokens[0, 0, i] == 0):
             break
 
         _, _, v, _, cache = model_caching.apply(
-            variables, batch.tokens[0, 0, i], cache=cache, eval=True
+            variables, tokens[0, 0, i], cache=cache, eval=True
         )
         print((v.sum() - v_true[i]) ** 2)
 
@@ -330,4 +368,4 @@ def test():
 
 
 if __name__ == '__main__':
-    test()
+    test_performance()

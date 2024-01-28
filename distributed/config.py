@@ -17,23 +17,20 @@ from network.train import Checkpoint
 
 
 @dataclass
-class InitFromCheckpoint:
+class FromCheckpoint:
     dir_name: str
     step: int
 
     def create_model_and_params(self):
         checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         checkpoint_manager = orbax.checkpoint.CheckpointManager(self.dir_name, checkpointer)
-        ckpt = Checkpoint.load(
-            checkpoint_manager,
-            step=self.step
-        )
+        ckpt = Checkpoint.load(checkpoint_manager, self.step)
 
         return ckpt.model, ckpt.params
 
 
 @dataclass
-class InitWithRandom:
+class Random:
     model: Transformer
 
     def create_model_and_params(self):
@@ -44,7 +41,7 @@ class InitWithRandom:
         return self.model, params
 
 
-InitModelConfig = InitFromCheckpoint | InitWithRandom
+InitModelConfig = Random | FromCheckpoint
 
 
 @serde(tagging=InternalTagging(tag='type'))
