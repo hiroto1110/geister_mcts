@@ -7,13 +7,12 @@ from serde.json import from_json, to_json
 import jax
 import jax.numpy as jnp
 
-import orbax.checkpoint
-
 import match_makers
 import mcts
 
-from network.transformer import Transformer
-from network.train import Checkpoint
+from distributed.communication import SerdeJsonSerializable
+from network.transformer import TransformerConfig
+from network.checkpoints import CheckpointManager, CheckpointManagerOptions
 
 
 @dataclass
@@ -21,19 +20,18 @@ class FromCheckpoint:
     dir_name: str
     step: int
 
-    def create_model_and_params(self):
-        checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(self.dir_name, checkpointer)
-        ckpt = Checkpoint.load(checkpoint_manager, self.step)
+    def create_model_and_params(self) -> tuple[TransformerConfig, dict]:
+        checkpoint_manager = CheckpointManager(self.dir_name)
+        ckpt = checkpoint_manager.load(self.step)
 
         return ckpt.model, ckpt.params
 
 
 @dataclass
 class Random:
-    model: Transformer
+    model: TransformerConfig
 
-    def create_model_and_params(self):
+    def create_model_and_params(self) -> tuple[TransformerConfig, dict]:
         init_data = jnp.zeros((1, 200, 5), dtype=jnp.uint8)
         variables = self.model.init(jax.random.PRNGKey(0), init_data)
         params = variables['params']
@@ -46,7 +44,7 @@ InitModelConfig = Random | FromCheckpoint
 
 @serde(tagging=InternalTagging(tag='type'))
 @dataclass
-class RunConfig:
+class RunConfig(SerdeJsonSerializable):
     project_name: str
     wandb_log: bool
     series_length: int
@@ -63,25 +61,31 @@ class RunConfig:
     mcts_params_min: mcts.SearchParameters
     mcts_params_max: mcts.SearchParameters
     ckpt_dir: str
-    ckpt_options: orbax.checkpoint.CheckpointManagerOptions
+    ckpt_options: CheckpointManagerOptions
     load_replay_buffer_path: str
     save_replay_buffer_path: str
     init_params: InitModelConfig
-
-    @classmethod
-    def from_json(cls, s: str) -> 'RunConfig':
-        return from_json(cls, s)
 
     @classmethod
     def from_json_file(cls, path) -> 'RunConfig':
         with open(path, mode='r') as f:
             return from_json(cls, f.read())
 
-    def to_json(self) -> str:
-        return to_json(self)
-
     def to_json_file(self, path):
         s = to_json(self)
 
         with open(path, mode='w') as f:
             f.write(s)
+
+
+def test():
+    c1 = RunConfig.from_json_file('./data/run_config.json')
+    s = c1.to_json()
+    c2 = RunConfig.from_json(s)
+
+    print(c1)
+    print(c2)
+
+
+if __name__ == '__main__':
+    test()

@@ -1,5 +1,4 @@
 import socket
-import pickle
 
 from tqdm import tqdm
 import click
@@ -8,12 +7,13 @@ import numpy as np
 import jax
 import optax
 
-from network.train import Checkpoint, TrainState, train_step
+from network.train import TrainState, train_step
+from network.checkpoints import Checkpoint, make_pytree_structures_same
 from batch import astuple
 
 from config import RunConfig
-from collector import MessageLearningRequest, MessageLearningResult
-from socket_util import EncryptedCommunicator
+from collector import MessageLearningRequest, MessageLearningResult, Losses
+from distributed.communication import EncryptedCommunicator
 
 
 @click.command()
@@ -26,39 +26,42 @@ def main(host: str, port: int, password: str):
 
     communicator = EncryptedCommunicator(password)
 
-    config: RunConfig = pickle.loads(communicator.recv_bytes(sock))
+    config = communicator.recv_json_obj(sock, RunConfig)
     print(config)
 
     while True:
-        request: MessageLearningRequest = pickle.loads(communicator.recv_bytes(sock))
+        request = communicator.recv_json_obj(sock, MessageLearningRequest)
+
+        model = request.ckpt.model.create_model()
 
         state = TrainState.create(
-            apply_fn=request.ckpt.model.apply,
+            apply_fn=model.apply,
             params=request.ckpt.params,
             tx=optax.adam(learning_rate=config.learning_rate),
             dropout_rng=jax.random.PRNGKey(0),
             epoch=request.ckpt.step,
-            init_memory=TrainState.create_init_memory(request.ckpt.model)
+            init_memory=TrainState.create_init_memory(model)
         )
 
         if request.ckpt.opt_state is not None:
-            state = state.replace(opt_state=request.ckpt.opt_state)
+            opt_state = make_pytree_structures_same(request.ckpt.opt_state, state.opt_state)
+            state = state.replace(opt_state=opt_state)
 
-        state, train_log_dict = train(state, request.minibatch, config.batch_size)
+        state, losses = train(state, request.minibatch, config.batch_size)
 
         result = MessageLearningResult(
-            ckpt=Checkpoint(state.epoch, state.params, request.ckpt.model, state.opt_state),
-            log=train_log_dict
+            losses=losses,
+            ckpt=Checkpoint(int(state.epoch), request.ckpt.model, state.params, state.opt_state),
+            # ckpt=Checkpoint(state.epoch, request.ckpt.model, None, None),
         )
-
-        communicator.send_bytes(sock, pickle.dumps(result))
+        communicator.send_json_obj(sock, result)
 
 
 def train(
     state: TrainState,
     train_batch: np.ndarray,
     batch_size: int
-) -> tuple[TrainState, dict]:
+) -> tuple[TrainState, Losses]:
     train_batches = np.split(train_batch, len(train_batch) // batch_size)
     num_batches = len(train_batches)
 
@@ -73,19 +76,18 @@ def train(
 
     loss /= num_batches
 
-    num_division = 2
-    losses = np.reshape(losses, (num_batches, num_division, -1, 3))
-    losses = np.mean(losses, axis=(0, 2))
+    losses = np.reshape(losses, (-1, 3))
+    losses = np.mean(losses, axis=0)
 
-    log_dict = {'train/loss': loss}
+    losses = Losses(
+        loss=float(loss),
+        loss_policy=float(losses[0]),
+        loss_value=float(losses[1]),
+        loss_color=float(losses[2]),
+    )
+    print(losses)
 
-    for i in range(num_division):
-        for j, name in enumerate(['policy', 'value', 'color']):
-            log_dict[f'train/loss {name} {i}'] = losses[i, j]
-
-    print(log_dict)
-
-    return state.replace(epoch=state.epoch + 1), log_dict
+    return state.replace(epoch=state.epoch + 1), losses
 
 
 if __name__ == "__main__":

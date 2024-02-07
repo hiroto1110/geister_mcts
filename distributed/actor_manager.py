@@ -1,23 +1,17 @@
 import multiprocessing
 import socket
-import pickle
 import click
 import tempfile
 
-from tqdm import tqdm
-
 import numpy as np
 import jax
-import orbax.checkpoint
 
-from socket_util import EncryptedCommunicator
+from distributed.communication import EncryptedCommunicator
 
-from network.train import Checkpoint
+from network.checkpoints import CheckpointManager
 
 import actor
 import collector
-from collector import MatchInfo, MessageNextMatch
-from config import RunConfig
 
 
 @click.command()
@@ -52,32 +46,27 @@ def start_actor_manager(
 
     communicator = EncryptedCommunicator(password)
 
-    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, checkpointer)
+    checkpoint_manager = CheckpointManager(ckpt_dir)
 
-    config: RunConfig = pickle.loads(communicator.recv_bytes(sock))
+    communicator.send_json_obj(sock, collector.MessageActorInitClient(n_clients))
+
+    init_msg = communicator.recv_json_obj(sock, collector.MessageActorInitServer)
+
+    config = init_msg.config
     print(config)
 
-    ckpt: Checkpoint = pickle.loads(communicator.recv_bytes(sock))
-    ckpt.save(checkpoint_manager)
+    ckpt = init_msg.current_ckpt
+    checkpoint_manager.save(ckpt)
 
-    n_snapshots: int = pickle.loads(communicator.recv_bytes(sock))
-    snapshots: list[Checkpoint] = []
-
-    for i in tqdm(range(n_snapshots), desc="Receiving Snapshots"):
-        ckpt_i: Checkpoint = pickle.loads(communicator.recv_bytes(sock))
-        ckpt_i.save(checkpoint_manager)
-        snapshots.append(ckpt_i)
+    for ckpt_i in init_msg.snapshots:
+        checkpoint_manager.save(ckpt_i)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
     match_result_queue = ctx.Queue(100)
     ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
-    communicator.send_bytes(sock, pickle.dumps(n_clients))
-    matches: list[MatchInfo] = pickle.loads(communicator.recv_bytes(sock))
-
-    for match in matches:
+    for match in init_msg.matches:
         match_request_queue.put(match)
 
     for i in range(n_clients):
@@ -97,18 +86,16 @@ def start_actor_manager(
 
     while True:
         result: collector.MatchResult = match_result_queue.get()
-        result_msg = collector.MessageMatchResult(result, ckpt.step)
+        communicator.send_json_obj(sock, collector.MessageMatchResult(result, ckpt.step))
 
-        communicator.send_bytes(sock, pickle.dumps(result_msg))
-
-        msg: MessageNextMatch = pickle.loads(communicator.recv_bytes(sock))
+        msg = communicator.recv_json_obj(sock, collector.MessageNextMatch)
 
         match_request_queue.put(msg.next_match)
 
         if msg.ckpt is not None:
             ckpt = msg.ckpt
 
-            ckpt.save(checkpoint_manager)
+            checkpoint_manager.save(ckpt)
 
             for ckpt_queue in ckpt_queues:
                 ckpt_queue.put(ckpt.step)

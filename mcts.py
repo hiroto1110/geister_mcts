@@ -18,7 +18,7 @@ import env.naotti2020 as naotti2020
 import game_analytics
 import batch
 from network.transformer import TransformerWithCache
-from network.train import Checkpoint
+from network.checkpoints import Checkpoint
 import gat.server_util
 
 
@@ -520,7 +520,7 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
 
     cache = node.cache
 
-    for i in range(model.length_memory_block):
+    for i in range(model.config.length_memory_block):
         x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=jnp.array(i))
         # x, _, _, _, cache = predict(pred_state, write_memory[i], cache)
         next_memory.append(x)
@@ -545,7 +545,7 @@ def create_root_node(
         else:
             memory = model.create_zero_memory()
 
-        cache = model.create_cache(cache_length + model.length_memory_block * 2)
+        cache = model.create_cache(cache_length + model.config.length_memory_block * 2)
 
         for i in range(len(memory)):
             _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=jnp.array(i))

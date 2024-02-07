@@ -1,6 +1,4 @@
-import os
 from typing import Any
-import dataclasses
 from functools import partial
 import time
 import itertools
@@ -11,119 +9,12 @@ import jax
 from jax import random, numpy as jnp
 import optax
 from flax.training import train_state
-from flax.core.frozen_dict import FrozenDict
-import orbax.checkpoint as ocp
 
 import wandb
 
-from network.transformer import Transformer, TransformerWithCache
+from network.checkpoints import Checkpoint, CheckpointManager
+from network.transformer import Transformer, TransformerConfig
 from batch import load
-
-
-def create_checkpoint_manager(path: str, options: ocp.CheckpointManagerOptions | None = None) -> ocp.CheckpointManager:
-    return ocp.CheckpointManager(
-        os.path.abspath(path),
-        options=options,
-        item_names=('step', 'params', 'model', 'opt_state')
-    )
-
-
-@dataclasses.dataclass
-class Checkpoint:
-    step: int
-    params: FrozenDict
-    model: Transformer
-    opt_state: optax.OptState = None
-
-    def asdict(self):
-        return {
-            'step': self.step,
-            'params': self.params,
-            'model': dataclasses.asdict(self.model),
-            'opt_state': self.opt_state
-        }
-
-    @classmethod
-    def load(
-        cls,
-        checkpoint_manager: ocp.CheckpointManager,
-        step: int,
-        is_caching_model: bool = False
-    ) -> 'Checkpoint':
-        ckpt = checkpoint_manager.restore(step)
-
-        if not is_caching_model:
-            model = Transformer(**ckpt.model)
-        else:
-            model = TransformerWithCache(**ckpt.model)
-
-        step = ckpt.step
-        params = ckpt.params
-
-        if ckpt.opt_state != [0]:
-            opt_state = ckpt.opt_state
-        else:
-            opt_state = None
-
-        return Checkpoint(step, params, model, opt_state)
-
-    def save(self, checkpoint_manager: ocp.CheckpointManager):
-        opt_state = self.opt_state
-        if opt_state is None:
-            opt_state = [0]
-
-        model = dataclasses.asdict(self.model)
-        del model['parent']
-        del model['name']
-
-        checkpoint_manager.save(self.step, args=ocp.args.Composite(
-            step=ocp.args.JsonSave(self.step),
-            params=ocp.args.StandardSave(self.params),
-            model=ocp.args.JsonSave(model),
-            opt_state=ocp.args.StandardSave(opt_state),
-        ))
-        checkpoint_manager.wait_until_finished()
-
-
-def main():
-    step = 8
-    c_new = ocp.CheckpointManager(
-        os.path.abspath('./data/checkpoints/test-3'),
-        item_names=('step', 'params', 'model', 'opt_state')
-    )
-
-    Checkpoint.load(c_new, step)
-
-
-def main2():
-    step = 8
-
-    checkpointer = ocp.PyTreeCheckpointer()
-    c_old = ocp.CheckpointManager(
-        os.path.abspath('./data/checkpoints/rmt_4_256_4'),
-        checkpointer
-    )
-
-    c_new = ocp.CheckpointManager(
-        os.path.abspath('./data/checkpoints/test-3'),
-        item_names=('step', 'params', 'model', 'opt_state')
-    )
-
-    ckpt_old = c_old.restore(step)
-
-    model = ckpt_old['model']
-    del model['parent']
-    del model['name']
-
-    c_new.save(step, args=ocp.args.Composite(
-        step=ocp.args.JsonSave(step),
-        params=ocp.args.StandardSave(ckpt_old['params']),
-        model=ocp.args.JsonSave(model),
-        opt_state=ocp.args.StandardSave([0]),
-    ))
-
-    # print(c_new.restore(step))
-    print(Checkpoint.load(c_new, step))
 
 
 class TrainState(train_state.TrainState):
@@ -133,7 +24,7 @@ class TrainState(train_state.TrainState):
 
     @classmethod
     def create_init_memory(cls, model: Transformer) -> jnp.ndarray:
-        return jnp.zeros((model.length_memory_block, model.embed_dim))
+        return jnp.zeros((model.config.length_memory_block, model.config.embed_dim))
 
 
 @jax.jit
@@ -268,8 +159,8 @@ def train_epoch(state: TrainState, batches: list[jnp.ndarray], num_division_of_s
 
 def fit(
     state: TrainState,
-    model: Transformer,
-    checkpoint_manager: ocp.CheckpointManager,
+    model_config: TransformerConfig,
+    checkpoint_manager: CheckpointManager,
     train_batch: jnp.ndarray,
     test_batch: jnp.ndarray,
     epochs: int,
@@ -310,7 +201,7 @@ def fit(
             wandb.log(log_dict)
 
         state = state.replace(epoch=state.epoch + 1)
-        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
+        checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
 
     return state
 
@@ -332,7 +223,8 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model = Transformer(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
+        model_config = TransformerConfig(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
+        model = model_config.create_model()
 
         variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
         state = TrainState.create(
@@ -345,23 +237,22 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
 
         ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}'
 
-        orbax_checkpointer = ocp.PyTreeCheckpointer()
-        options = ocp.CheckpointManagerOptions(create=True)
-        checkpoint_manager = ocp.CheckpointManager(ckpt_dir, orbax_checkpointer, options)
+        checkpoint_manager = CheckpointManager(ckpt_dir)
+        checkpoint_manager.save(Checkpoint(state.epoch, model, state.params))
 
-        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
-
-        state = fit(state, model, checkpoint_manager,
-                    train_batch=train_batch,
-                    test_batch=test_batch,
-                    epochs=16, batch_size=4, num_division_of_segment=4,
-                    log_wandb=log_wandb)
+        state = fit(
+            state, model, checkpoint_manager,
+            train_batch=train_batch,
+            test_batch=test_batch,
+            epochs=16, batch_size=4, num_division_of_segment=4,
+            log_wandb=log_wandb
+        )
 
         if log_wandb:
             run.finish()
 
 
-def main_():
+def main():
     batch = load('./data/replay_buffer/189.npz', shuffle=True)
 
     main_train(batch)

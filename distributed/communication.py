@@ -1,11 +1,34 @@
+from typing import TypeVar
 import struct
 import base64
 import socket
+
+import serde.json
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
+
+T = TypeVar('T', bound="JsonSerializable")
+
+
+class JsonSerializable:
+    def to_json(self) -> str:
+        pass
+
+    @classmethod
+    def from_json(cls: type[T], s: str) -> T:
+        pass
+
+
+class SerdeJsonSerializable(JsonSerializable):
+    def to_json(self) -> str:
+        return serde.json.to_json(self)
+
+    @classmethod
+    def from_json(cls: type[T], s: str) -> T:
+        return serde.json.from_json(cls, s)
 
 
 def hash_password(password: str) -> bytes:
@@ -39,6 +62,19 @@ class EncryptedCommunicator:
         msg = _recvall(sock, msglen)
         msg = self.fernet.decrypt(msg)
         return msg
+
+    def send_str(self, sock: socket.socket, s: str, encoding: str = 'utf-8'):
+        self.send_bytes(sock, s.encode(encoding))
+
+    def recv_str(self, sock: socket.socket, encoding: str = 'utf-8'):
+        return self.recv_bytes(sock).decode(encoding)
+
+    def send_json_obj(self, sock: socket.socket, obj: JsonSerializable):
+        self.send_str(sock, obj.to_json())
+
+    def recv_json_obj(self, sock: socket.socket, ty: type[T]) -> T:
+        json_str = self.recv_str(sock)
+        return ty.from_json(json_str)
 
 
 def _recvall(sock: socket.socket, n: int) -> bytes:

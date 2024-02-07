@@ -5,15 +5,43 @@ import json
 import dataclasses
 import glob
 
+import serde
+
 import numpy as np
+from jaxlib.xla_extension import ArrayImpl
 import jax
-import optax
 from flax.core.frozen_dict import FrozenDict
 
-from network.transformer import Transformer, TransformerWithCache
+from distributed.communication import SerdeJsonSerializable
+from network.transformer import TransformerConfig
 
 NAMEDTUPLE_FLAG = "__namedtuple__"
 NDARRAY_FLAG = "__ndarray__"
+
+
+def make_pytree_structures_same(dst, src):
+    if isinstance(src, tuple) and hasattr(src, '_asdict'):
+        d_d = dst._asdict()
+        s_d = src._asdict()
+
+        for key in s_d.keys():
+            d_d[key] = make_pytree_structures_same(d_d[key], s_d[key])
+
+        return type(src)(**d_d)
+
+    if isinstance(src, dict):
+        return {key: make_pytree_structures_same(dst[key], src[key]) for key in src.keys()}
+
+    if isinstance(src, tuple):
+        return tuple([make_pytree_structures_same(d, s) for d, s in zip(dst, src)])
+
+    if isinstance(src, list):
+        return [make_pytree_structures_same(d, s) for d, s in zip(dst, src)]
+
+    if isinstance(src, jax.numpy.ndarray):
+        return jax.numpy.asarray(dst)
+
+    raise ValueError(f'{dst}, {src}: {type(dst)}, {type(src)}')
 
 
 def post_converted_from_json(obj):
@@ -25,6 +53,9 @@ def post_converted_from_json(obj):
             shape = obj['shape']
             dtype = obj['dtype']
 
+            if len(shape) > 0 and isinstance(shape[0], str):
+                shape = [int(s) for s in shape]
+
             buffer_str: str = obj['bytes']
             buffer = base64.b64decode(buffer_str.encode('utf-8'))
 
@@ -35,15 +66,14 @@ def post_converted_from_json(obj):
                 obj[k] = post_converted_from_json(obj[k])
 
             if NAMEDTUPLE_FLAG in obj and obj[NAMEDTUPLE_FLAG]:
+                del obj[NAMEDTUPLE_FLAG]
                 namedtuple_type = collections.namedtuple('DecodedNamedTuple', obj.keys())
                 return namedtuple_type(**obj)
 
             return obj
 
     if isinstance(obj, tuple | list):
-        for i in range(len(obj)):
-            obj[i] = post_converted_from_json(obj[i])
-        return obj
+        return [post_converted_from_json(o_i) for o_i in obj]
 
     return obj
 
@@ -62,11 +92,9 @@ def pre_converting_to_json(obj):
         return obj
 
     if isinstance(obj, tuple | list):
-        for i in range(len(obj)):
-            obj[i] = pre_converting_to_json(obj[i])
-        return obj
+        return [pre_converting_to_json(o_i) for o_i in obj]
 
-    if isinstance(obj, jax.Array):
+    if isinstance(obj, jax.Array | ArrayImpl | jax.numpy.ndarray):
         obj = np.asarray(obj)
 
     if isinstance(obj, np.ndarray):
@@ -80,50 +108,27 @@ def pre_converting_to_json(obj):
     return str(obj)
 
 
+def deserialize_params(d):
+    # print("deserialize_params", type(d))
+    if isinstance(d, str):
+        d = json.loads(d)
+
+    return post_converted_from_json(d)
+
+
 @dataclasses.dataclass
-class Checkpoint:
+class Checkpoint(SerdeJsonSerializable):
     step: int
-    params: FrozenDict
-    model: Transformer
-    opt_state: optax.OptState = None
-
-    def to_dict(self):
-        model = dataclasses.asdict(self.model)
-        del model['parent']
-        del model['name']
-
-        return {
-            'step': self.step,
-            'params': self.params,
-            'model': model,
-            'opt_state': self.opt_state
-        }
+    model: TransformerConfig
+    params: FrozenDict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
+    opt_state: tuple = serde.field(default=None, serializer=pre_converting_to_json, deserializer=deserialize_params)
 
     @classmethod
-    def from_dict(cls, ckpt: dict, is_caching_model: bool) -> 'Checkpoint':
-        if not is_caching_model:
-            model = Transformer(**ckpt['model'])
-        else:
-            model = TransformerWithCache(**ckpt['model'])
+    def from_json_file(cls, path: str) -> 'Checkpoint':
+        with open(path, mode='r') as f:
+            json_str = f.read()
 
-        step = ckpt['step']
-        params = ckpt['params']
-        opt_state = ckpt['opt_state']
-
-        return Checkpoint(step, params, model, opt_state)
-
-    def to_json(self):
-        ckpt = self.to_dict()
-        ckpt = pre_converting_to_json(ckpt)
-
-        return json.dumps(ckpt)
-
-    @classmethod
-    def from_json(cls, json_str: str, is_caching_model: bool) -> 'Checkpoint':
-        ckpt = json.loads(json_str)
-        ckpt = post_converted_from_json(ckpt)
-
-        return Checkpoint.from_dict(ckpt, is_caching_model)
+        return Checkpoint.from_json(json_str)
 
 
 @dataclasses.dataclass
@@ -166,40 +171,42 @@ class CheckpointManager:
             for i in range(len(paths) - self.options.max_to_keep):
                 os.remove(paths[i])
 
-    def load(self, step: int, is_caching_model: bool) -> Checkpoint:
-        path = self.get_path(step)
+    def load(self, step: int) -> Checkpoint:
+        if step == -1:
+            path = self.get_paths()[-1]
+        else:
+            path = self.get_path(step)
+
         if not os.path.exists(path):
             FileNotFoundError(f"Checkpoint is not found in {path}")
 
         with open(path, mode='r') as f:
             json_str = f.read()
 
-        return Checkpoint.from_json(json_str, is_caching_model)
+        return Checkpoint.from_json(json_str)
 
 
 def main():
-    import os
-    import orbax.checkpoint as ocp
     import time
-    step = 8
+    import optax
 
-    checkpointer = ocp.PyTreeCheckpointer()
-    c_old = ocp.CheckpointManager(
-        os.path.abspath('./data/checkpoints/rmt_4_256_4'),
-        checkpointer
-    )
+    adam = optax.adam(learning_rate=0.02)
 
-    ckpt_old = c_old.restore(step)
+    ckpt = Checkpoint.from_json_file('./data/checkpoints/test-3/8.json')
 
-    ckpt = Checkpoint(step, ckpt_old['params'], Transformer(**ckpt_old['model']))
-    manager = CheckpointManager('./data/checkpoints/test-3')
+    state = adam.init(ckpt.params)
+    ckpt = Checkpoint(ckpt.step, ckpt.model, ckpt.params, state)
+
+    print(state)
 
     start = time.perf_counter()
-    manager.save(ckpt)
+    s = ckpt.to_json()
     print(time.perf_counter() - start)
 
     start = time.perf_counter()
-    manager.load(8, True)
+    msg_ = Checkpoint.from_json(s)
+    print(msg_)
+    print(msg_.opt_state)
     print(time.perf_counter() - start)
 
 

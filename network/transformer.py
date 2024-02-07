@@ -1,5 +1,23 @@
+import dataclasses
+import serde
 from jax import numpy as jnp
 from flax import linen as nn
+
+
+@serde.serde
+@dataclasses.dataclass
+class TransformerConfig:
+    num_heads: int
+    embed_dim: int
+    num_hidden_layers: int
+    length_memory_block: int = 0
+    max_n_ply: int = 201
+
+    def create_model(self) -> 'Transformer':
+        return Transformer(self)
+
+    def create_caching_model(self) -> 'TransformerWithCache':
+        return TransformerWithCache(self)
 
 
 class Embeddings(nn.Module):
@@ -147,31 +165,27 @@ class TransformerBlockWithCache(nn.Module):
 
 
 class Transformer(nn.Module):
-    num_heads: int
-    embed_dim: int
-    num_hidden_layers: int
-    length_memory_block: int = 0
-    max_n_ply: int = 201
+    config: TransformerConfig
 
     def has_memory_block(self):
-        return self.length_memory_block > 0
+        return self.config.length_memory_block > 0
 
     def create_zero_memory(self):
-        return jnp.zeros((self.length_memory_block, self.embed_dim))
+        return jnp.zeros((self.config.length_memory_block, self.config.embed_dim))
 
     def setup(self):
-        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
+        self.embeddings = Embeddings(self.config.embed_dim, max_n_ply=self.config.max_n_ply)
 
         if self.has_memory_block():
-            self.read_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
-            self.write_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+            self.read_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
+            self.write_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
 
-        self.layers = [TransformerBlock(self.num_heads, self.embed_dim)
-                       for _ in range(self.num_hidden_layers)]
+        self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
+                       for _ in range(self.config.num_hidden_layers)]
 
     @nn.compact
     def __call__(self, x, read_memory=None, eval=True):
-        mem_len = self.length_memory_block
+        mem_len = self.config.length_memory_block
 
         mask = mask = jnp.any(x != 0, axis=-1)
         x = self.embeddings(x, eval)
@@ -181,7 +195,7 @@ class Transformer(nn.Module):
             write_memory = jnp.tile(write_memory, (x.shape[0], 1, 1))
 
             if read_memory is None:
-                read_memory = jnp.zeros((x.shape[0], mem_len, self.embed_dim))
+                read_memory = jnp.zeros((x.shape[0], mem_len, self.config.embed_dim))
 
             read_memory += self.read_memory_embeddings(jnp.arange(mem_len).reshape(1, -1))
 
@@ -195,7 +209,7 @@ class Transformer(nn.Module):
 
         mask = causal_mask * mask[:, jnp.newaxis, jnp.newaxis, :]
 
-        for i in range(self.num_hidden_layers):
+        for i in range(self.config.num_hidden_layers):
             x = self.layers[i](x, mask, eval=eval)
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
@@ -214,35 +228,33 @@ class Transformer(nn.Module):
 
 
 class TransformerWithCache(nn.Module):
-    num_heads: int
-    embed_dim: int
-    num_hidden_layers: int
-    length_memory_block: int = 0
-    max_n_ply: int = 201
+    config: TransformerConfig
 
     def has_memory_block(self):
-        return self.length_memory_block > 0
+        return self.config.length_memory_block > 0
 
     def setup(self):
-        self.embeddings = Embeddings(self.embed_dim, max_n_ply=self.max_n_ply)
+        self.embeddings = Embeddings(self.config.embed_dim, max_n_ply=self.config.max_n_ply)
 
-        self.read_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
-        self.write_memory_embeddings = nn.Embed(self.length_memory_block, self.embed_dim)
+        self.read_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
+        self.write_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
 
-        self.layers = [TransformerBlockWithCache(self.num_heads, self.embed_dim)
-                       for _ in range(self.num_hidden_layers)]
+        self.layers = [
+            TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
+            for _ in range(self.config.num_hidden_layers)
+        ]
 
     def get_read_memory(self):
-        return self.read_memory_embeddings(jnp.arange(self.length_memory_block))
+        return self.read_memory_embeddings(jnp.arange(self.config.length_memory_block))
 
     def get_write_memory(self):
-        return self.write_memory_embeddings(jnp.arange(self.length_memory_block))
+        return self.write_memory_embeddings(jnp.arange(self.config.length_memory_block))
 
     def create_cache(self, seq_len, memory: jnp.ndarray = None):
-        head_dim = self.embed_dim // self.num_heads
+        head_dim = self.config.embed_dim // self.config.num_heads
 
         # [2, Layer, SeqLen, Head, HeadDim]
-        cache = jnp.zeros((self.num_hidden_layers, 2, seq_len, self.num_heads, head_dim))
+        cache = jnp.zeros((self.config.num_hidden_layers, 2, seq_len, self.config.num_heads, head_dim))
 
         if memory is not None:
             for j in range(len(memory)):
@@ -251,7 +263,7 @@ class TransformerWithCache(nn.Module):
         return cache
 
     def create_zero_memory(self):
-        return jnp.zeros((self.length_memory_block, self.embed_dim))
+        return jnp.zeros((self.config.length_memory_block, self.config.embed_dim))
 
     @nn.compact
     def __call__(
@@ -265,9 +277,9 @@ class TransformerWithCache(nn.Module):
         if x.shape[0] == 5:
             x = self.embeddings(x, eval)
 
-        elif x is None or x.shape[0] == self.embed_dim:
+        elif x is None or x.shape[0] == self.config.embed_dim:
             if x is None:
-                x = jnp.zeros(self.embed_dim)
+                x = jnp.zeros(self.config.embed_dim)
 
             if read_memory_i is not None:
                 x += self.read_memory_embeddings(read_memory_i)

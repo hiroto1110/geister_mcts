@@ -1,7 +1,5 @@
-import os
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import time
-import pickle
 import socket
 import threading
 import queue
@@ -11,55 +9,72 @@ import click
 
 import numpy as np
 import jax
-import orbax.checkpoint
 
 import wandb
 
 from distributed.config import RunConfig
-from distributed.socket_util import EncryptedCommunicator
+from distributed.communication import EncryptedCommunicator, SerdeJsonSerializable
 
 from batch import ReplayBuffer, save, is_won
-from network.train import Checkpoint
+from network.checkpoints import Checkpoint, CheckpointManager
 import match_makers
 import training_logger
 
 
 @dataclass
-class MatchResult:
+class MatchResult(SerdeJsonSerializable):
     samples: list[np.ndarray]
     agent_id: int
 
 
 @dataclass
-class MatchInfo:
+class MatchInfo(SerdeJsonSerializable):
     agent_id: int
-
-    def __post_init__(self):
-        self.agent_id = int(self.agent_id)
 
 
 @dataclass
-class MessageMatchResult:
+class MessageActorInitClient(SerdeJsonSerializable):
+    n_processes: int
+
+
+@dataclass
+class MessageActorInitServer(SerdeJsonSerializable):
+    config: RunConfig
+    current_ckpt: Checkpoint
+    snapshots: list[Checkpoint]
+    matches: list[MatchInfo]
+
+
+@dataclass
+class MessageMatchResult(SerdeJsonSerializable):
     result: MatchResult
     step: int
 
 
 @dataclass
-class MessageNextMatch:
+class MessageNextMatch(SerdeJsonSerializable):
     next_match: MatchInfo
-    ckpt: Checkpoint
+    ckpt: Checkpoint | None
 
 
 @dataclass
-class MessageLearningRequest:
-    ckpt: Checkpoint
+class MessageLearningRequest(SerdeJsonSerializable):
     minibatch: np.ndarray
+    ckpt: Checkpoint
 
 
 @dataclass
-class MessageLearningResult:
+class Losses(SerdeJsonSerializable):
+    loss: float
+    loss_policy: float
+    loss_value: float
+    loss_color: float
+
+
+@dataclass
+class MessageLearningResult(SerdeJsonSerializable):
+    losses: Losses
     ckpt: Checkpoint
-    log: dict
 
 
 class AgentManager:
@@ -114,22 +129,17 @@ def handle_client_actor(
     agent_manager: AgentManager,
     config: RunConfig
 ):
-    communicator.send_bytes(sock, pickle.dumps(config))
-    communicator.send_bytes(sock, pickle.dumps(agent_manager.ckpt))
+    init_msg_client = communicator.recv_json_obj(sock, MessageActorInitClient)
 
-    communicator.send_bytes(sock, pickle.dumps(len(agent_manager.agents)))
-    for ckpt_i in agent_manager.agents:
-        communicator.send_bytes(sock, pickle.dumps(ckpt_i))
+    init_msg_server = MessageActorInitServer(
+        config,
+        agent_manager.ckpt,
+        agent_manager.agents,
+        matches=[MatchInfo(agent_manager.next_match()) for i in range(init_msg_client.n_processes)]
+    )
+    communicator.send_json_obj(sock, init_msg_server)
 
-    n_processes: int = pickle.loads(communicator.recv_bytes(sock))
-
-    init_matches = [MatchInfo(agent_manager.next_match()) for i in range(n_processes + 4)]
-
-    communicator.send_bytes(sock, pickle.dumps(init_matches))
-
-    while data := communicator.recv_bytes(sock):
-        result_msg: MessageMatchResult = pickle.loads(data)
-
+    while result_msg := communicator.recv_json_obj(sock, MessageMatchResult):
         match_result_queue.put(result_msg.result)
 
         next_match = MatchInfo(agent_manager.next_match())
@@ -139,7 +149,7 @@ def handle_client_actor(
         else:
             msg = MessageNextMatch(next_match, ckpt=agent_manager.ckpt)
 
-        communicator.send_bytes(sock, pickle.dumps(msg))
+        communicator.send_json_obj(sock, msg)
     sock.close()
 
 
@@ -169,7 +179,7 @@ def start(
 
     client, address = server.accept()
     print(f"Learner client from {address}")
-    communicator.send_bytes(client, pickle.dumps(config))
+    communicator.send_json_obj(client, config)
 
     buffer = ReplayBuffer(
         buffer_size=config.buffer_size,
@@ -178,11 +188,7 @@ def start(
     )
     buffer.load(config.load_replay_buffer_path)
 
-    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(
-        os.path.abspath(config.ckpt_dir),
-        checkpointer,
-        options=config.ckpt_options)
+    checkpoint_manager = CheckpointManager(config.ckpt_dir, options=config.ckpt_options)
 
     model, params = config.init_params.create_model_and_params()
 
@@ -197,7 +203,7 @@ def start(
         config.fsp_threshold,
         ckpt=Checkpoint(step=0, params=params, model=model),
     )
-    agent_manager.ckpt.save(checkpoint_manager)
+    checkpoint_manager.save(agent_manager.ckpt)
 
     match_result_queue = queue.Queue()
 
@@ -228,12 +234,12 @@ def start(
 
         if is_waiting_parameter_update:
             # recv_updated_params
-            msg: MessageLearningResult = pickle.loads(communicator.recv_bytes(client))
+            msg = communicator.recv_json_obj(client, MessageLearningResult)
             agent_manager.ckpt = msg.ckpt
-            agent_manager.ckpt.save(checkpoint_manager)
+            checkpoint_manager.save(agent_manager.ckpt)
 
             if config.wandb_log:
-                log_dict = msg.log | training_logger.create_log(
+                log_dict = asdict(msg.losses) | training_logger.create_log(
                     win_rates=win_rate,
                     last_games=last_batch
                 )
@@ -242,7 +248,7 @@ def start(
         if len(buffer) >= config.batch_size * config.num_batches:
             # send_training_minibatch
             train_batch = buffer.get_minibatch(config.batch_size * config.num_batches)
-            communicator.send_bytes(client, pickle.dumps(MessageLearningRequest(agent_manager.ckpt, train_batch)))
+            communicator.send_json_obj(client, MessageLearningRequest(train_batch, agent_manager.ckpt))
             is_waiting_parameter_update = True
 
 

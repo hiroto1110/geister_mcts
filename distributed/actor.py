@@ -20,9 +20,8 @@ def start_selfplay_process(
 
     import numpy as np
     import jax
-    import orbax.checkpoint
 
-    from network.train import Checkpoint
+    from network.checkpoints import Checkpoint, CheckpointManager
     import mcts
     from match_makers import SELFPLAY_ID
     import collector
@@ -33,18 +32,14 @@ def start_selfplay_process(
     np.random.seed(seed)
 
     def load(step: int) -> Checkpoint:
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
-
-        if step == -1:
-            step = checkpoint_manager.latest_step()
-
-        return Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
+        checkpoint_manager = CheckpointManager(ckpt_dir)
+        return checkpoint_manager.load(step)
 
     with jax.default_device(jax.devices("cpu")[0]):
         ckpt = load(step=-1)
+        print(ckpt.model)
 
-        model = ckpt.model
+        model = ckpt.model.create_caching_model()
 
         params_checkpoints = {-2: None, SELFPLAY_ID: ckpt.params}
 
