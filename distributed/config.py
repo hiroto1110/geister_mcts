@@ -48,6 +48,7 @@ InitModelConfig = Random | FromCheckpoint
 @dataclass
 class RunConfig:
     project_name: str
+    wandb_log: bool
     series_length: int
     tokens_length: int
     batch_size: int
@@ -66,12 +67,18 @@ class RunConfig:
     load_replay_buffer_path: str
     save_replay_buffer_path: str
     init_params: InitModelConfig
-    minibatch_temp_path: str = './data/replay_buffer/minibatch_tmp.npz'
+
+    @classmethod
+    def from_json(cls, s: str) -> 'RunConfig':
+        return from_json(cls, s)
 
     @classmethod
     def from_json_file(cls, path) -> 'RunConfig':
         with open(path, mode='r') as f:
             return from_json(cls, f.read())
+
+    def to_json(self) -> str:
+        return to_json(self)
 
     def to_json_file(self, path):
         s = to_json(self)

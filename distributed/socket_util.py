@@ -1,57 +1,51 @@
-import socket
 import struct
-import asyncio
+import base64
+import socket
+
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
 
 
-def send_msg(sock: socket.socket, msg: bytes):
-    # Prefix each message with a 4-byte length (network byte order)
-    msg = struct.pack('>I', len(msg)) + msg
-    sock.sendall(msg)
+def hash_password(password: str) -> bytes:
+    password_b = password.encode('utf-8')
+
+    salt = b'geister.py'
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password_b))
+    return key
 
 
-def recv_msg(sock: socket.socket) -> bytes:
-    # Read message length and unpack it into an integer
-    raw_msglen = recvall(sock, 4)
-    if not raw_msglen:
-        return None
-    msglen = struct.unpack('>I', raw_msglen)[0]
-    # Read the message data
-    return recvall(sock, msglen)
+class EncryptedCommunicator:
+    def __init__(self, password: str) -> None:
+        self.fernet = Fernet(hash_password(password))
+
+    def send_bytes(self, sock: socket.socket, data: bytes):
+        data = self.fernet.encrypt(data)
+        msg = struct.pack('>I', len(data)) + data
+
+        sock.sendall(msg)
+
+    def recv_bytes(self, sock: socket.socket) -> bytes:
+        msg_len = _recvall(sock, 4)
+        msglen = struct.unpack('>I', msg_len)[0]
+        msg = _recvall(sock, msglen)
+        msg = self.fernet.decrypt(msg)
+        return msg
 
 
-def recvall(sock: socket.socket, n: int) -> bytes:
-    # Helper function to recv n bytes or return None if EOF is hit
+def _recvall(sock: socket.socket, n: int) -> bytes:
     data = bytearray()
     while len(data) < n:
         packet = sock.recv(n - len(data))
         if not packet:
             return None
         data.extend(packet)
-    return data
-
-
-async def send_msg_async(loop: asyncio.AbstractEventLoop, sock: socket.socket, msg: bytes):
-    # Prefix each message with a 4-byte length (network byte order)
-    msg = struct.pack('>I', len(msg)) + msg
-    await loop.sock_sendall(sock, msg)
-
-
-async def recv_msg_async(loop: asyncio.AbstractEventLoop, sock: socket.socket) -> bytes:
-    # Read message length and unpack it into an integer
-    raw_msglen = await recvall_async(loop, sock, 4)
-    if not raw_msglen:
-        return None
-    msglen = struct.unpack('>I', raw_msglen)[0]
-    # Read the message data
-    return await recvall_async(loop, sock, msglen)
-
-
-async def recvall_async(loop: asyncio.AbstractEventLoop, sock: socket.socket, n: int) -> bytes:
-    # Helper function to recv n bytes or return None if EOF is hit
-    data = bytearray()
-    while len(data) < n:
-        packet = await loop.sock_recv(sock, n - len(data))
-        if not packet:
-            return None
-        data.extend(packet)
-    return data
+    return bytes(data)

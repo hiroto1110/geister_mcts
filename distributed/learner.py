@@ -1,4 +1,5 @@
-import multiprocessing
+import socket
+import pickle
 
 from tqdm import tqdm
 import click
@@ -6,69 +7,51 @@ import click
 import numpy as np
 import jax
 import optax
-import orbax.checkpoint
-import wandb
 
 from network.train import Checkpoint, TrainState, train_step
-from batch import load, astuple
+from batch import astuple
 
 from config import RunConfig
-import collector
+from collector import MessageLearningRequest, MessageLearningResult
+from socket_util import EncryptedCommunicator
 
 
 @click.command()
-@click.argument('config_path', type=str)
 @click.argument('host', type=str)
 @click.argument('port', type=int)
-def main(
-    config_path: str,
-    host: str,
-    port: int
-):
-    config = RunConfig.from_json_file(config_path)
-    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+@click.argument('password', type=str)
+def main(host: str, port: int, password: str):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((host, port))
 
-    model, params = config.init_params.create_model_and_params()
+    communicator = EncryptedCommunicator(password)
 
-    state = TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=optax.adam(learning_rate=config.learning_rate),
-        dropout_rng=jax.random.PRNGKey(0),
-        epoch=0,
-        init_memory=TrainState.create_init_memory(model)
-    )
-
-    wandb.init(project=config.project_name)
-
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(config.ckpt_dir, checkpointer, options=config.ckpt_options)
-
-    Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
-
-    ctx = multiprocessing.get_context('spawn')
-    learner_update_queue = ctx.Queue(100)
-    learner_request_queue = ctx.Queue(100)
-
-    collecor_process = ctx.Process(target=collector.main, args=(
-        host, port, config,
-        learner_update_queue,
-        learner_request_queue,
-    ))
-    collecor_process.start()
+    config: RunConfig = pickle.loads(communicator.recv_bytes(sock))
+    print(config)
 
     while True:
-        log_dict: dict = learner_request_queue.get()
-        minibatch = load(config.minibatch_temp_path)
+        request: MessageLearningRequest = pickle.loads(communicator.recv_bytes(sock))
 
-        state, train_log_dict = train(state, minibatch, config.batch_size)
+        state = TrainState.create(
+            apply_fn=request.ckpt.model.apply,
+            params=request.ckpt.params,
+            tx=optax.adam(learning_rate=config.learning_rate),
+            dropout_rng=jax.random.PRNGKey(0),
+            epoch=request.ckpt.step,
+            init_memory=TrainState.create_init_memory(request.ckpt.model)
+        )
 
-        log_dict.update(train_log_dict)
+        if request.ckpt.opt_state is not None:
+            state = state.replace(opt_state=request.ckpt.opt_state)
 
-        Checkpoint(state.epoch, state.params, model).save(checkpoint_manager)
+        state, train_log_dict = train(state, request.minibatch, config.batch_size)
 
-        learner_update_queue.put(state.epoch)
+        result = MessageLearningResult(
+            ckpt=Checkpoint(state.epoch, state.params, request.ckpt.model, state.opt_state),
+            log=train_log_dict
+        )
 
-        wandb.log(log_dict)
+        communicator.send_bytes(sock, pickle.dumps(result))
 
 
 def train(
