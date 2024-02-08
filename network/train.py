@@ -10,8 +10,6 @@ from jax import random, numpy as jnp
 import optax
 from flax.training import train_state
 
-import wandb
-
 from network.checkpoints import Checkpoint, CheckpointManager
 from network.transformer import Transformer, TransformerConfig
 from batch import load
@@ -168,6 +166,8 @@ def fit(
     num_division_of_segment: int,
     log_wandb: bool
 ):
+    import wandb
+
     train_batches = train_batch.divide(batch_size)
     test_batches = test_batch.divide(batch_size)
 
@@ -207,6 +207,8 @@ def fit(
 
 
 def main_train(batch: jnp.ndarray, log_wandb=False):
+    import wandb
+
     train_batch, test_batch = batch.split(0.8)
 
     heads = 4,
