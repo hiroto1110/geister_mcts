@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 import match_makers
-import mcts
+from constants import SearchParameters
 
 from distributed.communication import SerdeJsonSerializable
 from network.transformer import TransformerConfig
@@ -58,8 +58,8 @@ class RunConfig(SerdeJsonSerializable):
     match_maker_buffer_size: int
     match_making: match_makers.MatchMakingMethod
     fsp_threshold: float
-    mcts_params_min: mcts.SearchParameters
-    mcts_params_max: mcts.SearchParameters
+    mcts_params_min: SearchParameters
+    mcts_params_max: SearchParameters
     ckpt_dir: str
     ckpt_options: CheckpointManagerOptions
     load_replay_buffer_path: str

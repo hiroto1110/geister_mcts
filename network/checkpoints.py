@@ -19,31 +19,6 @@ NAMEDTUPLE_FLAG = "__namedtuple__"
 NDARRAY_FLAG = "__ndarray__"
 
 
-def make_pytree_structures_same(dst, src):
-    if isinstance(src, tuple) and hasattr(src, '_asdict'):
-        d_d = dst._asdict()
-        s_d = src._asdict()
-
-        for key in s_d.keys():
-            d_d[key] = make_pytree_structures_same(d_d[key], s_d[key])
-
-        return type(src)(**d_d)
-
-    if isinstance(src, dict):
-        return {key: make_pytree_structures_same(dst[key], src[key]) for key in src.keys()}
-
-    if isinstance(src, tuple):
-        return tuple([make_pytree_structures_same(d, s) for d, s in zip(dst, src)])
-
-    if isinstance(src, list):
-        return [make_pytree_structures_same(d, s) for d, s in zip(dst, src)]
-
-    if isinstance(src, jax.numpy.ndarray):
-        return jax.numpy.asarray(dst)
-
-    raise ValueError(f'{dst}, {src}: {type(dst)}, {type(src)}')
-
-
 def post_converted_from_json(obj):
     if obj is None:
         return None
@@ -87,9 +62,7 @@ def pre_converting_to_json(obj):
         obj[NAMEDTUPLE_FLAG] = True
 
     if isinstance(obj, dict | FrozenDict):
-        for k in obj.keys():
-            obj[k] = pre_converting_to_json(obj[k])
-        return obj
+        return {k: pre_converting_to_json(obj[k]) for k in obj.keys()}
 
     if isinstance(obj, tuple | list):
         return [pre_converting_to_json(o_i) for o_i in obj]
@@ -121,7 +94,6 @@ class Checkpoint(SerdeJsonSerializable):
     step: int
     model: TransformerConfig
     params: FrozenDict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
-    opt_state: tuple = serde.field(default=None, serializer=pre_converting_to_json, deserializer=deserialize_params)
 
     @classmethod
     def from_json_file(cls, path: str) -> 'Checkpoint':
@@ -206,7 +178,6 @@ def main():
     start = time.perf_counter()
     msg_ = Checkpoint.from_json(s)
     print(msg_)
-    print(msg_.opt_state)
     print(time.perf_counter() - start)
 
 

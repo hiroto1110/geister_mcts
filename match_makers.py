@@ -126,10 +126,10 @@ MatchMakingMethod = ThompsonSampling | PFSP
 
 
 def main():
-    true_p = np.array([0.9, 0.7, 0.61, 0.59, 0.58])
+    true_p = np.array([0.8, 0.7, 0.61, 0.59, 0.58])
 
     match_making = ThompsonSampling()
-    # match_making = MatchMakingMethodPFSP(p=6)
+    # match_making = PFSP(p=6)
     match_maker = MatchMaker(match_making, n_agents=true_p.shape[0], selfplay_p=0, match_buffer_size=1000)
 
     for i in range(5000):
@@ -143,7 +143,7 @@ def main():
     true_p = np.concatenate([true_p, [0.5]])
     match_maker.add_agent()
 
-    for i in range(5000):
+    for i in range(10000):
         id = match_maker.next_match()
         win = true_p[id] > np.random.random()
 

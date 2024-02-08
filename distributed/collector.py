@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 import time
 import socket
 import threading
@@ -12,69 +12,18 @@ import jax
 
 import wandb
 
-from distributed.config import RunConfig
-from distributed.communication import EncryptedCommunicator, SerdeJsonSerializable
+from config import RunConfig
+from communication import EncryptedCommunicator
+from messages import (
+    MessageActorInitClient, MessageActorInitServer,
+    MessageLeanerInitServer, MessageLearningRequest, MessageLearningResult,
+    MessageMatchResult, MessageNextMatch, MatchInfo, MatchResult
+)
 
 from batch import ReplayBuffer, save, is_won
 from network.checkpoints import Checkpoint, CheckpointManager
 import match_makers
 import training_logger
-
-
-@dataclass
-class MatchResult(SerdeJsonSerializable):
-    samples: list[np.ndarray]
-    agent_id: int
-
-
-@dataclass
-class MatchInfo(SerdeJsonSerializable):
-    agent_id: int
-
-
-@dataclass
-class MessageActorInitClient(SerdeJsonSerializable):
-    n_processes: int
-
-
-@dataclass
-class MessageActorInitServer(SerdeJsonSerializable):
-    config: RunConfig
-    current_ckpt: Checkpoint
-    snapshots: list[Checkpoint]
-    matches: list[MatchInfo]
-
-
-@dataclass
-class MessageMatchResult(SerdeJsonSerializable):
-    result: MatchResult
-    step: int
-
-
-@dataclass
-class MessageNextMatch(SerdeJsonSerializable):
-    next_match: MatchInfo
-    ckpt: Checkpoint | None
-
-
-@dataclass
-class MessageLearningRequest(SerdeJsonSerializable):
-    minibatch: np.ndarray
-    ckpt: Checkpoint
-
-
-@dataclass
-class Losses(SerdeJsonSerializable):
-    loss: float
-    loss_policy: float
-    loss_value: float
-    loss_color: float
-
-
-@dataclass
-class MessageLearningResult(SerdeJsonSerializable):
-    losses: Losses
-    ckpt: Checkpoint
 
 
 class AgentManager:
@@ -145,11 +94,11 @@ def handle_client_actor(
         next_match = MatchInfo(agent_manager.next_match())
 
         if result_msg.step == agent_manager.ckpt.step:
-            msg = MessageNextMatch(next_match, ckpt=None)
+            next_msg = MessageNextMatch(next_match, ckpt=None)
         else:
-            msg = MessageNextMatch(next_match, ckpt=agent_manager.ckpt)
+            next_msg = MessageNextMatch(next_match, ckpt=agent_manager.ckpt)
 
-        communicator.send_json_obj(sock, msg)
+        communicator.send_json_obj(sock, next_msg)
     sock.close()
 
 
@@ -160,9 +109,11 @@ def wait_accept(
     agent_manager: AgentManager,
     config: RunConfig
 ):
+    print("Waiting actor client...")
+
     while True:
         client_sock, address = server.accept()
-        print(f"New client from {address}")
+        print(f"Actor client from {address}")
 
         args = client_sock, communicator, match_result_queue, agent_manager, config
         thread = threading.Thread(target=handle_client_actor, args=args)
@@ -177,10 +128,11 @@ def start(
     config = RunConfig.from_json_file(config_path)
     communicator = EncryptedCommunicator(password)
 
+    print("Waiting learner client...")
     client, address = server.accept()
     print(f"Learner client from {address}")
-    communicator.send_json_obj(client, config)
 
+    print(f"Loading ReplayBuffer from {config.load_replay_buffer_path}")
     buffer = ReplayBuffer(
         buffer_size=config.buffer_size,
         sample_shape=(config.series_length,),
@@ -190,6 +142,7 @@ def start(
 
     checkpoint_manager = CheckpointManager(config.ckpt_dir, options=config.ckpt_options)
 
+    print("Preparing model and params")
     model, params = config.init_params.create_model_and_params()
 
     match_maker = match_makers.MatchMaker(
@@ -205,8 +158,12 @@ def start(
     )
     checkpoint_manager.save(agent_manager.ckpt)
 
+    print("Sending a init message to a learner client")
+    communicator.send_json_obj(client, MessageLeanerInitServer(config, agent_manager.ckpt))
+
     match_result_queue = queue.Queue()
 
+    print("Starting actor client hub")
     args = server, communicator, match_result_queue, agent_manager, config
     thread = threading.Thread(target=wait_accept, args=args)
     thread.start()
@@ -214,6 +171,7 @@ def start(
     is_waiting_parameter_update = False
 
     if config.wandb_log:
+        print("Initilizing wandb project")
         wandb.init(project=config.project_name)
 
     for s in range(100000000):
@@ -234,12 +192,12 @@ def start(
 
         if is_waiting_parameter_update:
             # recv_updated_params
-            msg = communicator.recv_json_obj(client, MessageLearningResult)
-            agent_manager.ckpt = msg.ckpt
+            result_msg = communicator.recv_json_obj(client, MessageLearningResult)
+            agent_manager.ckpt = result_msg.ckpt
             checkpoint_manager.save(agent_manager.ckpt)
 
             if config.wandb_log:
-                log_dict = asdict(msg.losses) | training_logger.create_log(
+                log_dict = asdict(result_msg.losses) | training_logger.create_log(
                     win_rates=win_rate,
                     last_games=last_batch
                 )
@@ -248,7 +206,7 @@ def start(
         if len(buffer) >= config.batch_size * config.num_batches:
             # send_training_minibatch
             train_batch = buffer.get_minibatch(config.batch_size * config.num_batches)
-            communicator.send_json_obj(client, MessageLearningRequest(train_batch, agent_manager.ckpt))
+            communicator.send_json_obj(client, MessageLearningRequest(train_batch))
             is_waiting_parameter_update = True
 
 

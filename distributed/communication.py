@@ -53,7 +53,6 @@ class EncryptedCommunicator:
     def send_bytes(self, sock: socket.socket, data: bytes):
         data = self.fernet.encrypt(data)
         msg = struct.pack('>I', len(data)) + data
-
         sock.sendall(msg)
 
     def recv_bytes(self, sock: socket.socket) -> bytes:
@@ -70,7 +69,8 @@ class EncryptedCommunicator:
         return self.recv_bytes(sock).decode(encoding)
 
     def send_json_obj(self, sock: socket.socket, obj: JsonSerializable):
-        self.send_str(sock, obj.to_json())
+        json_str = obj.to_json()
+        self.send_str(sock, json_str)
 
     def recv_json_obj(self, sock: socket.socket, ty: type[T]) -> T:
         json_str = self.recv_str(sock)

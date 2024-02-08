@@ -11,7 +11,10 @@ from distributed.communication import EncryptedCommunicator
 from network.checkpoints import CheckpointManager
 
 import actor
-import collector
+from messages import (
+    MessageActorInitClient, MessageActorInitServer,
+    MessageMatchResult, MessageNextMatch, MatchResult
+)
 
 
 @click.command()
@@ -48,9 +51,9 @@ def start_actor_manager(
 
     checkpoint_manager = CheckpointManager(ckpt_dir)
 
-    communicator.send_json_obj(sock, collector.MessageActorInitClient(n_clients))
+    communicator.send_json_obj(sock, MessageActorInitClient(n_clients))
 
-    init_msg = communicator.recv_json_obj(sock, collector.MessageActorInitServer)
+    init_msg = communicator.recv_json_obj(sock, MessageActorInitServer)
 
     config = init_msg.config
     print(config)
@@ -85,10 +88,10 @@ def start_actor_manager(
         process.start()
 
     while True:
-        result: collector.MatchResult = match_result_queue.get()
-        communicator.send_json_obj(sock, collector.MessageMatchResult(result, ckpt.step))
+        result: MatchResult = match_result_queue.get()
+        communicator.send_json_obj(sock, MessageMatchResult(result, ckpt.step))
 
-        msg = communicator.recv_json_obj(sock, collector.MessageNextMatch)
+        msg = communicator.recv_json_obj(sock, MessageNextMatch)
 
         match_request_queue.put(msg.next_match)
 

@@ -8,11 +8,10 @@ import jax
 import optax
 
 from network.train import TrainState, train_step
-from network.checkpoints import Checkpoint, make_pytree_structures_same
+from network.checkpoints import Checkpoint
 from batch import astuple
 
-from config import RunConfig
-from collector import MessageLearningRequest, MessageLearningResult, Losses
+from messages import MessageLeanerInitServer, MessageLearningRequest, MessageLearningResult, Losses
 from distributed.communication import EncryptedCommunicator
 
 
@@ -26,33 +25,29 @@ def main(host: str, port: int, password: str):
 
     communicator = EncryptedCommunicator(password)
 
-    config = communicator.recv_json_obj(sock, RunConfig)
+    init_msg = communicator.recv_json_obj(sock, MessageLeanerInitServer)
+    config = init_msg.config
     print(config)
+
+    model_config = init_msg.init_ckpt.model
+    model = model_config.create_model()
+
+    state = TrainState.create(
+        apply_fn=model.apply,
+        params=init_msg.init_ckpt.params,
+        tx=optax.adam(learning_rate=config.learning_rate),
+        dropout_rng=jax.random.PRNGKey(0),
+        epoch=0,
+        init_memory=TrainState.create_init_memory(model)
+    )
 
     while True:
         request = communicator.recv_json_obj(sock, MessageLearningRequest)
-
-        model = request.ckpt.model.create_model()
-
-        state = TrainState.create(
-            apply_fn=model.apply,
-            params=request.ckpt.params,
-            tx=optax.adam(learning_rate=config.learning_rate),
-            dropout_rng=jax.random.PRNGKey(0),
-            epoch=request.ckpt.step,
-            init_memory=TrainState.create_init_memory(model)
-        )
-
-        if request.ckpt.opt_state is not None:
-            opt_state = make_pytree_structures_same(request.ckpt.opt_state, state.opt_state)
-            state = state.replace(opt_state=opt_state)
-
         state, losses = train(state, request.minibatch, config.batch_size)
 
         result = MessageLearningResult(
             losses=losses,
-            ckpt=Checkpoint(int(state.epoch), request.ckpt.model, state.params, state.opt_state),
-            # ckpt=Checkpoint(state.epoch, request.ckpt.model, None, None),
+            ckpt=Checkpoint(int(state.epoch), model_config, state.params),
         )
         communicator.send_json_obj(sock, result)
 

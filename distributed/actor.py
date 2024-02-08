@@ -22,8 +22,9 @@ def start_selfplay_process(
     import jax
 
     from network.checkpoints import Checkpoint, CheckpointManager
-    import mcts
+    from constants import SearchParameters
     from match_makers import SELFPLAY_ID
+    import mcts
     import collector
 
     jax.config.update('jax_platform_name', 'cpu')
@@ -56,7 +57,7 @@ def start_selfplay_process(
 
             samples = []
 
-            mcts_params = mcts.SearchParameters.interpolate(mcts_params_min, mcts_params_max, p=np.random.random())
+            mcts_params = SearchParameters.interpolate(mcts_params_min, mcts_params_max, p=np.random.random())
             print(mcts_params)
             player1 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
 
