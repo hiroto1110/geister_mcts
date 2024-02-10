@@ -58,7 +58,7 @@ def start_selfplay_process(
             samples = []
 
             mcts_params = SearchParameters.interpolate(mcts_params_min, mcts_params_max, p=np.random.random())
-            print(mcts_params)
+
             player1 = mcts.PlayerMCTS(params_checkpoints[SELFPLAY_ID], model, mcts_params, tokens_length)
 
             if match.agent_id == SELFPLAY_ID:

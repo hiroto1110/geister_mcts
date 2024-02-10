@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import dataclass, asdict
 import time
 import socket
 import threading
@@ -24,6 +24,15 @@ from batch import ReplayBuffer, save, is_won
 from network.checkpoints import Checkpoint, CheckpointManager
 import match_makers
 import training_logger
+
+
+@dataclass
+class Agent:
+    name: str
+    ckpt: Checkpoint
+
+    def __eq__(self, __value: "Agent") -> bool:
+        return __value.name == self.name and __value.ckpt.step == self.ckpt.step
 
 
 class AgentManager:
@@ -72,6 +81,20 @@ class AgentManager:
 
 
 def handle_client_actor(
+    sock: socket.socket,
+    communicator: EncryptedCommunicator,
+    match_result_queue: queue.Queue,
+    agent_manager: AgentManager,
+    config: RunConfig
+):
+    try:
+        _handle_client_actor(sock, communicator, match_result_queue, agent_manager, config)
+    except Exception as e:
+        sock.close()
+        print(e)
+
+
+def _handle_client_actor(
     sock: socket.socket,
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,

@@ -1,5 +1,7 @@
+from typing import TypeVar, Generic
 from collections import deque
 from dataclasses import dataclass
+
 import numpy as np
 import scipy.stats
 
@@ -12,6 +14,8 @@ class MatchResult:
 
 SELFPLAY_ID = -1
 
+T = TypeVar('T')
+
 
 @dataclass
 class MatchMakingMethodBase:
@@ -19,42 +23,41 @@ class MatchMakingMethodBase:
         pass
 
 
-class MatchMaker:
-    def __init__(self, method: MatchMakingMethodBase, n_agents: int, selfplay_p=0.5, match_buffer_size=1000) -> None:
+class MatchMaker(Generic[T]):
+    def __init__(self, method: MatchMakingMethodBase, selfplay_p=0.5, match_buffer_size=1000) -> None:
         self.match_making_method = method
-        self.n_agents = n_agents
         self.match_buffer_size = match_buffer_size
         self.selfplay_p = selfplay_p
 
-        self.match_deques_individual = [deque([0], maxlen=match_buffer_size) for _ in range(n_agents)]
-        self.match_deque = deque([], maxlen=match_buffer_size * n_agents)
-        self.won = np.zeros(n_agents, dtype=np.int32)
-        self.lst = np.zeros(n_agents, dtype=np.int32)
+        self.agents: list[T] = []
+        self.match_deques_individual: list[deque] = []
 
-    def next_match(self) -> int:
-        if self.n_agents == 0:
-            return SELFPLAY_ID
+        self.match_deque = deque([], maxlen=0)
+        self.won = np.zeros(0, dtype=np.int32)
+        self.lst = np.zeros(0, dtype=np.int32)
 
-        if np.random.random() < self.selfplay_p:
-            return SELFPLAY_ID
+    def next_match(self) -> T:
+        if len(self.agents) == 0:
+            raise RuntimeError("MatchMaker has no agents")
 
-        if self.n_agents == 1:
-            return 0
+        if len(self.agents) == 1:
+            return self.agents[0]
 
-        for i in range(self.n_agents):
+        for i in range(len(self.agents)):
             if len(self.match_deques_individual[i]) < self.match_buffer_size:
-                return i
+                return self.agents[i]
 
         latest_games = np.stack([self.won, self.lst])
 
         won = np.array([np.sum(game) for game in self.match_deques_individual])
         individual_latest_games = np.stack([won, self.match_buffer_size - won])
 
-        return self.match_making_method.next_match(latest_games, individual_latest_games)
+        agent_id = self.match_making_method.next_match(latest_games, individual_latest_games)
 
-    def apply_match_result(self, agent_id: int, is_won: bool):
-        if agent_id == SELFPLAY_ID:
-            return
+        return self.agents[agent_id]
+
+    def apply_match_result(self, agent: T, is_won: bool):
+        agent_id = self.agents.index(agent)
 
         self.match_deques_individual[agent_id].append(int(is_won))
 
@@ -87,13 +90,14 @@ class MatchMaker:
         win_rate = [np.mean(match_deque) for match_deque in self.match_deques_individual]
         return np.array(win_rate)
 
-    def add_agent(self):
-        self.n_agents += 1
+    def add_agent(self, agent: T):
+        self.agents.append(agent)
+
         self.match_deques_individual.append(deque([0], maxlen=self.match_buffer_size))
 
         self.match_deque = deque(
             self.match_deque,
-            maxlen=self.match_buffer_size * self.n_agents
+            maxlen=self.match_buffer_size * len(self.agents)
         )
 
         self.won = np.concatenate([self.won, [0]], dtype=np.int32)
@@ -130,9 +134,9 @@ def main():
 
     match_making = ThompsonSampling()
     # match_making = PFSP(p=6)
-    match_maker = MatchMaker(match_making, n_agents=true_p.shape[0], selfplay_p=0, match_buffer_size=1000)
+    match_maker = MatchMaker(match_making, n_agents=true_p.shape[0], selfplay_p=0, match_buffer_size=500)
 
-    for i in range(5000):
+    for i in range(10000):
         id = match_maker.next_match()
         win = true_p[id] > np.random.random()
 
