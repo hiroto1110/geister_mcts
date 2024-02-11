@@ -10,3 +10,4 @@ data/
 *.lprof
 *.json
 *.log
+!data/run_config.json

@@ -38,7 +38,7 @@ class MessageActorInitServer(SerdeJsonSerializable):
 @dataclass
 class MessageLeanerInitServer(SerdeJsonSerializable):
     config: RunConfig
-    init_ckpt: Checkpoint
+    ckpts: dict[str, Checkpoint]
 
 
 @dataclass
