@@ -10,7 +10,7 @@ class SearchParameters:
     n_ply_to_apply_noise: int = 20
     max_duplicates: int = 3
     c_init: float = 1.25
-    c_base: int = 19652
+    c_base: int = 25
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
     visibilize_node_graph: bool = False
@@ -18,23 +18,56 @@ class SearchParameters:
     def replace(self, **args):
         return replace(self, **args)
 
-    @classmethod
-    def interpolate(cls, p1: "SearchParameters", p2: "SearchParameters", p: float) -> "SearchParameters":
-        def interpolate_f(a1, a2):
-            return a1 + (a2 - a1) * p
 
-        def interpolate_i(a1, a2):
-            return int(np.round(interpolate_f(a1, a2), 0))
+@dataclass
+class FloatRange:
+    min: int
+    max: int
 
+    def interpolate(self, p: float):
+        return self.min + (self.max - self.min) * p
+
+
+@dataclass
+class IntRange:
+    min: int
+    max: int
+
+    def interpolate(self, p: float):
+        return int(np.round(self.min + (self.max - self.min) * p, 0))
+
+
+@dataclass
+class SearchParametersRange:
+    num_simulations: IntRange
+    dirichlet_alpha: FloatRange = FloatRange(0.3, 0.3)
+    dirichlet_eps: FloatRange = FloatRange(0.25, 0.25)
+    n_ply_to_apply_noise: IntRange = IntRange(20, 20)
+    max_duplicates: IntRange = IntRange(3, 3)
+    c_init: FloatRange = FloatRange(1.25, 1.25)
+    c_base: IntRange = IntRange(25, 25)
+    depth_search_checkmate_root: IntRange = IntRange(7, 7)
+    depth_search_checkmate_leaf: IntRange = IntRange(4, 4)
+    visibilize_node_graph: bool = False
+
+    def replace(self, **args):
+        return replace(self, **args)
+
+    def sample(self) -> SearchParameters:
         return SearchParameters(
-            num_simulations=interpolate_i(p1.num_simulations, p2.num_simulations),
-            dirichlet_alpha=interpolate_f(p1.dirichlet_alpha, p2.dirichlet_alpha),
-            dirichlet_eps=interpolate_f(p1.dirichlet_eps, p2.dirichlet_eps),
-            n_ply_to_apply_noise=interpolate_i(p1.n_ply_to_apply_noise, p2.n_ply_to_apply_noise),
-            max_duplicates=interpolate_i(p1.max_duplicates, p2.max_duplicates),
-            c_init=interpolate_f(p1.c_init, p2.c_init),
-            c_base=interpolate_f(p1.c_base, p2.c_base),
-            depth_search_checkmate_root=interpolate_i(p1.depth_search_checkmate_root, p2.depth_search_checkmate_root),
-            depth_search_checkmate_leaf=interpolate_i(p1.depth_search_checkmate_leaf, p2.depth_search_checkmate_leaf),
-            visibilize_node_graph=p1.visibilize_node_graph and p2.visibilize_node_graph,
+            num_simulations=self.num_simulations.interpolate(np.random.random()),
+
+            dirichlet_alpha=self.dirichlet_alpha.interpolate(np.random.random()),
+            dirichlet_eps=self.dirichlet_eps.interpolate(np.random.random()),
+
+            n_ply_to_apply_noise=self.n_ply_to_apply_noise.interpolate(np.random.random()),
+            max_duplicates=self.max_duplicates.interpolate(np.random.random()),
+
+            c_init=self.c_init.interpolate(np.random.random()),
+            c_base=self.c_base.interpolate(np.random.random()),
+
+            depth_search_checkmate_root=self.depth_search_checkmate_root.interpolate(np.random.random()),
+            depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.interpolate(np.random.random()),
+
+            visibilize_node_graph=self.visibilize_node_graph
         )

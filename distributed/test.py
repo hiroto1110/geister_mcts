@@ -4,8 +4,8 @@ import numpy as np
 import jax
 
 import actor
-from messages import MatchInfo, MatchResult
-from constants import SearchParameters
+from messages import MatchInfo, MessageMatchResult, SnapshotInfo
+from constants import SearchParametersRange, IntRange, FloatRange
 
 from batch import get_reward
 
@@ -13,29 +13,17 @@ from batch import get_reward
 def main(
     n_clients: int = 12,
     ckpt_dir: str = './data/checkpoints/run-3',
-    series_length=8,
+    series_length=12,
     tokens_length=220,
 ):
-    mcts_params_min = SearchParameters(
-        num_simulations=20,
-        dirichlet_alpha=0.1,
-        n_ply_to_apply_noise=0,
-        max_duplicates=1,
-        depth_search_checkmate_leaf=4,
-        depth_search_checkmate_root=7,
-        visibilize_node_graph=False,
-        c_base=25,
-    )
-
-    mcts_params_max = SearchParameters(
-        num_simulations=40,
-        dirichlet_alpha=0.2,
-        n_ply_to_apply_noise=0,
-        max_duplicates=3,
-        depth_search_checkmate_leaf=4,
-        depth_search_checkmate_root=7,
-        visibilize_node_graph=False,
-        c_base=40,
+    mcts_params = SearchParametersRange(
+        num_simulations=IntRange(20, 40),
+        dirichlet_alpha=FloatRange(0.1, 0.2),
+        n_ply_to_apply_noise=IntRange(0, 10),
+        max_duplicates=IntRange(1, 3),
+        depth_search_checkmate_leaf=IntRange(4, 4),
+        depth_search_checkmate_root=IntRange(7, 7),
+        c_base=IntRange(25, 40)
     )
 
     ctx = multiprocessing.get_context('spawn')
@@ -44,7 +32,7 @@ def main(
     ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
     for i in range(n_clients * 2):
-        match_request_queue.put(MatchInfo(-2))
+        match_request_queue.put(MatchInfo(SnapshotInfo("SELF", -1), SnapshotInfo("NAOTTI2020", -1)))
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
@@ -53,8 +41,7 @@ def main(
                 ckpt_queues[i],
                 ckpt_dir,
                 seed,
-                mcts_params_min,
-                mcts_params_max,
+                mcts_params,
                 series_length,
                 tokens_length)
 
@@ -64,8 +51,8 @@ def main(
     win_count = np.zeros((series_length, 2))
 
     for count in range(10000):
-        result: MatchResult = match_result_queue.get()
-        match_request_queue.put(MatchInfo(-2))
+        result: MessageMatchResult = match_result_queue.get()
+        match_request_queue.put(MatchInfo(SnapshotInfo("SELF", -1), SnapshotInfo("NAOTTI2020", -1)))
 
         for i, sample in enumerate(result.samples):
             if get_reward(sample) > 3:

@@ -109,6 +109,7 @@ class CheckpointManagerOptions:
     keep_period: int
 
 
+@dataclasses.dataclass
 class CheckpointManager:
     def __init__(self, path: str, options: CheckpointManagerOptions = None) -> None:
         if not os.path.exists(path):
@@ -129,6 +130,13 @@ class CheckpointManager:
 
     def get_paths(self) -> list[str]:
         return glob.glob(self.path + '/*.json')
+
+    def get_steps(self) -> list[int]:
+        paths = self.get_paths()
+        return [os.path.splitext(os.path.basename(path))[0] for path in paths]
+
+    def lastest_step(self) -> int:
+        return max(self.get_steps())
 
     def save(self, ckpt: Checkpoint):
         if ckpt.step % self.options.keep_period != 0:

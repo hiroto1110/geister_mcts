@@ -13,7 +13,7 @@ from network.checkpoints import CheckpointManager
 import actor
 from messages import (
     MessageActorInitClient, MessageActorInitServer,
-    MessageMatchResult, MessageNextMatch, MatchResult
+    MessageMatchResult, MessageNextMatch
 )
 
 
@@ -49,8 +49,6 @@ def start_actor_manager(
 
     communicator = EncryptedCommunicator(password)
 
-    checkpoint_manager = CheckpointManager(ckpt_dir)
-
     communicator.send_json_obj(sock, MessageActorInitClient(n_clients))
 
     init_msg = communicator.recv_json_obj(sock, MessageActorInitServer)
@@ -58,50 +56,49 @@ def start_actor_manager(
     config = init_msg.config
     print(config)
 
-    ckpt = init_msg.current_ckpt
-    checkpoint_manager.save(ckpt)
+    checkpoint_managers = {
+        name: CheckpointManager(f'{ckpt_dir}/{name}')
+        for name in init_msg.snapshots
+    }
 
-    for ckpt_i in init_msg.snapshots:
-        checkpoint_manager.save(ckpt_i)
+    for name, snapshots in init_msg.snapshots.items():
+        for ckpt_i in snapshots:
+            checkpoint_managers[name].save(ckpt_i)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
     match_result_queue = ctx.Queue(100)
-    ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
     for match in init_msg.matches:
         match_request_queue.put(match)
 
     for i in range(n_clients):
+        agent_index = i % len(config.agents)
+        agent = config.agents[agent_index]
+
         seed = np.random.randint(0, 10000)
-        args = (match_request_queue,
-                match_result_queue,
-                ckpt_queues[i],
-                ckpt_dir,
-                seed,
-                config.mcts_params_min,
-                config.mcts_params_max,
-                config.series_length,
-                config.tokens_length)
+        args = (
+            match_request_queue,
+            match_result_queue,
+            agent.mcts_params,
+            config.series_length,
+            config.tokens_length,
+            seed,
+        )
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()
 
     while True:
-        result: MatchResult = match_result_queue.get()
-        communicator.send_json_obj(sock, MessageMatchResult(result, ckpt.step))
+        result: MessageMatchResult = match_result_queue.get()
+        communicator.send_json_obj(sock, result)
 
         msg = communicator.recv_json_obj(sock, MessageNextMatch)
 
-        match_request_queue.put(msg.next_match)
+        match_request_queue.put(msg.match)
 
         if msg.ckpt is not None:
-            ckpt = msg.ckpt
-
-            checkpoint_manager.save(ckpt)
-
-            for ckpt_queue in ckpt_queues:
-                ckpt_queue.put(ckpt.step)
+            checkpoint_managers[msg.match.player.name].save(msg.ckpt)
 
 
 if __name__ == '__main__':

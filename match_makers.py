@@ -6,14 +6,6 @@ import numpy as np
 import scipy.stats
 
 
-@dataclass
-class MatchResult:
-    agent_id: int
-    win: bool
-
-
-SELFPLAY_ID = -1
-
 T = TypeVar('T')
 
 
@@ -24,10 +16,9 @@ class MatchMakingMethodBase:
 
 
 class MatchMaker(Generic[T]):
-    def __init__(self, method: MatchMakingMethodBase, selfplay_p=0.5, match_buffer_size=1000) -> None:
+    def __init__(self, method: MatchMakingMethodBase, match_buffer_size=1000) -> None:
         self.match_making_method = method
         self.match_buffer_size = match_buffer_size
-        self.selfplay_p = selfplay_p
 
         self.agents: list[T] = []
         self.match_deques_individual: list[deque] = []

@@ -21,6 +21,16 @@ class JsonSerializable:
     def from_json(cls: type[T], s: str) -> T:
         pass
 
+    def to_json_file(self, path):
+        s = self.to_json()
+        with open(path, mode='w') as f:
+            f.write(s)
+
+    @classmethod
+    def from_json_file(cls: type[T], path) -> T:
+        with open(path, mode='r') as f:
+            return cls.from_json(f.read())
+
 
 class SerdeJsonSerializable(JsonSerializable):
     def to_json(self) -> str:
