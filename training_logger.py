@@ -1,20 +1,7 @@
 import numpy as np
 
 from env.state import Token
-from batch import get_tokens, get_reward
-
-
-def create_log(
-        win_rates: np.ndarray,
-        last_games: np.ndarray
-) -> dict[str, object]:
-
-    log = {}
-
-    log.update(create_log_win_rates(win_rates))
-    log.update(create_log_last_games(last_games))
-
-    return log
+from batch import get_reward
 
 
 def create_log_win_rates(win_rates: np.ndarray) -> dict:
@@ -23,14 +10,6 @@ def create_log_win_rates(win_rates: np.ndarray) -> dict:
 
 def create_log_last_games(last_games: np.ndarray) -> dict:
     log = {}
-
-    t = np.arange(40, 200, step=40)
-    n_captured = calc_n_captured(get_tokens(last_games), t)
-
-    for i in range(n_captured.shape[0]):
-        for color in range(n_captured.shape[1]):
-            log[f'n_captured/{color}_{t[i]}'] = n_captured[i, color]
-
     for i in range(7):
         log[f'game_result/{i}'] = (get_reward(last_games) == i).mean()
 

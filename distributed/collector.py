@@ -21,9 +21,8 @@ from messages import (
 )
 
 from match_makers import MatchMaker
-from batch import save, is_won
+from batch import save, is_won, get_reward
 from network.checkpoints import Checkpoint, CheckpointManager
-import training_logger
 
 
 @dataclass
@@ -106,7 +105,11 @@ class Agent:
         last_batch = self.replay_buffer.get_last_minibatch(self.run_config.update_period)
         save(self.replay_buffer_path, last_batch, append=True)
 
-        log = training_logger.create_log(win_rates, last_batch)
+        log = {}
+
+        for i in range(7):
+            log[f'game_result/{i}'] = np.mean(get_reward(last_batch) == i)
+
         for i in range(len(win_rates)):
             opponent = self.match_maker.agents[i]
             label = f'{opponent.name}-{opponent.step}'
@@ -125,7 +128,7 @@ class Agent:
         return LearningJob(self.name, self.replay_buffer.get_minibatch(self.minibatch_size))
 
     def apply_learning_job_result(self, result: LearningJobResult):
-        self.current = result.ckpt
+        self.current = Snapshot(self.name, result.ckpt)
         self.ckpt_manager.save(result.ckpt)
 
 
@@ -134,6 +137,25 @@ class AgentManager:
         self.config = config
 
         self.agents: dict[str, Agent] = {agent.name: Agent(agent, config) for agent in config.agents}
+
+    def create_init_learner_message(self) -> MessageLeanerInitServer:
+        ckpts = {
+            name: agent.current.ckpt
+            for name, agent in self.agents.items()
+        }
+        return MessageLeanerInitServer(self.config, ckpts)
+
+    def create_init_actor_message(self, n_processes: int) -> MessageActorInitServer:
+        snapshots = {
+            name: [s.ckpt for s in agent.snapshots] + [agent.current.ckpt]
+            for name, agent in self.agents.items()
+        }
+
+        return MessageActorInitServer(
+            self.config,
+            snapshots=snapshots,
+            matches=[MatchInfo(self.init_match()) for i in range(n_processes)]
+        )
 
     def init_match(self, agent_name: str) -> MessageNextMatch:
         return self.agents[agent_name].next_match()
@@ -150,8 +172,15 @@ class AgentManager:
     def create_learning_jobs(self) -> list[LearningJob]:
         return [agent.create_learning_job() for agent in self.agents.values() if agent.has_enough_samples()]
 
-    def apply_learning_job_result(self, result: LearningJobResult):
+    def apply_learning_job_result(self, result: LearningJobResult) -> dict:
         self.agents[result.agent_name].apply_learning_job_result(result)
+
+        return {
+            f'train/{result.agent_name}/loss': result.loss,
+            f'train/{result.agent_name}/loss policy': result.loss_policy,
+            f'train/{result.agent_name}/loss value': result.loss_value,
+            f'train/{result.agent_name}/loss color': result.loss_color,
+        }
 
     def add_snapshot(self, snapshot: Snapshot):
         for agent in self.agents.values():
@@ -176,10 +205,9 @@ def handle_client_actor(
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
     agent_manager: AgentManager,
-    config: RunConfig
 ):
     try:
-        _handle_client_actor(sock, communicator, match_result_queue, agent_manager, config)
+        _handle_client_actor(sock, communicator, match_result_queue, agent_manager)
     except Exception as e:
         sock.close()
         print(e)
@@ -190,16 +218,10 @@ def _handle_client_actor(
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
     agent_manager: AgentManager,
-    config: RunConfig
 ):
     init_msg_client = communicator.recv_json_obj(sock, MessageActorInitClient)
 
-    init_msg_server = MessageActorInitServer(
-        config,
-        agent_manager.ckpt,
-        agent_manager.agents,
-        matches=[MatchInfo(agent_manager.init_match()) for i in range(init_msg_client.n_processes)]
-    )
+    init_msg_server = agent_manager.create_init_actor_message(init_msg_client.n_processes)
     communicator.send_json_obj(sock, init_msg_server)
 
     while result_msg := communicator.recv_json_obj(sock, MessageMatchResult):
@@ -216,7 +238,6 @@ def wait_accept(
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
     agent_manager: AgentManager,
-    config: RunConfig
 ):
     print("Waiting actor client...")
 
@@ -224,7 +245,7 @@ def wait_accept(
         client_sock, address = server.accept()
         print(f"Actor client from {address}")
 
-        args = client_sock, communicator, match_result_queue, agent_manager, config
+        args = client_sock, communicator, match_result_queue, agent_manager
         thread = threading.Thread(target=handle_client_actor, args=args)
         thread.start()
 
@@ -238,19 +259,19 @@ def start(
     communicator = EncryptedCommunicator(password)
 
     print("Waiting learner client...")
-    client, address = server.accept()
+    learner, address = server.accept()
     print(f"Learner client from {address}")
 
     print("Initializing agents")
     agent_manager = AgentManager(config)
 
     print("Sending a init message to a learner client")
-    communicator.send_json_obj(client, MessageLeanerInitServer(config, agent_manager.ckpt))
+    communicator.send_json_obj(learner, agent_manager.create_init_learner_message())
 
     match_result_queue = queue.Queue()
 
-    print("Starting actor client hub")
-    args = server, communicator, match_result_queue, agent_manager, config
+    print("Initilizing actor client hub")
+    args = server, communicator, match_result_queue, agent_manager
     thread = threading.Thread(target=wait_accept, args=args)
     thread.start()
 
@@ -273,15 +294,10 @@ def start(
 
         if is_waiting_parameter_update:
             # recv_updated_params
-            learning_result_msg = communicator.recv_json_obj(client, MessageLearningJobResult)
+            learning_result_msg = communicator.recv_json_obj(learner, MessageLearningJobResult)
 
             for learning_result in learning_result_msg.results:
-                agent_manager.apply_learning_job_result(learning_result)
-
-                log[f'train/{learning_result.agent_name}/loss'] = learning_result.loss
-                log[f'train/{learning_result.agent_name}/loss policy'] = learning_result.loss_policy
-                log[f'train/{learning_result.agent_name}/loss value'] = learning_result.loss_color
-                log[f'train/{learning_result.agent_name}/loss color'] = learning_result.loss_value
+                log |= agent_manager.apply_learning_job_result(learning_result)
 
             if config.wandb_log:
                 wandb.log(log)
@@ -290,15 +306,15 @@ def start(
         jobs = agent_manager.create_learning_jobs()
 
         if len(jobs) > 0:
-            communicator.send_json_obj(client, MessageLearningRequest(jobs))
+            communicator.send_json_obj(learner, MessageLearningRequest(jobs))
             is_waiting_parameter_update = True
 
 
 @click.command()
 @click.argument('host', type=str)
 @click.argument('port', type=int)
-@click.argument('config_path', type=str)
 @click.argument('password', type=str)
+@click.argument('config_path', type=str)
 def main(host: str, port: int, config_path: str, password: str):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 

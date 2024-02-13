@@ -13,10 +13,9 @@ using namespace std;
 
 class Search
 {
+public:
 	int kiki[36 * 5];				//kiki[i * 5 + j] = マスiから行けるj番目のマスの番号. (なければ-1)
 	int maxDepth;					//maxDepth    = 探索の深さの最大値
-	
-public:
 	int INF;						//INF         = 評価値の上限 (下限は-INF以上)
 		
 	Search()	//ゲームが始まる前の処理

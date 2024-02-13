@@ -29,21 +29,19 @@ def main(
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
     match_result_queue = ctx.Queue(100)
-    ckpt_queues = [ctx.Queue(100) for _ in range(n_clients)]
 
     for i in range(n_clients * 2):
-        match_request_queue.put(MatchInfo(SnapshotInfo("SELF", -1), SnapshotInfo("NAOTTI2020", -1)))
+        match_request_queue.put(MatchInfo(SnapshotInfo("main", -1), SnapshotInfo("NAOTTI2020", -1)))
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
         args = (match_request_queue,
                 match_result_queue,
-                ckpt_queues[i],
                 ckpt_dir,
-                seed,
-                mcts_params,
+                {"main": mcts_params},
                 series_length,
-                tokens_length)
+                tokens_length,
+                seed)
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()
@@ -52,7 +50,7 @@ def main(
 
     for count in range(10000):
         result: MessageMatchResult = match_result_queue.get()
-        match_request_queue.put(MatchInfo(SnapshotInfo("SELF", -1), SnapshotInfo("NAOTTI2020", -1)))
+        match_request_queue.put(MatchInfo(SnapshotInfo("main", -1), SnapshotInfo("NAOTTI2020", -1)))
 
         for i, sample in enumerate(result.samples):
             if get_reward(sample) > 3:

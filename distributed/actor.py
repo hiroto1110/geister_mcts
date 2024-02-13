@@ -99,7 +99,7 @@ def main(
         player1 = cretae_current_player(match.player)
 
         if match.opponent.name == "NAOTTI2020":
-            player2 = mcts.PlayerNaotti2020(depth_min=3, depth_max=3)
+            player2 = mcts.PlayerNaotti2020(depth_min=3, depth_max=6, random_n_ply=12)
         else:
             player2 = create_snapshot_player(match.opponent)
 

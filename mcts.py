@@ -394,7 +394,7 @@ def select_action_with_mcts(
     if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
-    if state.n_ply < 8:
+    if state.n_ply < 12:
         node.setup_valid_actions(state, 1)
         return np.random.choice(node.valid_actions)
 
@@ -600,9 +600,10 @@ class PlayerMCTS(PlayerBase):
 
 
 class PlayerNaotti2020(PlayerBase):
-    def __init__(self, depth_min, depth_max, print_log=False) -> None:
+    def __init__(self, depth_min: int, depth_max: int, random_n_ply: int, print_log=False) -> None:
         self.depth_min = depth_min
         self.depth_max = depth_max
+        self.random_n_ply = random_n_ply
         self.print_log = print_log
 
     def init_state(self, state: game.SimulationState):
@@ -616,7 +617,7 @@ class PlayerNaotti2020(PlayerBase):
         board_msg = gat.server_util.encode_board_str(self.state)
         naotti2020.recvBoard(board_msg)
 
-        action_msg = naotti2020.solve(self.turn_count)
+        action_msg = naotti2020.solve(self.turn_count, self.state.n_ply <= self.random_n_ply)
         action = gat.server_util.decode_action_message(action_msg)
 
         if self.state.root_player == 1:

@@ -1,5 +1,6 @@
 ﻿#include <iostream>
 #include <ostream>
+#include <random>
 #include "Game.h"
 #include "Search.h"
 #include "KanzenSearch.h"
@@ -11,7 +12,16 @@
 #include <tuple>
 #include <functional>
 #include <pybind11/pybind11.h>
-
+ 
+std::random_device rd;
+std::mt19937 gen(rd());
+ 
+int random(int low, int high)
+{
+    std::uniform_int_distribution<> dist(low, high);
+    return dist(gen);
+}
+ 
 namespace py = pybind11;
 
 using namespace std;
@@ -373,7 +383,7 @@ pair<MoveCommand, int> thinkMove() {
 }
 
 //手を決めるのと、いろんな処理
-string solve(int turnCnt) {
+string solve(int turnCnt, bool isRandom) {
 	//時間計測開始
 	clock_t startTime = clock();
 
@@ -396,9 +406,31 @@ string solve(int turnCnt) {
 		}
 	}
 
-	//手を決める
-	pair<MoveCommand, int> res = thinkMove();
-	MoveCommand te = res.first;
+	MoveCommand te;
+	int eval;
+
+	if(!isRandom) {
+		pair<MoveCommand, int> res = thinkMove();
+		te = res.first;
+		eval = res.second;
+	}
+	else {
+		string s;
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j < 6; j++) {
+				s += board[i][j];
+			}
+		}
+		BitBoard bb;
+		bb.toBitBoard(s);
+
+		int from[32], to[32];
+		int moveNum = bb.makeMoves(0, searchObj.kiki, from, to);
+		int moveId = random(0, moveNum - 1);
+
+		te = MoveCommand::parse(from[moveId], to[moveId]);
+		eval = 0;
+	}
 
 	//思考時間
 	sumThinkTime += clock() - startTime;
@@ -410,7 +442,7 @@ string solve(int turnCnt) {
 
 	//表示
 	if(printLog)
-		cerr << "選択手(" << te.y << ", " << te.x << ", " << te.dir << "), 評価値 = " << res.second << endl;
+		cerr << "選択手(" << te.y << ", " << te.x << ", " << te.dir << "), 評価値 = " << eval << endl;
 	return move(te.y, te.x, te.dir);
 }
 
