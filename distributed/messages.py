@@ -14,7 +14,8 @@ class SnapshotInfo:
     step: int
 
 
-SNAPSHOT_INFO_SELFPLAY = SnapshotInfo(name='__selfplay__', step=-1)
+SNAPSHOT_INFO_SELFPLAY = SnapshotInfo(name='selfplay', step=-1)
+SNAPSHOT_INFO_NAOTTI = SnapshotInfo(name='naotti2020', step=-1)
 
 
 @dataclass

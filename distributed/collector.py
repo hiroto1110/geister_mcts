@@ -17,7 +17,7 @@ from communication import EncryptedCommunicator
 from messages import (
     MessageActorInitClient, MessageActorInitServer,
     MessageLeanerInitServer, LearningJob, MessageLearningRequest, LearningJobResult, MessageLearningJobResult,
-    MessageMatchResult, MessageNextMatch, MatchInfo, SnapshotInfo, SNAPSHOT_INFO_SELFPLAY
+    MessageMatchResult, MessageNextMatch, MatchInfo, SnapshotInfo, SNAPSHOT_INFO_NAOTTI
 )
 
 from match_makers import MatchMaker
@@ -51,12 +51,18 @@ class Agent:
 
         self.ckpt_manager = CheckpointManager(self.agent_dir, run_config.ckpt_options)
         self.match_maker: MatchMaker[SnapshotInfo] = config.create_match_maker()
-        self.replay_buffer = config.create_replay_buffer(run_config.series_length, run_config.tokens_length)
+        self.replay_buffer = run_config.create_replay_buffer()
 
         model, params = config.init_params.create_model_and_params()
 
         self.current = Snapshot(self.name, Checkpoint(0, model, params))
         self.snapshots: list[Snapshot] = [self.current]
+
+        if self.name in config.opponent_names:
+            self.match_maker.add_agent(self.current.info)
+
+        if SNAPSHOT_INFO_NAOTTI.name in config.opponent_names:
+            self.match_maker.add_agent(SNAPSHOT_INFO_NAOTTI)
 
     @property
     def name(self) -> str:
@@ -80,16 +86,24 @@ class Agent:
             opponent=self.match_maker.next_match()
         )
 
-        if prev_match is not None and prev_match.player.step != self.current.step:
+        if prev_match is not None and prev_match.player.step != self.current.ckpt.step:
             return MessageNextMatch(next_match, self.current.ckpt)
         else:
             return MessageNextMatch(next_match, None)
 
-    def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
-        self.replay_buffer.add_sample(samples)
+    def should_do_add_to_replay_buffer(self, match: MatchInfo) -> bool:
+        if match.player.name not in self.config.replay_buffer_sharing:
+            return False
 
-        for sample in samples:
-            self.match_maker.apply_match_result(match.opponent, is_won(sample))
+        return self.config.replay_buffer_sharing[match.player.name] >= np.random.random()
+
+    def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
+        if self.should_do_add_to_replay_buffer(match):
+            self.replay_buffer.add_sample(samples)
+
+        if match.player.name == self.name:
+            for sample in samples:
+                self.match_maker.apply_match_result(match.opponent, is_won(sample))
 
     def add_snaphost(self, snapshot: Snapshot):
         if snapshot.name == self.name:
@@ -100,7 +114,9 @@ class Agent:
 
     def next_step(self) -> StepSummary:
         win_rates = self.match_maker.get_win_rates()
-        is_league_member = self.config.condition_for_keeping_snapshots.is_league_member(win_rates)
+        is_league_member = self.config.condition_for_keeping_snapshots.is_league_member(
+            win_rates, self.current.ckpt.step
+        )
 
         last_batch = self.replay_buffer.get_last_minibatch(self.run_config.update_period)
         save(self.replay_buffer_path, last_batch, append=True)
@@ -151,10 +167,15 @@ class AgentManager:
             for name, agent in self.agents.items()
         }
 
+        n_matches = n_processes + 10
+
+        allocations_list = [[agent] * int(n_matches * agent.processes_allocation_ratio) for agent in self.config.agents]
+        allocations = sum(allocations_list, start=[])
+
         return MessageActorInitServer(
             self.config,
             snapshots=snapshots,
-            matches=[MatchInfo(self.init_match()) for i in range(n_processes)]
+            matches=[self.init_match(agent.name).match for agent in allocations]
         )
 
     def init_match(self, agent_name: str) -> MessageNextMatch:
@@ -164,10 +185,8 @@ class AgentManager:
         return self.agents[prev_match.player.name].next_match(prev_match)
 
     def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
-        if match.player.name == SNAPSHOT_INFO_SELFPLAY.name:
-            return
-
-        self.agents[match.player.name].apply_match_result(match, samples)
+        for agent in self.agents.values():
+            agent.apply_match_result(match, samples)
 
     def create_learning_jobs(self) -> list[LearningJob]:
         return [agent.create_learning_job() for agent in self.agents.values() if agent.has_enough_samples()]
@@ -176,10 +195,10 @@ class AgentManager:
         self.agents[result.agent_name].apply_learning_job_result(result)
 
         return {
-            f'train/{result.agent_name}/loss': result.loss,
-            f'train/{result.agent_name}/loss policy': result.loss_policy,
-            f'train/{result.agent_name}/loss value': result.loss_value,
-            f'train/{result.agent_name}/loss color': result.loss_color,
+            f'{result.agent_name}/loss': result.loss,
+            f'{result.agent_name}/loss policy': result.loss_policy,
+            f'{result.agent_name}/loss value': result.loss_value,
+            f'{result.agent_name}/loss color': result.loss_color,
         }
 
     def add_snapshot(self, snapshot: Snapshot):
@@ -192,7 +211,7 @@ class AgentManager:
         for agent in self.agents.values():
             summary = agent.next_step()
 
-            log[agent.name] = summary.log
+            log |= {f'{agent.name}/{k}': v for k, v in summary.log.items()}
 
             if summary.is_league_member:
                 self.add_snapshot(agent.current)
@@ -230,7 +249,6 @@ def _handle_client_actor(
         next_msg = agent_manager.next_match(prev_match=result_msg.match)
 
         communicator.send_json_obj(sock, next_msg)
-    sock.close()
 
 
 def wait_accept(

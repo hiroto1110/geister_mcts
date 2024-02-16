@@ -133,7 +133,7 @@ class CheckpointManager:
 
     def get_steps(self) -> list[int]:
         paths = self.get_paths()
-        return [os.path.splitext(os.path.basename(path))[0] for path in paths]
+        return [int(os.path.splitext(os.path.basename(path))[0]) for path in paths]
 
     def lastest_step(self) -> int:
         return max(self.get_steps())
@@ -153,9 +153,9 @@ class CheckpointManager:
 
     def load(self, step: int) -> Checkpoint:
         if step == -1:
-            path = self.get_paths()[-1]
-        else:
-            path = self.get_path(step)
+            step = self.lastest_step()
+
+        path = self.get_path(step)
 
         if not os.path.exists(path):
             FileNotFoundError(f"Checkpoint is not found in {path}")

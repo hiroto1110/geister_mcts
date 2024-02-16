@@ -20,13 +20,13 @@ from messages import (
 @click.command()
 @click.argument('ip', type=str)
 @click.argument('port', type=int)
-@click.argument("n_clients", type=int)
 @click.argument("password", type=str)
+@click.argument("n_clients", type=int)
 def main(
     ip: str,
     port: int,
+    password: str,
     n_clients: int,
-    password: str
 ):
     jax.config.update('jax_platform_name', 'cpu')
 
@@ -79,6 +79,7 @@ def start_actor_manager(
         args = (
             match_request_queue,
             match_result_queue,
+            ckpt_dir,
             mcts_params_ranges,
             config.series_length,
             config.tokens_length,

@@ -82,6 +82,9 @@ class MatchMaker(Generic[T]):
         return np.array(win_rate)
 
     def add_agent(self, agent: T):
+        if agent in self.agents:
+            return
+
         self.agents.append(agent)
 
         self.match_deques_individual.append(deque([0], maxlen=self.match_buffer_size))

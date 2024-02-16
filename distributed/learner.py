@@ -62,7 +62,7 @@ class Agent:
 
         return LearningJobResult(
             self.config.name,
-            ckpt=Checkpoint(self.state.epoch, self.model, self.state.params),
+            ckpt=Checkpoint(int(self.state.epoch), self.model, self.state.params),
             loss=float(loss),
             loss_policy=float(losses[0]),
             loss_value=float(losses[1]),
@@ -85,7 +85,7 @@ def main(host: str, port: int, password: str):
     print(config)
 
     agents: dict[str, Agent] = {
-        Agent(agent, init_msg.ckpts[agent.name]) for agent in config.agents
+        agent.name: Agent(agent, init_msg.ckpts[agent.name]) for agent in config.agents
     }
 
     while True:

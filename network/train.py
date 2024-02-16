@@ -12,7 +12,7 @@ from flax.training import train_state
 
 from network.checkpoints import Checkpoint, CheckpointManager
 from network.transformer import Transformer, TransformerConfig
-from batch import load
+from batch import load, astuple
 
 
 class TrainState(train_state.TrainState):
@@ -78,14 +78,15 @@ def loss_fn(
         )
 
     def scan_f(carry, i):
-        memory_c, loss_c = carry
+        memory_prev, loss_prev = carry
 
-        p, v, c, memory_c = apply(x[:, i], memory_c)
+        p, v, c, memory_next = apply(x[:, i], memory_prev)
         loss_i, losses_i = calc_loss(x[:, i], p, v, c, p_true[:, i], v_true[:, i], c_true[:, i])
 
-        loss_c += loss_i
+        memory_next = memory_next.reshape(memory_prev.shape)
+        loss_next = loss_prev + loss_i
 
-        return (memory_c, loss_c), losses_i
+        return (memory_next, loss_next), losses_i
 
     init_memory = jnp.zeros((batch_size, *state.init_memory.shape))
     indices = segment_offset + jnp.arange(segment_length)
@@ -148,7 +149,7 @@ def train_epoch(state: TrainState, batches: list[jnp.ndarray], num_division_of_s
     loss_history, info_history = [], []
 
     for batch in tqdm(batches):
-        state, loss, info = train_step(state, *batch.astuple(), num_division_of_segment, eval)
+        state, loss, info = train_step(state, *astuple(batch), num_division_of_segment, eval)
         loss_history.append(jax.device_get(loss))
         info_history.append(jax.device_get(info))
 
@@ -159,17 +160,13 @@ def fit(
     state: TrainState,
     model_config: TransformerConfig,
     checkpoint_manager: CheckpointManager,
-    train_batch: jnp.ndarray,
-    test_batch: jnp.ndarray,
+    train_batches: jnp.ndarray,
+    test_batches: jnp.ndarray,
     epochs: int,
-    batch_size: int,
     num_division_of_segment: int,
     log_wandb: bool
 ):
     import wandb
-
-    train_batches = train_batch.divide(batch_size)
-    test_batches = test_batch.divide(batch_size)
 
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         start = time.perf_counter()
@@ -201,31 +198,38 @@ def fit(
             wandb.log(log_dict)
 
         state = state.replace(epoch=state.epoch + 1)
-        checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
+        checkpoint_manager.save(Checkpoint(int(state.epoch), model_config, state.params))
 
     return state
 
 
-def main_train(batch: jnp.ndarray, log_wandb=False):
+def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
     import wandb
 
-    train_batch, test_batch = batch.split(0.8)
+    batch = batch[:(len(batch) // batch_size) * batch_size]
+    batch = batch.reshape((-1, batch_size, batch.shape[1], batch.shape[2]))
+
+    n_train = int(batch.shape[0] * 0.8)
+    train_batch = batch[:n_train]
+    test_batch = batch[n_train:]
 
     heads = 4,
     dims = 256,
     num_layers = 4,
+    memory_length = 0,
 
-    for h, d, n in itertools.product(heads, dims, num_layers):
+    for h, d, n, m in itertools.product(heads, dims, num_layers, memory_length):
         if log_wandb:
             name = f'h={h}, d={d}, n={n}'
             run_config = {
                 'num heads': h,
                 'embed dim': d,
                 'num layers': n,
+                'memory length': m,
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model_config = TransformerConfig(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=8)
+        model_config = TransformerConfig(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=m)
         model = model_config.create_model()
 
         variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
@@ -237,16 +241,16 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
             epoch=0,
             init_memory=model.create_zero_memory())
 
-        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}'
+        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}_{m}'
 
         checkpoint_manager = CheckpointManager(ckpt_dir)
-        checkpoint_manager.save(Checkpoint(state.epoch, model, state.params))
+        checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
 
         state = fit(
-            state, model, checkpoint_manager,
-            train_batch=train_batch,
-            test_batch=test_batch,
-            epochs=16, batch_size=4, num_division_of_segment=4,
+            state, model_config, checkpoint_manager,
+            train_batches=train_batch,
+            test_batches=test_batch,
+            epochs=8, num_division_of_segment=4,
             log_wandb=log_wandb
         )
 
@@ -255,7 +259,8 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
 
 
 def main():
-    batch = load('./data/replay_buffer/189.npz', shuffle=True)
+    batch = load('./data/replay_buffer/run-3-220-128.npy')
+    print(batch.shape)
 
     main_train(batch)
 

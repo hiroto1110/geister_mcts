@@ -5,7 +5,7 @@ import numpy as np
 import jax
 
 from network.checkpoints import Checkpoint, CheckpointManager
-from messages import SnapshotInfo, MatchInfo, MessageMatchResult
+from messages import SnapshotInfo, MatchInfo, MessageMatchResult, SNAPSHOT_INFO_NAOTTI
 from constants import SearchParametersRange
 import mcts
 
@@ -94,11 +94,13 @@ def main(
         start_t = time.perf_counter()
         match: MatchInfo = match_request_queue.get()
         elapsed_t = time.perf_counter() - start_t
-        print(f"assigned: (elapsed={elapsed_t:.3f}s, agent={match.player.name}, opponent={match.opponent.name})")
+        print(f"Assigned: (elapsed={elapsed_t:.3f}s, \
+              agent={match.player.name}-{match.player.step}, \
+              opponent={match.opponent.name}-{match.opponent.step})")
 
         player1 = cretae_current_player(match.player)
 
-        if match.opponent.name == "NAOTTI2020":
+        if match.opponent.name == SNAPSHOT_INFO_NAOTTI.name:
             player2 = mcts.PlayerNaotti2020(depth_min=3, depth_max=6, random_n_ply=12)
         else:
             player2 = create_snapshot_player(match.opponent)
