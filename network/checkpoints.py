@@ -95,6 +95,9 @@ class Checkpoint(SerdeJsonSerializable):
     model: TransformerConfig
     params: FrozenDict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
 
+    def __post_init__(self):
+        self.step = int(self.step)
+
     @classmethod
     def from_json_file(cls, path: str) -> 'Checkpoint':
         with open(path, mode='r') as f:
@@ -139,17 +142,19 @@ class CheckpointManager:
         return max(self.get_steps())
 
     def save(self, ckpt: Checkpoint):
-        if ckpt.step % self.options.keep_period != 0:
-            return
-
         with open(self.get_path(ckpt.step), mode='w') as f:
             f.write(ckpt.to_json())
 
-        paths = self.get_paths()
+        steps = self.get_steps()
 
-        if len(paths) < self.options.max_to_keep:
-            for i in range(len(paths) - self.options.max_to_keep):
-                os.remove(paths[i])
+        for step in steps:
+            if ckpt.step - step <= self.options.max_to_keep:
+                continue
+
+            if step % self.options.keep_period == 0:
+                continue
+
+            os.remove(self.get_path(step))
 
     def load(self, step: int) -> Checkpoint:
         if step == -1:

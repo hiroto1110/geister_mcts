@@ -53,9 +53,10 @@ class Agent:
         return self.snapshots[step]
 
     def update(self):
-        if self.checkpoint_manager.lastest_step() == self.current_ckpt.step:
+        lastest_step = self.checkpoint_manager.lastest_step()
+        if lastest_step == self.current_ckpt.step:
             return
-        self.current_ckpt = self.checkpoint_manager.load(step=-1)
+        self.current_ckpt = self.checkpoint_manager.load(lastest_step)
 
 
 def main(
@@ -116,4 +117,4 @@ def main(
             sample = player1.create_sample(actions, color2)
             samples.append(sample)
 
-        match_result_queue.put(MessageMatchResult(match, samples))
+        match_result_queue.put(MessageMatchResult(match, np.stack(samples, dtype=np.uint8)))

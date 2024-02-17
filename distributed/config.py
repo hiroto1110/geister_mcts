@@ -63,7 +63,6 @@ class TrainingConfig:
 @serde(tagging=InternalTagging(tag='type'))
 @dataclass
 class MatchMakingConfig:
-    selfplay_p: float
     mathod: match_makers.MatchMakingMethod
     buffer_size: int
 

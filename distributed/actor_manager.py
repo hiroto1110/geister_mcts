@@ -95,10 +95,11 @@ def start_actor_manager(
 
         msg = communicator.recv_json_obj(sock, MessageNextMatch)
 
-        match_request_queue.put(msg.match)
+        for name, ckpt_list in msg.ckpts.items():
+            for i in range(len(ckpt_list)):
+                checkpoint_managers[name].save(ckpt_list[i])
 
-        if msg.ckpt is not None:
-            checkpoint_managers[msg.match.player.name].save(msg.ckpt)
+        match_request_queue.put(msg.match)
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@ import click
 
 import numpy as np
 import jax
+from sklearn.linear_model import LinearRegression
 
 import wandb
 
@@ -58,6 +59,8 @@ class Agent:
         self.current = Snapshot(self.name, Checkpoint(0, model, params))
         self.snapshots: list[Snapshot] = [self.current]
 
+        self.lastest_games = []
+
         if self.name in config.opponent_names:
             self.match_maker.add_agent(self.current.info)
 
@@ -80,16 +83,11 @@ class Agent:
     def replay_buffer_path(self) -> str:
         return f'{self.run_config.project_dir}/{self.name}/replay.npy'
 
-    def next_match(self, prev_match: MatchInfo = None) -> MessageNextMatch:
-        next_match = MatchInfo(
+    def next_match(self) -> MatchInfo:
+        return MatchInfo(
             player=self.current.info,
             opponent=self.match_maker.next_match()
         )
-
-        if prev_match is not None and prev_match.player.step != self.current.ckpt.step:
-            return MessageNextMatch(next_match, self.current.ckpt)
-        else:
-            return MessageNextMatch(next_match, None)
 
     def should_do_add_to_replay_buffer(self, match: MatchInfo) -> bool:
         if match.player.name not in self.config.replay_buffer_sharing:
@@ -102,6 +100,8 @@ class Agent:
             self.replay_buffer.add_sample(samples)
 
         if match.player.name == self.name:
+            self.lastest_games.append(samples)
+
             for sample in samples:
                 self.match_maker.apply_match_result(match.opponent, is_won(sample))
 
@@ -118,15 +118,28 @@ class Agent:
             win_rates, self.current.ckpt.step
         )
 
-        last_batch = self.replay_buffer.get_last_minibatch(self.run_config.update_period)
-        save(self.replay_buffer_path, last_batch, append=True)
+        lastest_games = np.stack(self.lastest_games).astype(np.uint8)
+        save(self.replay_buffer_path, lastest_games, append=True)
+
+        self.lastest_games = []
 
         log = {}
 
+        won_in_series = np.mean(is_won(lastest_games), axis=0)
+
+        lr = LinearRegression()
+        lr.fit(np.arange(len(won_in_series)).reshape(-1, 1), won_in_series)
+
+        log['win_rate_coefficient'] = lr.coef_[0]
+        log['win_rate_intercept'] = lr.intercept_
+
         for i in range(7):
-            log[f'game_result/{i}'] = np.mean(get_reward(last_batch) == i)
+            log[f'game_result/{i}'] = np.mean(get_reward(lastest_games) == i)
 
         for i in range(len(win_rates)):
+            if win_rates[i] == 0:
+                continue
+
             opponent = self.match_maker.agents[i]
             label = f'{opponent.name}-{opponent.step}'
             log[f'win_rate/{label}'] = win_rates[i]
@@ -175,14 +188,14 @@ class AgentManager:
         return MessageActorInitServer(
             self.config,
             snapshots=snapshots,
-            matches=[self.init_match(agent.name).match for agent in allocations]
+            matches=[self.init_match(agent.name) for agent in allocations]
         )
 
-    def init_match(self, agent_name: str) -> MessageNextMatch:
+    def init_match(self, agent_name: str) -> MatchInfo:
         return self.agents[agent_name].next_match()
 
-    def next_match(self, prev_match: MatchInfo) -> MessageNextMatch:
-        return self.agents[prev_match.player.name].next_match(prev_match)
+    def next_match(self, prev_match: MatchInfo) -> MatchInfo:
+        return self.agents[prev_match.player.name].next_match()
 
     def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
         for agent in self.agents.values():
@@ -227,9 +240,12 @@ def handle_client_actor(
 ):
     try:
         _handle_client_actor(sock, communicator, match_result_queue, agent_manager)
-    except Exception as e:
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    finally:
         sock.close()
-        print(e)
+        print("Actor client is disconnected")
 
 
 def _handle_client_actor(
@@ -243,12 +259,25 @@ def _handle_client_actor(
     init_msg_server = agent_manager.create_init_actor_message(init_msg_client.n_processes)
     communicator.send_json_obj(sock, init_msg_server)
 
+    sent_steps = {name: [s.step for s in snapshots] for name, snapshots in init_msg_server.snapshots.items()}
+
     while result_msg := communicator.recv_json_obj(sock, MessageMatchResult):
         match_result_queue.put(result_msg)
 
-        next_msg = agent_manager.next_match(prev_match=result_msg.match)
+        next_match = agent_manager.next_match(prev_match=result_msg.match)
 
-        communicator.send_json_obj(sock, next_msg)
+        updated = {name: [] for name in agent_manager.agents}
+
+        for info in [next_match.player, next_match.opponent]:
+            if info.name not in sent_steps:
+                continue
+            if info.step in sent_steps[info.name]:
+                continue
+
+            sent_steps[info.name].append(info.step)
+            updated[info.name].append(agent_manager.agents[info.name].ckpt_manager.load(info.step))
+
+        communicator.send_json_obj(sock, MessageNextMatch(next_match, updated))
 
 
 def wait_accept(

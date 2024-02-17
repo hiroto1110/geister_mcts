@@ -259,10 +259,18 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
 
 
 def main():
-    batch = load('./data/replay_buffer/run-3-220-128.npy')
+    from batch import save
+
+    batch1 = load('./data/projects/run-4/main/replay.npy')
+    batch2 = load('./data/projects/run-4/main-exploiter/replay.npy')
+
+    batch = jnp.concatenate([batch1, batch2])
+    batch = batch.reshape(-1, 64, batch.shape[2])
     print(batch.shape)
 
-    main_train(batch)
+    save("./data/replay_buffer/run-4.npy", batch, append=False)
+
+    # main_train(batch)
 
 
 if __name__ == "__main__":

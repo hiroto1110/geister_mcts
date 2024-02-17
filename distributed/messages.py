@@ -45,13 +45,13 @@ class MessageLeanerInitServer(SerdeJsonSerializable):
 @dataclass
 class MessageNextMatch(SerdeJsonSerializable):
     match: MatchInfo
-    ckpt: Checkpoint | None
+    ckpts: dict[str, list[Checkpoint]]
 
 
 @dataclass
 class MessageMatchResult(SerdeJsonSerializable):
     match: MatchInfo
-    samples: list[np.ndarray]
+    samples: np.ndarray
 
 
 @dataclass
