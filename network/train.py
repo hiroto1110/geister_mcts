@@ -216,7 +216,7 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
     heads = 4,
     dims = 256,
     num_layers = 4,
-    memory_length = 0,
+    memory_length = 4,
 
     for h, d, n, m in itertools.product(heads, dims, num_layers, memory_length):
         if log_wandb:
@@ -259,18 +259,10 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
 
 
 def main():
-    from batch import save
-
-    batch1 = load('./data/projects/run-4/main/replay.npy')
-    batch2 = load('./data/projects/run-4/main-exploiter/replay.npy')
-
-    batch = jnp.concatenate([batch1, batch2])
-    batch = batch.reshape(-1, 64, batch.shape[2])
+    batch = load("./data/replay_buffer/run-4.npy")[:1000]
     print(batch.shape)
 
-    save("./data/replay_buffer/run-4.npy", batch, append=False)
-
-    # main_train(batch)
+    main_train(batch)
 
 
 if __name__ == "__main__":

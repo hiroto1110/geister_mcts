@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import time
 import socket
 import threading
@@ -121,7 +121,7 @@ class Agent:
         lastest_games = np.stack(self.lastest_games).astype(np.uint8)
         save(self.replay_buffer_path, lastest_games, append=True)
 
-        self.lastest_games = []
+        self.lastest_games.clear()
 
         log = {}
 
@@ -325,8 +325,7 @@ def start(
     is_waiting_parameter_update = False
 
     if config.wandb_log:
-        print("Initilizing wandb project")
-        wandb.init(project=config.project_name)
+        wandb.init(project=config.project_name, config=asdict(config))
 
     for s in range(100000000):
         # recv_match_result
@@ -346,8 +345,8 @@ def start(
             for learning_result in learning_result_msg.results:
                 log |= agent_manager.apply_learning_job_result(learning_result)
 
-            if config.wandb_log:
-                wandb.log(log)
+        if config.wandb_log:
+            wandb.log(log)
 
         # send_training_minibatch
         jobs = agent_manager.create_learning_jobs()

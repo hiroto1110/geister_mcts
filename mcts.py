@@ -394,7 +394,7 @@ def select_action_with_mcts(
     if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
-    if state.n_ply < 12:
+    if state.n_ply <= 8:
         node.setup_valid_actions(state, 1)
         return np.random.choice(node.valid_actions)
 
