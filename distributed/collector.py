@@ -59,7 +59,7 @@ class Agent:
         self.current = Snapshot(self.name, Checkpoint(0, model, params))
         self.snapshots: list[Snapshot] = [self.current]
 
-        self.lastest_games = []
+        self.lastest_games: dict[SnapshotInfo, list[np.ndarray]] = {}
 
         if self.name in config.opponent_names:
             self.match_maker.add_agent(self.current.info)
@@ -100,7 +100,10 @@ class Agent:
             self.replay_buffer.add_sample(samples)
 
         if match.player.name == self.name:
-            self.lastest_games.append(samples)
+            if match.opponent not in self.lastest_games:
+                self.lastest_games[match.opponent] = []
+
+            self.lastest_games[match.opponent].append(samples)
 
             for sample in samples:
                 self.match_maker.apply_match_result(match.opponent, is_won(sample))
@@ -118,20 +121,27 @@ class Agent:
             win_rates, self.current.ckpt.step
         )
 
-        lastest_games = np.stack(self.lastest_games).astype(np.uint8)
-        save(self.replay_buffer_path, lastest_games, append=True)
+        lastest_games = np.stack(sum(self.lastest_games.values(), start=[]), axis=0)
+        lastest_games = lastest_games.astype(np.uint8)
 
-        self.lastest_games.clear()
+        save(self.replay_buffer_path, lastest_games, append=True)
 
         log = {}
 
-        won_in_series = np.mean(is_won(lastest_games), axis=0)
+        for opponent in self.lastest_games:
+            label = f'{opponent.name}-{opponent.step}'
+            lastest_games_opponent = np.stack(self.lastest_games[opponent]).astype(np.uint8)
 
-        lr = LinearRegression()
-        lr.fit(np.arange(len(won_in_series)).reshape(-1, 1), won_in_series)
+            count = len(lastest_games_opponent) / len(lastest_games)
+            log[f'game_count/{label}'] = count
 
-        log['win_rate_coefficient'] = lr.coef_[0]
-        log['win_rate_intercept'] = lr.intercept_
+            won_in_series = np.mean(is_won(lastest_games_opponent), axis=0)
+
+            lr = LinearRegression()
+            lr.fit(np.arange(len(won_in_series)).reshape(-1, 1), won_in_series)
+
+            log[f'win_rate_coefficient/{label}'] = lr.coef_[0]
+            log[f'win_rate_intercept/{label}'] = lr.intercept_
 
         for i in range(7):
             log[f'game_result/{i}'] = np.mean(get_reward(lastest_games) == i)
@@ -143,6 +153,8 @@ class Agent:
             opponent = self.match_maker.agents[i]
             label = f'{opponent.name}-{opponent.step}'
             log[f'win_rate/{label}'] = win_rates[i]
+
+        self.lastest_games.clear()
 
         return StepSummary(is_league_member, log)
 

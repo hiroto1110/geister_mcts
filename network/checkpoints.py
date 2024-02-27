@@ -1,6 +1,5 @@
 import os
 import base64
-import collections
 import json
 import dataclasses
 import glob
@@ -39,12 +38,6 @@ def post_converted_from_json(obj):
         else:
             for k in obj.keys():
                 obj[k] = post_converted_from_json(obj[k])
-
-            if NAMEDTUPLE_FLAG in obj and obj[NAMEDTUPLE_FLAG]:
-                del obj[NAMEDTUPLE_FLAG]
-                namedtuple_type = collections.namedtuple('DecodedNamedTuple', obj.keys())
-                return namedtuple_type(**obj)
-
             return obj
 
     if isinstance(obj, tuple | list):
@@ -56,10 +49,6 @@ def post_converted_from_json(obj):
 def pre_converting_to_json(obj):
     if obj is None:
         return None
-
-    if isinstance(obj, tuple) and hasattr(obj, '_asdict'):
-        obj = obj._asdict()
-        obj[NAMEDTUPLE_FLAG] = True
 
     if isinstance(obj, dict | FrozenDict):
         return {k: pre_converting_to_json(obj[k]) for k in obj.keys()}
@@ -97,13 +86,6 @@ class Checkpoint(SerdeJsonSerializable):
 
     def __post_init__(self):
         self.step = int(self.step)
-
-    @classmethod
-    def from_json_file(cls, path: str) -> 'Checkpoint':
-        with open(path, mode='r') as f:
-            json_str = f.read()
-
-        return Checkpoint.from_json(json_str)
 
 
 @dataclasses.dataclass

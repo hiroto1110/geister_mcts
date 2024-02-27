@@ -46,15 +46,22 @@ InitModelConfig = Random | FromCheckpoint
 
 @dataclass
 class ConditionForKeepingSnapshots:
-    win_rate_threshold: float
-    step_period: int
+    win_rate_threshold: float = None
+    step_period: int = None
 
     def is_league_member(self, win_rates: np.ndarray, step: int):
-        return np.all(win_rates > self.win_rate_threshold) or (step % self.step_period) == 0
+        if (self.win_rate_threshold is not None) and np.all(win_rates > self.win_rate_threshold):
+            return True
+
+        if (self.step_period is not None) and (step % self.step_period) == 0:
+            return True
+
+        return False
 
 
 @dataclass
 class TrainingConfig:
+    num_division_of_segment: int
     batch_size: int
     num_batches: int
     learning_rate: float

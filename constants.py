@@ -13,6 +13,7 @@ class SearchParameters:
     c_base: int = 25
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
+    value_weight: np.ndarray = np.array([-1, -1, -1, 0, 1, 1, 1])
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -24,7 +25,8 @@ class FloatRange:
     min: int
     max: int
 
-    def interpolate(self, p: float):
+    def sample(self):
+        p = np.random.random()
         return self.min + (self.max - self.min) * p
 
 
@@ -33,8 +35,19 @@ class IntRange:
     min: int
     max: int
 
-    def interpolate(self, p: float):
+    def sample(self):
+        p = np.random.random()
         return int(np.round(self.min + (self.max - self.min) * p, 0))
+
+
+@dataclass
+class VectorRange:
+    min: np.ndarray
+    max: np.ndarray
+
+    def sample(self):
+        p = np.random.random(size=self.min.shape)
+        return self.min + (self.max - self.min) * p
 
 
 @dataclass
@@ -48,6 +61,7 @@ class SearchParametersRange:
     c_base: IntRange = IntRange(25, 25)
     depth_search_checkmate_root: IntRange = IntRange(7, 7)
     depth_search_checkmate_leaf: IntRange = IntRange(4, 4)
+    value_weight: VectorRange = VectorRange(np.array([-1, -1, -1, 0, 1, 1, 1]), np.array([-1, -1, -1, 0, 1, 1, 1]))
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -55,19 +69,15 @@ class SearchParametersRange:
 
     def sample(self) -> SearchParameters:
         return SearchParameters(
-            num_simulations=self.num_simulations.interpolate(np.random.random()),
-
-            dirichlet_alpha=self.dirichlet_alpha.interpolate(np.random.random()),
-            dirichlet_eps=self.dirichlet_eps.interpolate(np.random.random()),
-
-            n_ply_to_apply_noise=self.n_ply_to_apply_noise.interpolate(np.random.random()),
-            max_duplicates=self.max_duplicates.interpolate(np.random.random()),
-
-            c_init=self.c_init.interpolate(np.random.random()),
-            c_base=self.c_base.interpolate(np.random.random()),
-
-            depth_search_checkmate_root=self.depth_search_checkmate_root.interpolate(np.random.random()),
-            depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.interpolate(np.random.random()),
-
+            num_simulations=self.num_simulations.sample(),
+            dirichlet_alpha=self.dirichlet_alpha.sample(),
+            dirichlet_eps=self.dirichlet_eps.sample(),
+            n_ply_to_apply_noise=self.n_ply_to_apply_noise.sample(),
+            max_duplicates=self.max_duplicates.sample(),
+            c_init=self.c_init.sample(),
+            c_base=self.c_base.sample(),
+            depth_search_checkmate_root=self.depth_search_checkmate_root.sample(),
+            depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.sample(),
+            value_weight=self.value_weight.sample(),
             visibilize_node_graph=self.visibilize_node_graph
         )

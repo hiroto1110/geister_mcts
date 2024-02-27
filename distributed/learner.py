@@ -47,7 +47,7 @@ class Agent:
             self.state, loss_i, losses_i = train_step(
                 self.state,
                 *astuple(train_batches[i]),
-                num_division_of_segment=4,
+                num_division_of_segment=self.config.training.num_division_of_segment,
                 eval=False
             )
             loss += loss_i

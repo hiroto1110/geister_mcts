@@ -168,7 +168,7 @@ def expand_afterstate(
 
     next_node = AfterStateNode(afterstates)
 
-    v, _ = setup_node(next_node, pred_state, tokens, node.cache)
+    v, _ = setup_node(next_node, pred_state, tokens, node.cache, params.value_weight)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -198,7 +198,7 @@ def expand(
 
         return next_node, next_node.winner
 
-    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache)
+    v, next_node.p = setup_node(next_node, pred_state, tokens, node.cache, params.value_weight)
 
     if params.visibilize_node_graph:
         next_node.state_str = sim_state_to_str(state, next_node.predicted_v, node.predicted_color)
@@ -236,7 +236,13 @@ def try_expand_checkmate(
     return True, next_node, v
 
 
-def setup_node(node: NodeBase, pred_state: PredictState, tokens: list, cache: jnp.ndarray):
+def setup_node(
+    node: NodeBase,
+    pred_state: PredictState,
+    tokens: list,
+    cache: jnp.ndarray,
+    v_weight=jnp.array([-1, -1, -1, 0, 1, 1, 1])
+):
     tokens = jnp.array(tokens, dtype=jnp.uint8)
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
@@ -250,7 +256,7 @@ def setup_node(node: NodeBase, pred_state: PredictState, tokens: list, cache: jn
     node.predicted_v = v
     node.cache = cache
 
-    v = np.sum(v * np.array([-1, -1, -1, 0, 1, 1, 1]))
+    v = np.sum(v * v_weight)
 
     return jax.device_get(v), jax.device_get(pi)
 
