@@ -6,6 +6,7 @@ from distributed.config import RunConfig
 from distributed.communication import SerdeJsonSerializable
 
 from network.checkpoints import Checkpoint
+from players.config import PlayerConfig
 
 
 @dataclass(frozen=True)
@@ -14,14 +15,10 @@ class SnapshotInfo:
     step: int
 
 
-SNAPSHOT_INFO_SELFPLAY = SnapshotInfo(name='selfplay', step=-1)
-SNAPSHOT_INFO_NAOTTI = SnapshotInfo(name='naotti2020', step=-1)
-
-
 @dataclass
 class MatchInfo(SerdeJsonSerializable):
-    player: SnapshotInfo
-    opponent: SnapshotInfo
+    player: PlayerConfig
+    opponent: PlayerConfig
 
 
 @dataclass

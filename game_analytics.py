@@ -175,7 +175,7 @@ def state_to_str(
     for i in range(8):
         pos = state.pieces_p[i]
         color = state.color_p[i]
-        if pos != game.CAPTURED:
+        if 0 <= pos < 36:
             if color == game.BLUE:
                 line[pos] = B_str
             else:

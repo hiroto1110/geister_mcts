@@ -5,7 +5,7 @@ from flax import linen as nn
 
 
 @serde.serde
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class TransformerConfig:
     num_heads: int
     embed_dim: int
@@ -167,6 +167,9 @@ class TransformerBlockWithCache(nn.Module):
 class Transformer(nn.Module):
     config: TransformerConfig
 
+    def __hash__(self):
+        return hash(self.config)
+
     def has_memory_block(self):
         return self.config.length_memory_block > 0
 
@@ -229,6 +232,9 @@ class Transformer(nn.Module):
 
 class TransformerWithCache(nn.Module):
     config: TransformerConfig
+
+    def __hash__(self):
+        return hash(self.config)
 
     def has_memory_block(self):
         return self.config.length_memory_block > 0

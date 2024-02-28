@@ -6,7 +6,7 @@ from datetime import datetime
 import numpy as np
 import orbax.checkpoint
 import geister_state as game
-import mcts
+import players.mcts as mcts
 from network_transformer import TransformerDecoderWithCache
 import game_analytics
 

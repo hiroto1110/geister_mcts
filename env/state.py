@@ -70,7 +70,7 @@ class SimulationState:
 
         self.is_done = False
         self.winner = 0
-        self.win_type = WinType.DRAW
+        self.win_type: WinType = WinType.DRAW
         self.n_ply = 0
 
     def create_init_tokens(self):

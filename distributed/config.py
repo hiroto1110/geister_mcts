@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 import match_makers
-from constants import SearchParametersRange
+from players.config import SearchParametersRange
 from batch import ReplayBuffer
 
 from distributed.communication import SerdeJsonSerializable

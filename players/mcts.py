@@ -1,36 +1,42 @@
 from functools import partial
-from typing import List, Any, Callable
+from typing import List, Any
+from dataclasses import dataclass
 
 import numpy as np
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from flax import core, struct
 
 from graphviz import Digraph
-from line_profiler import profile
 
 import env.state as game
 import env.checkmate_lib as checkmate_lib
-import env.naotti2020 as naotti2020
 
-from constants import SearchParameters
 import game_analytics
-import batch
 from network.transformer import TransformerWithCache
-from network.checkpoints import Checkpoint
-import gat.server_util
+from network.checkpoints import CheckpointManager
+
+from players.base import PlayerBase
+from players.config import PlayerMCTSConfig, SearchParameters
 
 
-class PredictState(struct.PyTreeNode):
-    apply_fn: Callable = struct.field(pytree_node=False)
-    params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
+@dataclass
+class PredictState:
+    model: TransformerWithCache
+    params: dict[str, Any]
 
 
-@partial(jax.jit, device=jax.devices("cpu")[0])
-def predict(state: PredictState, x, cache, read_memory_i=None, write_memory_i=None):
-    x, pi, v, c, cache = state.apply_fn(
-        {'params': state.params},
+@partial(jax.jit, device=jax.devices("cpu")[0], static_argnames=["model"])
+def predict(
+    params: dict[str, Any],
+    model: TransformerWithCache,
+    x: jnp.ndarray,
+    cache: jnp.ndarray,
+    read_memory_i=None,
+    write_memory_i=None
+):
+    x, pi, v, c, cache = model.apply(
+        {'params': params},
         x, cache, read_memory_i, write_memory_i, eval=True
     )
 
@@ -156,7 +162,6 @@ def sim_state_to_str(state: game.SimulationState, v, color: np.ndarray):
     return s
 
 
-@profile
 def expand_afterstate(
     node: Node,
     tokens: List[List[int]],
@@ -179,7 +184,6 @@ def expand_afterstate(
     return next_node, v
 
 
-@profile
 def expand(
     node: Node,
     tokens: List[List[int]],
@@ -206,7 +210,6 @@ def expand(
     return next_node, v
 
 
-@profile
 def try_expand_checkmate(
     node: Node,
     tokens: List[List[int]],
@@ -247,7 +250,7 @@ def setup_node(
     tokens = tokens.reshape(-1, game.TOKEN_SIZE)
 
     for i in range(tokens.shape[0]):
-        _, pi, v, c, cache = predict(pred_state, tokens[i], cache)
+        _, pi, v, c, cache = predict(pred_state.params, pred_state.model, tokens[i], cache)
 
     if np.isnan(c).any():
         c = np.full(shape=8, fill_value=0.5)
@@ -261,7 +264,6 @@ def setup_node(
     return jax.device_get(v), jax.device_get(pi)
 
 
-@profile
 def simulate_afterstate(
     node: AfterStateNode,
     state: game.SimulationState,
@@ -305,7 +307,6 @@ def simulate_afterstate(
     return v
 
 
-@profile
 def simulate(
     node: Node,
     state: game.SimulationState,
@@ -388,7 +389,6 @@ def create_invalid_actions(actions, state: game.SimulationState, pieces_history:
     return np.array(invalid_actions, dtype=np.int16)
 
 
-@profile
 def select_action_with_mcts(
     node: Node,
     state: game.SimulationState,
@@ -467,7 +467,7 @@ def apply_action(
     params: SearchParameters
 ) -> tuple[Node, list[list[int]]]:
 
-    tokens, afterstates = state.step(action, player * state.root_player)
+    tokens, afterstates = state.step(action, player)
 
     if len(afterstates) > 0:
         for i in range(len(afterstates)):
@@ -489,8 +489,9 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
     cache = node.cache
 
     for i in range(model.config.length_memory_block):
-        x, _, _, _, cache = predict(pred_state, write_memory[i], cache, write_memory_i=jnp.array(i))
-        # x, _, _, _, cache = predict(pred_state, write_memory[i], cache)
+        x, _, _, _, cache = predict(
+            pred_state.params, pred_state.model, write_memory[i], cache, write_memory_i=jnp.array(i)
+        )
         next_memory.append(x)
 
     return jnp.array(next_memory)
@@ -516,8 +517,9 @@ def create_root_node(
         cache = model.create_cache(cache_length + model.config.length_memory_block * 2)
 
         for i in range(len(memory)):
-            _, _, _, _, cache = predict(pred_state, memory[i], cache, read_memory_i=jnp.array(i))
-            # _, _, _, _, cache = predict(pred_state, memory[i], cache)
+            _, _, _, _, cache = predict(
+                pred_state.params, pred_state.model, memory[i], cache, read_memory_i=jnp.array(i)
+            )
     else:
         cache = model.create_cache(cache_length)
 
@@ -526,55 +528,35 @@ def create_root_node(
     return node, tokens
 
 
-class PlayerBase:
-    def __init__(self) -> None:
-        self.state: game.SimulationState = None
-
-    def init_state(self, state: game.SimulationState):
-        pass
-
-    def select_next_action(self) -> int:
-        pass
-
-    def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
-        pass
-
-    def clear_cache(self):
-        pass
-
-
 class PlayerMCTS(PlayerBase):
     def __init__(
         self,
         params,
         model: TransformerWithCache,
         search_params: SearchParameters,
-        num_tokens: int
     ) -> None:
-        self.pred_state = PredictState(model.apply, params)
+        self.pred_state = PredictState(model, params)
         self.model = model
         self.search_params = search_params
-        self.num_tokens = num_tokens
 
         self.node: Node = None
-        self.tokens: list[list[int]] = []
 
-    def update_params(self, params):
-        self.pred_state = PredictState(self.model.apply, params)
+    @classmethod
+    def from_config(cls, config: PlayerMCTSConfig) -> "PlayerMCTS":
+        ckpt = CheckpointManager(config.ckpt_dir).load(config.ckpt_step)
+
+        return PlayerMCTS(
+            params=ckpt.params,
+            model=ckpt.model.create_caching_model(),
+            search_params=config.mcts_params.sample()
+        )
 
     def init_state(self, state: game.SimulationState):
         self.state = state
         self.pieces_history = np.zeros((101, 8), dtype=np.int8)
-        self.tokens = []
 
         self.node, tokens = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
-        self.tokens += tokens
-
-    def clear_cache(self):
-        self.state = None
-        self.pieces_history = np.zeros((101, 8), dtype=np.int8)
-        self.tokens = []
-        self.node = None
+        return tokens
 
     def select_next_action(self) -> int:
         self.pieces_history[self.state.n_ply // 2] = self.state.pieces_p
@@ -587,166 +569,7 @@ class PlayerMCTS(PlayerBase):
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
         self.node, tokens = apply_action(
             self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
-        self.tokens += tokens
-
-    def create_sample(self, actions: np.ndarray, true_color_o: np.ndarray) -> np.ndarray:
-        tokens = np.zeros((self.num_tokens, 5), dtype=np.uint8)
-        tokens[:min(self.num_tokens, len(self.tokens))] = self.tokens[:self.num_tokens]
-
-        actions = actions[tokens[:, 4]]
-        reward = 3 + int(self.state.winner * self.state.win_type.value)
-        reward = np.array([reward], dtype=np.uint8)
-
-        return batch.create_batch(
-            tokens.astype(np.uint8),
-            actions.astype(np.uint8),
-            reward.astype(np.uint8),
-            true_color_o.astype(np.uint8)
-        )
-
-
-class PlayerNaotti2020(PlayerBase):
-    def __init__(self, depth_min: int, depth_max: int, random_n_ply: int, print_log=False) -> None:
-        self.depth_min = depth_min
-        self.depth_max = depth_max
-        self.random_n_ply = random_n_ply
-        self.print_log = print_log
-
-    def init_state(self, state: game.SimulationState):
-        self.state = state
-        self.turn_count = 0
-
-        depth = np.random.randint(self.depth_min, self.depth_max + 1)
-        naotti2020.initGame(depth, self.print_log)
-
-    def select_next_action(self) -> int:
-        board_msg = gat.server_util.encode_board_str(self.state)
-        naotti2020.recvBoard(board_msg)
-
-        action_msg = naotti2020.solve(self.turn_count, self.state.n_ply <= self.random_n_ply)
-        action = gat.server_util.decode_action_message(action_msg)
-
-        if self.state.root_player == 1:
-            p_id = action // 4
-            d_id = action % 4
-
-            action = p_id * 4 + (3 - d_id)
-
-        self.turn_count += 2
-
-        return action
-
-    def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
-        _, afterstates = self.state.step(action, player * self.state.root_player)
-
-        for i in range(len(afterstates)):
-            _ = self.state.step_afterstate(afterstates[i], true_color_o[afterstates[i].piece_id])
-
-
-def play_game(player1: PlayerMCTS, player2: PlayerMCTS, game_length=200, print_board=False):
-    state1, state2 = game.get_initial_state_pair()
-    player1.init_state(state1)
-    player2.init_state(state2)
-
-    action_history = np.zeros(game_length + 20, dtype=np.int16)
-
-    player = 1
-
-    for i in range(game_length):
-        if player == 1:
-            action = player1.select_next_action()
-        else:
-            action = player2.select_next_action()
-
-        player1.apply_action(action, player, state2.color_p)
-        player2.apply_action(action, player, state1.color_p)
-
-        action_history[i] = action
-
-        if print_board:
-            board = np.zeros(36, dtype=np.int8)
-
-            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 1)]] = 1
-            board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 0)]] = 2
-            board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 1)]] = -1
-            board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 0)]] = -2
-
-            print(str(board.reshape((6, 6))).replace('0', ' '))
-            print(i)
-
-        if state1.is_done or state2.is_done:
-            break
-
-        player = -player
-
-    return action_history, state1.color_p, state2.color_p
-
-
-def load_ckpt(ckpt_dir, step):
-    import orbax.checkpoint
-
-    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    checkpoint_manager = orbax.checkpoint.CheckpointManager(ckpt_dir, orbax_checkpointer)
-
-    ckpt = Checkpoint.load(checkpoint_manager, step, is_caching_model=True)
-
-    return ckpt.params, ckpt.model
-
-
-def BO_N(n, p):
-    import math
-    return sum([p ** n * (1 - p) ** i * math.comb(n + i - 1, i) for i in range(n)])
-
-
-def test():
-    np.random.seed(20)
-
-    mcts_params1 = SearchParameters(
-        num_simulations=25,
-        dirichlet_alpha=0.2,
-        n_ply_to_apply_noise=0,
-        max_duplicates=1,
-        depth_search_checkmate_leaf=4,
-        depth_search_checkmate_root=8,
-        visibilize_node_graph=True,
-        c_base=25,
-    )
-
-    SearchParameters(
-        num_simulations=50,
-        dirichlet_alpha=0.2,
-        n_ply_to_apply_noise=0,
-        max_duplicates=1,
-        depth_search_checkmate_leaf=4,
-        depth_search_checkmate_root=8,
-        visibilize_node_graph=False,
-        c_base=25,
-    )
-
-    ckpt1 = load_ckpt('./data/checkpoints/run-5', 128)
-
-    seg_len = 4
-    game_result = np.zeros((seg_len, 3))
-
-    for i in range(200):
-        player1 = PlayerMCTS(*ckpt1, mcts_params1, num_tokens=220)
-        # player2 = PlayerMCTS(*load_ckpt('./checkpoints/run-2', 6500), mcts_params2)
-        player2 = PlayerNaotti2020(depth_min=6, depth_max=6)
-
-        for j in range(seg_len):
-            if j % 2 == 0:
-                play_game(player1, player2, game_length=200, print_board=False)
-            else:
-                play_game(player2, player1, game_length=200, print_board=False)
-
-            game_result[j, player1.state.winner + 1] += 1
-
-            count = game_result[:, 0] + game_result[:, 2]
-            count[count == 0] = 1
-
-            w_rate = np.round(game_result[:, 2] / count, 3)
-
-            print(i, w_rate)
+        return tokens
 
 
 def test_mcts():
@@ -783,4 +606,4 @@ def test_mcts():
 
 
 if __name__ == "__main__":
-    test()
+    test_mcts()
