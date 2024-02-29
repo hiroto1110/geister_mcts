@@ -418,9 +418,12 @@ def select_action_with_mcts(
         node.setup_valid_actions(state, 1)
 
         if pieces_history is not None:
-            node.invalid_actions = create_invalid_actions(node.valid_actions, state,
-                                                          pieces_history,
-                                                          params.max_duplicates)
+            node.invalid_actions = create_invalid_actions(
+                node.valid_actions,
+                state,
+                pieces_history,
+                params.max_duplicates
+            )
             node.apply_invalid_actions()
 
         if params.dirichlet_alpha is not None:
@@ -503,7 +506,7 @@ def create_root_node(
     model: TransformerWithCache,
     cache_length: int = 220,
     prev_node: Node = None,
-) -> tuple[Node, list[list[int]]]:
+) -> tuple[Node, list[list[int]], np.ndarray]:
     node = Node()
 
     tokens = state.create_init_tokens()
@@ -521,11 +524,12 @@ def create_root_node(
                 pred_state.params, pred_state.model, memory[i], cache, read_memory_i=jnp.array(i)
             )
     else:
+        memory = None
         cache = model.create_cache(cache_length)
 
     setup_node(node, pred_state, tokens, cache)
 
-    return node, tokens
+    return node, tokens, memory
 
 
 class PlayerMCTS(PlayerBase):
@@ -540,6 +544,7 @@ class PlayerMCTS(PlayerBase):
         self.search_params = search_params
 
         self.node: Node = None
+        self.memory: np.ndarray = None
 
     @classmethod
     def from_config(cls, config: PlayerMCTSConfig) -> "PlayerMCTS":
@@ -553,16 +558,18 @@ class PlayerMCTS(PlayerBase):
 
     def init_state(self, state: game.SimulationState):
         self.state = state
-        self.pieces_history = np.zeros((101, 8), dtype=np.int8)
+        self.pieces_history = []
 
-        self.node, tokens = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
+        self.node, tokens, self.memory = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
         return tokens
 
     def select_next_action(self) -> int:
-        self.pieces_history[self.state.n_ply // 2] = self.state.pieces_p
+        self.pieces_history.append(self.state.pieces_p.copy())
 
-        action = select_action_with_mcts(self.node, self.state, self.pred_state, self.search_params,
-                                         pieces_history=self.pieces_history)
+        action = select_action_with_mcts(
+            self.node, self.state, self.pred_state, self.search_params,
+            pieces_history=np.array(self.pieces_history, dtype=np.int16)
+        )
 
         return action
 

@@ -18,7 +18,7 @@ from communication import EncryptedCommunicator
 from messages import (
     MessageActorInitClient, MessageActorInitServer,
     MessageLeanerInitServer, LearningJob, MessageLearningRequest, LearningJobResult, MessageLearningJobResult,
-    MessageMatchResult, MessageNextMatch, MatchInfo, SnapshotInfo, SNAPSHOT_INFO_NAOTTI
+    MessageMatchResult, MessageNextMatch, MatchInfo, SnapshotInfo
 )
 
 from match_makers import MatchMaker

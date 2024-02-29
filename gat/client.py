@@ -1,8 +1,11 @@
 import socket
+import time
+
+import click
 import numpy as np
 
 from players.mcts import PlayerMCTS
-import players.mcts as mcts
+from players.config import SearchParameters
 import env.state as game
 import game_analytics
 import server_util
@@ -12,9 +15,21 @@ from network.checkpoints import Checkpoint
 DIRECTION_DICT = {-6: 0, -1: 1, 1: 2, 6: 3}
 
 
+def connect(s: socket.socket, address, num_max_retry=10):
+    for _ in range(num_max_retry):
+        try:
+            s.connect(address)
+            return
+        except ConnectionRefusedError:
+            time.sleep(1)
+            continue
+
+    raise ConnectionRefusedError()
+
+
 def send(s: socket.socket, msg: str):
     print(f'SEND:[{msg.rstrip()}]')
-    s.send(msg.encode())
+    s.sendall(msg.encode())
 
 
 def recv(s: socket.socket) -> str:
@@ -25,7 +40,7 @@ def recv(s: socket.socket) -> str:
 
 
 class Client:
-    def __init__(self, name: str, ckpt: Checkpoint, mcts_params: mcts.SearchParameters) -> None:
+    def __init__(self, name: str, ckpt: Checkpoint, mcts_params: SearchParameters) -> None:
         self.name = name
         self.ckpt = ckpt
         self.mcts_params = mcts_params
@@ -36,11 +51,26 @@ class Client:
             self.mcts_params
         )
 
+        self.memories: list[np.ndarray] = []
         self.win_count = [0, 0, 0]
 
     def init_state(self, color: np.ndarray, player: int):
         self.state = game.SimulationState(color, player)
+
         self.player.init_state(self.state)
+
+        if self.player.memory is not None:
+            self.memories.append(self.player.memory.reshape(-1))
+
+    def show_memories(self):
+        import matplotlib.pyplot as plt
+        from sklearn.manifold import TSNE
+
+        memories = TSNE(n_components=2, random_state=0, perplexity=5).fit_transform(np.stack(self.memories))
+
+        plt.scatter(memories[:, 0], memories[:, 1], c=np.linspace(0, 1, len(memories)))
+        plt.colorbar()
+        plt.show()
 
     def select_next_action(self):
         if not self.state.is_done:
@@ -101,22 +131,19 @@ class Client:
         print(f"Connecting to: ({ip}, {port})")
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect((ip, port))
+            connect(sock, (ip, port))
             self.start(sock)
 
     def start(self, sock: socket.socket):
-        while True:
-            try:
-                set_msg = recv(sock)
-                break
-            except ConnectionResetError:
-                continue
+        set_msg = recv(sock)
 
         set_msg = server_util.encode_set_message(self.state.color_p, self.state.root_player, name=self.name)
         send(sock, set_msg)
 
         recv(sock)
         board_msg = recv(sock)
+
+        prev_t = time.perf_counter()
 
         while True:
             pieces_o, _ = server_util.parse_board_str(board_msg, self.state.root_player)
@@ -152,28 +179,47 @@ class Client:
 
             self.print_board()
 
+            print()
+            print(f"elpased: {time.perf_counter() - prev_t}")
+            prev_t = time.perf_counter()
 
-def main(ip='127.0.0.1'):
-    ckpt = Checkpoint.from_json_file('./data/projects/run-7/main/300.json')
 
-    search_params = mcts.SearchParameters(
+@click.command()
+@click.argument('ip', type=str)
+@click.argument('first_player', type=bool)
+@click.argument('num_games', type=int)
+@click.argument('player_name', type=str)
+@click.argument('ckpt_path', type=str)
+def main(
+    ip: str,
+    first_player: bool,
+    num_games: int,
+    player_name: str,
+    ckpt_path: str
+):
+    ckpt = Checkpoint.from_json_file(ckpt_path)
+
+    search_params = SearchParameters(
         num_simulations=400,
         dirichlet_alpha=0.1,
-        n_ply_to_apply_noise=4,
+        n_ply_to_apply_noise=2,
         depth_search_checkmate_leaf=6,
-        depth_search_checkmate_root=8,
-        max_duplicates=8,
+        depth_search_checkmate_root=9,
+        max_duplicates=2,
         visibilize_node_graph=False
     )
 
-    client = Client("Sawagani", ckpt, search_params)
+    client = Client(player_name, ckpt, search_params)
 
     for k in range(2):
-        for i in range(25):
+        if first_player:
+            port = 10000 + (k + 0) % 2
+        else:
             port = 10000 + (k + 1) % 2
 
-            player = 1 if port == 10000 else -1
+        player = 1 if port == 10000 else -1
 
+        for i in range(num_games):
             try:
                 client.init_state(game.create_random_color(), player)
                 client.connect_and_start(ip, port)
@@ -181,6 +227,8 @@ def main(ip='127.0.0.1'):
                 raise e
             finally:
                 print("win: {2}, draw: {1}, lost: {0}".format(*client.win_count))
+
+    # client.show_memories()
 
 
 if __name__ == '__main__':
