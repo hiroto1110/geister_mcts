@@ -1,5 +1,6 @@
 from typing import Any
 from functools import partial
+from dataclasses import dataclass
 import time
 import itertools
 
@@ -12,7 +13,7 @@ from flax.training import train_state
 
 from network.checkpoints import Checkpoint, CheckpointManager
 from network.transformer import Transformer, TransformerConfig
-from batch import load, astuple
+from batch import load, astuple, get_tokens, get_color_count
 
 
 class TrainState(train_state.TrainState):
@@ -60,6 +61,7 @@ def loss_fn(
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
+    color_count: jnp.ndarray,
     init_memory: jnp.ndarray,
     segment_offset: int,
     segment_length: int,
@@ -70,17 +72,17 @@ def loss_fn(
     batch_size = x.shape[0]
 
     @jax.checkpoint
-    def apply(_x, read_memory):
+    def apply(_x, read_memory, _color_count):
         return state.apply_fn(
             {'params': params},
-            _x, read_memory=read_memory, eval=eval,
+            _x, read_memory=read_memory, color_count=_color_count, eval=eval,
             rngs={'dropout': dropout_rng}
         )
 
-    def scan_f(carry, i):
+    def scan_f(carry: tuple[jnp.ndarray, jnp.ndarray], i):
         memory_prev, loss_prev = carry
 
-        p, v, c, memory_next = apply(x[:, i], memory_prev)
+        p, v, c, memory_next = apply(x[:, i], memory_prev, color_count[:, i])
         loss_i, losses_i = calc_loss(x[:, i], p, v, c, p_true[:, i], v_true[:, i], c_true[:, i])
 
         memory_next = memory_next.reshape(memory_prev.shape)
@@ -101,7 +103,7 @@ def loss_fn(
 @partial(jax.jit, static_argnames=['eval', 'num_division_of_segment'])
 def train_step(
     state: TrainState,
-    x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
+    x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray, color_count: jnp.ndarray,
     num_division_of_segment: int, eval: bool
 ) -> tuple[TrainState, jnp.ndarray, jnp.ndarray]:
 
@@ -119,14 +121,14 @@ def train_step(
         if not eval:
             (loss_i, (losses, next_memory)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 current_state.params, current_state,
-                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
+                x, p_true, v_true, c_true, color_count, current_memory, offset, sub_segment_length,
                 current_state.dropout_rng, eval=eval
             )
             next_state = current_state.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(current_state.epoch))
         else:
             loss_i, (losses, next_memory) = loss_fn(
                 current_state.params, current_state,
-                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
+                x, p_true, v_true, c_true, color_count, current_memory, offset, sub_segment_length,
                 current_state.dropout_rng, eval=eval
             )
             next_state = current_state
@@ -145,13 +147,65 @@ def train_step(
     return state, loss, losses
 
 
-def train_epoch(state: TrainState, batches: list[jnp.ndarray], num_division_of_segment: int, eval: bool):
+class MinibatchProducer:
+    def num_minibatch(self, num_batches: int) -> int:
+        pass
+
+    def next_minibatch(self, step: int) -> jnp.ndarray:
+        pass
+
+
+@dataclass
+class MinibatchProducerSimple(MinibatchProducer):
+    batch_size: int
+
+    def num_minibatch(self, num_batches: int) -> int:
+        return num_batches // self.batch_size
+
+    def next_minibatch(self, step: int) -> jnp.ndarray:
+        return jnp.arange(self.batch_size) + (self.batch_size * step)
+
+
+@dataclass
+class MinibatchProducerRL(MinibatchProducer):
+    replay_buffer_size: int
+    update_period: int
+    batch_size: int
+    num_batches: int
+    rng_key: jax.Array = random.PRNGKey(0)
+
+    def num_minibatch(self, num_batches: int) -> int:
+        return self.num_batches * (num_batches - self.replay_buffer_size) // self.update_period
+
+    def next_minibatch(self, step: int) -> jnp.ndarray:
+        sub_step = step // self.num_batches
+
+        indices = random.choice(random.PRNGKey(step), jnp.arange(self.replay_buffer_size), shape=(self.batch_size,))
+        indices += sub_step * self.update_period
+
+        return indices
+
+
+def train_epoch(
+    state: TrainState,
+    batches: list[jnp.ndarray],
+    minibatch_producer: MinibatchProducer,
+    num_division_of_segment: int,
+    eval: bool
+):
     loss_history, info_history = [], []
 
-    for batch in tqdm(batches):
-        state, loss, info = train_step(state, *astuple(batch), num_division_of_segment, eval)
-        loss_history.append(jax.device_get(loss))
-        info_history.append(jax.device_get(info))
+    num_steps = minibatch_producer.num_minibatch(len(batches))
+
+    with tqdm(range(num_steps)) as pbar:
+        for i in pbar:
+            indices = minibatch_producer.next_minibatch(i)
+
+            state, loss, info = train_step(state, *astuple(batches[indices]), num_division_of_segment, eval)
+            loss_history.append(jax.device_get(loss))
+            info_history.append(jax.device_get(info))
+
+            pbar.set_postfix({"loss": f"{float(loss):.3f}"})
 
     return state, jnp.mean(jnp.array(loss_history)), jnp.mean(jnp.array(info_history), axis=0)
 
@@ -162,6 +216,7 @@ def fit(
     checkpoint_manager: CheckpointManager,
     train_batches: jnp.ndarray,
     test_batches: jnp.ndarray,
+    minibatch_producer: MinibatchProducer,
     epochs: int,
     num_division_of_segment: int,
     log_wandb: bool
@@ -171,8 +226,12 @@ def fit(
     for epoch in range(state.epoch + 1, state.epoch + 1 + epochs):
         start = time.perf_counter()
 
-        state, loss_train, info_train = train_epoch(state, train_batches, num_division_of_segment, eval=False)
-        _, loss_test, info_test = train_epoch(state, test_batches, num_division_of_segment, eval=True)
+        state, loss_train, info_train = train_epoch(
+            state, train_batches, minibatch_producer, num_division_of_segment, eval=False
+        )
+        _, loss_test, info_test = train_epoch(
+            state, test_batches, minibatch_producer, num_division_of_segment, eval=True
+        )
 
         elapsed_time = time.perf_counter() - start
 
@@ -203,22 +262,28 @@ def fit(
     return state
 
 
-def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
+def main_train(batch: jnp.ndarray, log_wandb=False):
     import wandb
-
-    batch = batch[:(len(batch) // batch_size) * batch_size]
-    batch = batch.reshape((-1, batch_size, batch.shape[1], batch.shape[2]))
 
     n_train = int(batch.shape[0] * 0.8)
     train_batch = batch[:n_train]
     test_batch = batch[n_train:]
 
+    # minibatch_producer = MinibatchProducerSimple(batch_size=4)
+    minibatch_producer = MinibatchProducerRL(
+        replay_buffer_size=2048,
+        update_period=64,
+        batch_size=16,
+        num_batches=32
+    )
+
     heads = 4,
     dims = 256,
-    num_layers = 4,
-    memory_length = 4,
+    num_layers = 6,
+    memory_length = 0,
+    color_count_length = 8,
 
-    for h, d, n, m in itertools.product(heads, dims, num_layers, memory_length):
+    for h, d, n, m, c in itertools.product(heads, dims, num_layers, memory_length, color_count_length):
         if log_wandb:
             name = f'h={h}, d={d}, n={n}'
             run_config = {
@@ -229,19 +294,29 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
             }
             run = wandb.init(project='network benchmark', config=run_config, name=name)
 
-        model_config = TransformerConfig(num_heads=h, embed_dim=d, num_hidden_layers=n, length_memory_block=m)
+        model_config = TransformerConfig(
+            num_heads=h,
+            embed_dim=d,
+            num_hidden_layers=n,
+            length_memory_block=m,
+            length_color_count_block=c,
+        )
         model = model_config.create_model()
 
-        variables = model.init(random.PRNGKey(0), jnp.zeros((1, 200, 5), dtype=jnp.uint8))
+        init_x = get_tokens(train_batch[0, :1])
+        init_c = get_color_count(train_batch[0, :1])
+
+        variables = model.init(random.PRNGKey(0), init_x, color_count=init_c)
         state = TrainState.create(
             apply_fn=model.apply,
             params=variables['params'],
             tx=optax.adam(learning_rate=0.0005),
             dropout_rng=random.PRNGKey(0),
             epoch=0,
-            init_memory=model.create_zero_memory())
+            init_memory=model.create_zero_memory()
+        )
 
-        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}_{m}'
+        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}_{m}_{c}'
 
         checkpoint_manager = CheckpointManager(ckpt_dir)
         checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
@@ -250,7 +325,8 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
             state, model_config, checkpoint_manager,
             train_batches=train_batch,
             test_batches=test_batch,
-            epochs=8, num_division_of_segment=4,
+            minibatch_producer=minibatch_producer,
+            epochs=1, num_division_of_segment=8,
             log_wandb=log_wandb
         )
 
@@ -259,7 +335,7 @@ def main_train(batch: jnp.ndarray, batch_size=16, log_wandb=False):
 
 
 def main():
-    batch = load("./data/replay_buffer/run-4.npy")[:1000]
+    batch = load("./data/replay_buffer/run-7.npy")
     print(batch.shape)
 
     main_train(batch)

@@ -12,6 +12,6 @@ PLAYER_DICT = {
 }
 
 
-def create_player(config: PlayerConfig) -> PlayerBase:
+def create_player(config: PlayerConfig, project_dir: str) -> PlayerBase:
     create_func = PLAYER_DICT[type(config)]
-    return create_func(config)
+    return create_func(config, project_dir)

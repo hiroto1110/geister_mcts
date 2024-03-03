@@ -12,6 +12,7 @@ from players.base import play_game
 def start_selfplay_process(
     match_request_queue: multiprocessing.Queue,
     match_result_queue: multiprocessing.Queue,
+    project_dir: str,
     series_length: int,
     tokens_length: int,
     seed: int
@@ -31,17 +32,18 @@ def start_selfplay_process(
             name_o = match.opponent.get_name()
             print(f"Assigned: (elapsed={elapsed_t:.3f}s, agent={name_p}, opponent={name_o})")
 
-            samples = play_games(match, series_length, tokens_length)
+            samples = play_games(match, project_dir, series_length, tokens_length)
             match_result_queue.put(MessageMatchResult(match, samples))
 
 
 def play_games(
     match: MatchInfo,
+    project_dir: str,
     series_length: int,
     tokens_length: int,
 ):
-    player1 = create_player(match.player)
-    player2 = create_player(match.opponent)
+    player1 = create_player(match.player, project_dir)
+    player2 = create_player(match.opponent, project_dir)
 
     samples = []
 

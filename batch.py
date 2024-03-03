@@ -2,6 +2,9 @@ import os
 import numpy as np
 
 
+COLOR_COUNT_FEATURE_LENGTH = 3 * 6 * 2 * 3**4
+
+
 def load(path: str) -> np.ndarray:
     if path.endswith('.npy'):
         return np.load(path)
@@ -25,34 +28,34 @@ def save(path: str, batch: np.ndarray, append: bool):
     np.save(path, batch)
 
 
-def create_batch(x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: np.ndarray) -> np.ndarray:
+def create_batch(
+    x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: np.ndarray, color_count: np.ndarray
+) -> np.ndarray:
     """
     x: [..., seq_len, 5]
     action: [..., seq_len]
     reward: [..., 1]
     color: [..., 8]
+    color_count: [..., 3, 6, 2 * 3**4]
     """
     seq_len = x.shape[-2]
 
     x_flatten = x.reshape((*x.shape[:-2], seq_len * 5))
     action_flatten = action.reshape((*x.shape[:-2], seq_len))
+    color_count_flatten = color_count.reshape((*x.shape[:-2], COLOR_COUNT_FEATURE_LENGTH))
 
-    return np.concatenate([x_flatten, action_flatten, reward.astype(np.uint8), color], axis=-1, dtype=np.uint8)
+    return np.concatenate(
+        [x_flatten, action_flatten, reward.astype(np.uint8), color, color_count_flatten],
+        axis=-1,
+        dtype=np.uint8
+    )
 
 
 def astuple(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    batch: [..., seq_len * 6 + 9]
+    batch: [..., seq_len * 6 + 9 + COLOR_COUNT_FEATURE_LENGTH]
     """
-    seq_len = (batch.shape[-1] - 9) // 6
-    splited = []
-
-    total = 0
-    for length in [seq_len * 5, seq_len, 1, 8]:
-        splited.append(batch[..., total: total + length])
-        total += length
-
-    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
+    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch), get_color_count(batch)
 
 
 def get_tokens(batch: np.ndarray) -> np.ndarray:
@@ -66,11 +69,18 @@ def get_action(batch: np.ndarray) -> np.ndarray:
 
 
 def get_reward(batch: np.ndarray) -> np.ndarray:
-    return batch[..., -9]
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., seq_len * 6]
 
 
 def get_color(batch: np.ndarray) -> np.ndarray:
-    return batch[..., -8:]
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., seq_len * 6 + 1: seq_len * 6 + 9]
+
+
+def get_color_count(batch: np.ndarray) -> np.ndarray:
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., seq_len * 6 + 9:].reshape((*batch.shape[:-1], 3, 6, -1))
 
 
 def is_won(batch: np.ndarray) -> bool:
@@ -78,12 +88,12 @@ def is_won(batch: np.ndarray) -> bool:
 
 
 def get_length_of_one_sample(seq_len: int) -> int:
-    return seq_len * 6 + 9
+    return seq_len * 6 + 9 + COLOR_COUNT_FEATURE_LENGTH
 
 
 def get_seq_len(length_of_one_sample: int) -> int:
-    assert (length_of_one_sample - 9) % 6 == 0
-    return (length_of_one_sample - 9) // 6
+    assert (length_of_one_sample - 9 - COLOR_COUNT_FEATURE_LENGTH) % 6 == 0
+    return (length_of_one_sample - 9 - COLOR_COUNT_FEATURE_LENGTH) // 6
 
 
 class ReplayBuffer:

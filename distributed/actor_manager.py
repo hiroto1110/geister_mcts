@@ -72,15 +72,12 @@ def start_actor_manager(
     for match in init_msg.matches:
         match_request_queue.put(match)
 
-    mcts_params_ranges = {agent.name: agent.mcts_params for agent in config.agents}
-
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
         args = (
             match_request_queue,
             match_result_queue,
             ckpt_dir,
-            mcts_params_ranges,
             config.series_length,
             config.tokens_length,
             seed,

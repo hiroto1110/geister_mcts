@@ -15,7 +15,7 @@ class PlayerNaotti2020(PlayerBase):
         self.print_log = print_log
 
     @classmethod
-    def from_config(cls, config: PlayerNaotti2020Config) -> "PlayerNaotti2020":
+    def from_config(cls, config: PlayerNaotti2020Config, project_dir: str) -> "PlayerNaotti2020":
         return PlayerNaotti2020(
             depth_min=config.depth_min,
             depth_max=config.depth_max,

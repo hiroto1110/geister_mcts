@@ -547,8 +547,8 @@ class PlayerMCTS(PlayerBase):
         self.memory: np.ndarray = None
 
     @classmethod
-    def from_config(cls, config: PlayerMCTSConfig) -> "PlayerMCTS":
-        ckpt = CheckpointManager(config.ckpt_dir).load(config.ckpt_step)
+    def from_config(cls, config: PlayerMCTSConfig, project_dir: str) -> "PlayerMCTS":
+        ckpt = CheckpointManager(f"{project_dir}/{config.name}").load(config.step)
 
         return PlayerMCTS(
             params=ckpt.params,

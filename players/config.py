@@ -1,32 +1,8 @@
-import os
 from dataclasses import dataclass, replace
 
 import numpy as np
 
 from distributed.communication import SerdeJsonSerializable
-
-
-@dataclass
-class PlayerConfig(SerdeJsonSerializable):
-    def get_name(self) -> str:
-        pass
-
-
-@dataclass
-class PlayerRandomConfig(SerdeJsonSerializable):
-    def get_name(self) -> str:
-        return "random"
-
-
-@dataclass
-class PlayerNaotti2020Config(PlayerConfig):
-    depth_min: int
-    depth_max: int
-    num_random_ply: int
-    print_log: bool
-
-    def get_name(self) -> str:
-        return "Naotti2020"
 
 
 @dataclass
@@ -111,10 +87,33 @@ class SearchParametersRange:
 
 
 @dataclass
+class PlayerConfig(SerdeJsonSerializable):
+    def get_name(self) -> str:
+        pass
+
+
+@dataclass
+class PlayerRandomConfig(SerdeJsonSerializable):
+    def get_name(self) -> str:
+        return "random"
+
+
+@dataclass
+class PlayerNaotti2020Config(PlayerConfig):
+    depth_min: int
+    depth_max: int
+    num_random_ply: int
+    print_log: bool
+
+    def get_name(self) -> str:
+        return "Naotti2020"
+
+
+@dataclass
 class PlayerMCTSConfig(PlayerConfig):
-    ckpt_dir: str
-    ckpt_step: int
+    name: str
+    step: int
     mcts_params: SearchParametersRange
 
     def get_name(self) -> str:
-        return f"{os.path.basename(self.ckpt_dir)}-{self.ckpt_step}"
+        return f"{self.name}-{self.step}"

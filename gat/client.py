@@ -15,12 +15,12 @@ from network.checkpoints import Checkpoint
 DIRECTION_DICT = {-6: 0, -1: 1, 1: 2, 6: 3}
 
 
-def connect(s: socket.socket, address, num_max_retry=10):
+def connect_and_recv(s: socket.socket, address, num_max_retry=10) -> str:
     for _ in range(num_max_retry):
         try:
             s.connect(address)
-            return
-        except ConnectionRefusedError:
+            return recv(s)
+        except ConnectionRefusedError | ConnectionResetError:
             time.sleep(1)
             continue
 
@@ -131,12 +131,10 @@ class Client:
         print(f"Connecting to: ({ip}, {port})")
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            connect(sock, (ip, port))
+            _ = connect_and_recv(sock, (ip, port))
             self.start(sock)
 
     def start(self, sock: socket.socket):
-        set_msg = recv(sock)
-
         set_msg = server_util.encode_set_message(self.state.color_p, self.state.root_player, name=self.name)
         send(sock, set_msg)
 
@@ -220,13 +218,10 @@ def main(
         player = 1 if port == 10000 else -1
 
         for i in range(num_games):
-            try:
-                client.init_state(game.create_random_color(), player)
-                client.connect_and_start(ip, port)
-            except Exception as e:
-                raise e
-            finally:
-                print("win: {2}, draw: {1}, lost: {0}".format(*client.win_count))
+            client.init_state(game.create_random_color(), player)
+            client.connect_and_start(ip, port)
+
+            print("win: {2}, draw: {1}, lost: {0}".format(*client.win_count))
 
     # client.show_memories()
 

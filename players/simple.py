@@ -10,7 +10,7 @@ class PlayerRandom(PlayerBase):
         pass
 
     @classmethod
-    def from_config(cls, config: PlayerRandomConfig) -> "PlayerRandom":
+    def from_config(cls, config: PlayerRandomConfig, project_dir: str) -> "PlayerRandom":
         return PlayerRandom()
 
     def select_next_action(self) -> int:
@@ -26,7 +26,7 @@ class PlayerSimple(PlayerBase):
         self.print_log = print_log
 
     @classmethod
-    def from_config(cls, config: PlayerRandomConfig) -> "PlayerSimple":
+    def from_config(cls, config: PlayerRandomConfig, project_dir: str) -> "PlayerSimple":
         return PlayerSimple(
             depth_min=config.depth_min,
             depth_max=config.depth_max,
