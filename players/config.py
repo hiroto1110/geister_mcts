@@ -17,6 +17,7 @@ class SearchParameters:
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
     value_weight: np.ndarray = np.array([-1, -1, -1, 0, 1, 1, 1])
+    time_limit: float = 10
     visibilize_node_graph: bool = False
 
     def replace(self, **args):

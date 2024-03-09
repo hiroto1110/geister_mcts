@@ -20,7 +20,7 @@ def encode_set_message(color: np.ndarray, player: int, name: str) -> str:
         if color[i] == game.RED:
             msg += PIECE_NAMES[i]
 
-    return f'SET:{msg},NAME:{name}\r\n'
+    return f'SET:{msg}\r\n'
 
 
 def decode_set_message(msg: str):

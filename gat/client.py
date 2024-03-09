@@ -4,7 +4,7 @@ import time
 import click
 import numpy as np
 
-from players.mcts import PlayerMCTS
+from players.mcts import PlayerMCTS, ActionSelectionResultMCTS
 from players.config import SearchParameters
 import env.state as game
 import game_analytics
@@ -15,16 +15,17 @@ from network.checkpoints import Checkpoint
 DIRECTION_DICT = {-6: 0, -1: 1, 1: 2, 6: 3}
 
 
-def connect_and_recv(s: socket.socket, address, num_max_retry=10) -> str:
+def connect_and_recv(s: socket.socket, address, num_max_retry=100) -> str:
     for _ in range(num_max_retry):
         try:
             s.connect(address)
             return recv(s)
-        except ConnectionRefusedError | ConnectionResetError:
+        except Exception as e:
+            print(e)
             time.sleep(1)
             continue
 
-    raise ConnectionRefusedError()
+    raise Exception()
 
 
 def send(s: socket.socket, msg: str):
@@ -35,6 +36,9 @@ def send(s: socket.socket, msg: str):
 def recv(s: socket.socket) -> str:
     msg = s.recv(2**12).decode()
     print(f'RECV:[{msg.rstrip()}]')
+
+    if "NG" in msg:
+        raise RuntimeError()
 
     return msg
 
@@ -72,7 +76,7 @@ class Client:
         plt.colorbar()
         plt.show()
 
-    def select_next_action(self):
+    def select_next_action(self) -> ActionSelectionResultMCTS:
         if not self.state.is_done:
             return self.player.select_next_action()
 
@@ -87,7 +91,7 @@ class Client:
             if np.any(escaped):
                 p_id = np.where(escaped)[0][0]
                 action = p_id * 4 + d_id
-                return action
+                return ActionSelectionResultMCTS(action, 0, action, 10, p_id)
 
         assert False
 
@@ -153,10 +157,26 @@ class Client:
             print()
             self.print_board()
 
-            action = self.select_next_action()
+            result = self.select_next_action()
+            action = result.action
+
+            elapsed_t = time.perf_counter() - prev_t
+
+            if elapsed_t < 1:
+                time.sleep(1 - elapsed_t)
 
             action_msg = server_util.format_action_message(action, self.state.root_player)
             send(sock, action_msg)
+
+            print()
+            print("t1: {0:.2f}s, t2: {1:.2f}s, n: {2}, a: {3}, e: {4}, i: {5}".format(
+                elapsed_t,
+                time.perf_counter() - prev_t,
+                result.num_simulations,
+                result.checkmate_action,
+                result.checkmate_eval,
+                result.checkmate_escaped_id,
+            ))
 
             action_responce = recv(sock)
 
@@ -167,6 +187,8 @@ class Client:
 
             board_msg = recv(sock)
 
+            prev_t = time.perf_counter()
+
             is_done, winner = server_util.is_done_message(board_msg)
             if is_done:
                 self.win_count[winner + 1] += 1
@@ -176,10 +198,6 @@ class Client:
             self.apply_player_action(action, color)
 
             self.print_board()
-
-            print()
-            print(f"elpased: {time.perf_counter() - prev_t}")
-            prev_t = time.perf_counter()
 
 
 @click.command()
@@ -198,13 +216,13 @@ def main(
     ckpt = Checkpoint.from_json_file(ckpt_path)
 
     search_params = SearchParameters(
-        num_simulations=400,
+        num_simulations=200,
         dirichlet_alpha=0.1,
-        n_ply_to_apply_noise=2,
-        depth_search_checkmate_leaf=6,
-        depth_search_checkmate_root=9,
+        n_ply_to_apply_noise=0,
+        depth_search_checkmate_leaf=5,
+        depth_search_checkmate_root=7,
         max_duplicates=2,
-        visibilize_node_graph=False
+        time_limit=0.95,
     )
 
     client = Client(player_name, ckpt, search_params)
@@ -220,6 +238,8 @@ def main(
         for i in range(num_games):
             client.init_state(game.create_random_color(), player)
             client.connect_and_start(ip, port)
+
+            time.sleep(3)
 
             print("win: {2}, draw: {1}, lost: {0}".format(*client.win_count))
 

@@ -11,7 +11,6 @@ class TransformerConfig:
     embed_dim: int
     num_hidden_layers: int
     length_memory_block: int = 0
-    length_color_count_block: int = 0
     max_n_ply: int = 201
 
     def create_model(self) -> 'Transformer':
@@ -29,14 +28,13 @@ class Embeddings(nn.Module):
     max_n_ply: int = 201
 
     @nn.compact
-    def __call__(self, tokens, eval):
-        type_embed = nn.Embed(self.piece_type, self.embed_dim)(tokens[..., 0])
-        id_embed = nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
-        x_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
-        y_embed = nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
-        t_embed = nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
+    def __call__(self, tokens: jnp.ndarray, eval: bool):
+        embeddings = nn.Embed(self.piece_type, self.embed_dim)(tokens[..., 0])
+        embeddings += nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
+        embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
+        embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
+        embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
 
-        embeddings = type_embed + id_embed + x_embed + y_embed + t_embed
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)
 
@@ -165,39 +163,6 @@ class TransformerBlockWithCache(nn.Module):
         return x, cache
 
 
-class ColorCountEncoder(nn.Module):
-    num_tokens: int
-    embed_dim: int
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray):
-        # [..., 3, 6, 2 * 3**4]
-        batch_shape = x.shape[:-3]
-
-        x = x / 64.0
-
-        x = nn.Conv(features=128, kernel_size=(3,), padding='SAME')(x)
-        x = nn.relu(x)
-        x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2), padding='SAME')
-
-        x = nn.Conv(features=128, kernel_size=(3,), padding='SAME')(x)
-        x = nn.relu(x)
-        x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2), padding='SAME')
-
-        x = nn.Conv(features=128, kernel_size=(3,), padding='SAME')(x)
-        x = nn.relu(x)
-        x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2), padding='SAME')
-
-        x = x.reshape((*batch_shape, -1))
-
-        x = nn.Dense(features=self.embed_dim * self.num_tokens)(x)
-        x = nn.relu(x)
-
-        x = x.reshape((*batch_shape, self.num_tokens, self.embed_dim))
-
-        return x
-
-
 class Transformer(nn.Module):
     config: TransformerConfig
 
@@ -206,9 +171,6 @@ class Transformer(nn.Module):
 
     def has_memory_block(self):
         return self.config.length_memory_block > 0
-
-    def has_color_count_block(self):
-        return self.config.length_color_count_block > 0
 
     def create_zero_memory(self):
         return jnp.zeros((self.config.length_memory_block, self.config.embed_dim))
@@ -223,11 +185,8 @@ class Transformer(nn.Module):
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
                        for _ in range(self.config.num_hidden_layers)]
 
-        if self.has_color_count_block():
-            self.color_count_encoder = ColorCountEncoder(self.config.length_color_count_block, self.config.embed_dim)
-
     @nn.compact
-    def __call__(self, x, read_memory=None, color_count=None, eval=True):
+    def __call__(self, x, read_memory=None, eval=True):
         mem_len = self.config.length_memory_block
 
         mask = mask = jnp.any(x != 0, axis=-1)
@@ -244,16 +203,11 @@ class Transformer(nn.Module):
 
             x = jnp.concatenate([read_memory, x, write_memory], axis=1)
 
-        if self.has_color_count_block():
-            color_count_block = self.color_count_encoder(color_count)
-            x = jnp.concatenate([color_count_block, x], axis=-2)
-
         # [Batch, 1, SeqLen, SeqLen]
         causal_mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
 
-        ones_mem = jnp.ones((x.shape[0], mem_len))
-        ones_cnt = jnp.ones((x.shape[0], self.config.length_color_count_block))
-        mask = jnp.concatenate([ones_cnt, ones_mem, mask, ones_mem], axis=1)
+        ones = jnp.ones((x.shape[0], mem_len))
+        mask = jnp.concatenate([ones, mask, ones], axis=1)
 
         mask = causal_mask * mask[:, jnp.newaxis, jnp.newaxis, :]
 
@@ -261,9 +215,6 @@ class Transformer(nn.Module):
             x = self.layers[i](x, mask, eval=eval)
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
-
-        if self.has_color_count_block():
-            x = x[:, self.config.length_color_count_block:]
 
         if self.has_memory_block():
             write_memory_out = x[:, -mem_len:]

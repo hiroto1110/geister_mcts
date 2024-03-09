@@ -2,9 +2,6 @@ import os
 import numpy as np
 
 
-COLOR_COUNT_FEATURE_LENGTH = 3 * 6 * 2 * 3**4
-
-
 def load(path: str) -> np.ndarray:
     if path.endswith('.npy'):
         return np.load(path)
@@ -29,7 +26,7 @@ def save(path: str, batch: np.ndarray, append: bool):
 
 
 def create_batch(
-    x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: np.ndarray, color_count: np.ndarray
+    x: np.ndarray, action: np.ndarray, reward: np.ndarray, color: np.ndarray
 ) -> np.ndarray:
     """
     x: [..., seq_len, 5]
@@ -40,12 +37,12 @@ def create_batch(
     """
     seq_len = x.shape[-2]
 
-    x_flatten = x.reshape((*x.shape[:-2], seq_len * 5))
+    x_flatten = x.reshape((*x.shape[:-2], seq_len * x.shape[-1]))
     action_flatten = action.reshape((*x.shape[:-2], seq_len))
-    color_count_flatten = color_count.reshape((*x.shape[:-2], COLOR_COUNT_FEATURE_LENGTH))
+    reward_flatten = reward.reshape((*x.shape[:-2], 1)).astype(np.uint8)
 
     return np.concatenate(
-        [x_flatten, action_flatten, reward.astype(np.uint8), color, color_count_flatten],
+        [x_flatten, action_flatten, reward_flatten, color],
         axis=-1,
         dtype=np.uint8
     )
@@ -55,7 +52,7 @@ def astuple(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     """
     batch: [..., seq_len * 6 + 9 + COLOR_COUNT_FEATURE_LENGTH]
     """
-    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch), get_color_count(batch)
+    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
 
 
 def get_tokens(batch: np.ndarray) -> np.ndarray:
@@ -78,22 +75,17 @@ def get_color(batch: np.ndarray) -> np.ndarray:
     return batch[..., seq_len * 6 + 1: seq_len * 6 + 9]
 
 
-def get_color_count(batch: np.ndarray) -> np.ndarray:
-    seq_len = get_seq_len(batch.shape[-1])
-    return batch[..., seq_len * 6 + 9:].reshape((*batch.shape[:-1], 3, 6, -1))
-
-
 def is_won(batch: np.ndarray) -> bool:
     return get_reward(batch) > 3
 
 
 def get_length_of_one_sample(seq_len: int) -> int:
-    return seq_len * 6 + 9 + COLOR_COUNT_FEATURE_LENGTH
+    return seq_len * 6 + 9
 
 
 def get_seq_len(length_of_one_sample: int) -> int:
-    assert (length_of_one_sample - 9 - COLOR_COUNT_FEATURE_LENGTH) % 6 == 0
-    return (length_of_one_sample - 9 - COLOR_COUNT_FEATURE_LENGTH) // 6
+    assert (length_of_one_sample - 9) % 6 == 0
+    return (length_of_one_sample - 9) // 6
 
 
 class ReplayBuffer:

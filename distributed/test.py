@@ -7,7 +7,6 @@ from sklearn.linear_model import LinearRegression
 import actor
 from messages import MatchInfo, MessageMatchResult
 from players.config import (
-    PlayerRandomConfig,
     PlayerMCTSConfig,
     PlayerNaotti2020Config,
     SearchParametersRange, IntRange, FloatRange
@@ -17,10 +16,10 @@ from batch import get_reward
 
 
 def main(
-    n_clients=4,
-    ckpt_dir='./data/projects/run-7/main',
-    ckpt_step=300,
-    series_length=8,
+    n_clients=30,
+    ckpt_dir='./data/projects/run-7',
+    ckpt_step=600,
+    series_length=32,
     tokens_length=220,
 ):
     mcts_params = SearchParametersRange(
@@ -33,9 +32,8 @@ def main(
         c_base=IntRange(25, 40)
     )
 
-    player = PlayerMCTSConfig(ckpt_dir, ckpt_step, mcts_params)
-    opponent = PlayerNaotti2020Config(depth_min=3, depth_max=6, num_random_ply=8, print_log=False)
-    opponent = PlayerRandomConfig()
+    player = PlayerMCTSConfig("main", ckpt_step, mcts_params)
+    opponent = PlayerNaotti2020Config(depth_min=3, depth_max=7, num_random_ply=8, print_log=False)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
@@ -46,11 +44,14 @@ def main(
 
     for i in range(n_clients):
         seed = np.random.randint(0, 10000)
-        args = (match_request_queue,
-                match_result_queue,
-                series_length,
-                tokens_length,
-                seed)
+        args = (
+            match_request_queue,
+            match_result_queue,
+            ckpt_dir,
+            series_length,
+            tokens_length,
+            seed
+        )
 
         process = ctx.Process(target=actor.start_selfplay_process, args=args)
         process.start()

@@ -1,3 +1,4 @@
+from typing import Generic, TypeVar
 from dataclasses import dataclass
 
 import numpy as np
@@ -6,7 +7,15 @@ from env.state import SimulationState, WinType, get_initial_state_pair
 import batch
 
 
-class PlayerBase:
+@dataclass
+class ActionSelectionResult:
+    action: int
+
+
+T = TypeVar("T", bound=ActionSelectionResult)
+
+
+class PlayerBase(Generic[T]):
     def __init__(self) -> None:
         self.state: SimulationState = None
 
@@ -14,7 +23,7 @@ class PlayerBase:
         self.state = state
         return state.create_init_tokens()
 
-    def select_next_action(self) -> int:
+    def select_next_action(self) -> T:
         pass
 
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray) -> list[list[int]]:
@@ -72,7 +81,7 @@ class GameResult:
         )
 
 
-def play_game(player1: PlayerBase, player2: PlayerBase, game_length=200, print_board=False) -> GameResult:
+def play_game(player1: PlayerBase[T], player2: PlayerBase[T], game_length=200, print_board=False) -> GameResult:
     state1, state2 = get_initial_state_pair()
     tokens1 = player1.init_state(state1)
     tokens2 = player2.init_state(state2)
@@ -83,9 +92,9 @@ def play_game(player1: PlayerBase, player2: PlayerBase, game_length=200, print_b
 
     for i in range(game_length):
         if player == 1:
-            action = player1.select_next_action()
+            action = player1.select_next_action().action
         else:
-            action = player2.select_next_action()
+            action = player2.select_next_action().action
 
         tokens1 += player1.apply_action(action, player, state2.color_p)
         tokens2 += player2.apply_action(action, -player, state1.color_p)

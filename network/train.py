@@ -13,7 +13,7 @@ from flax.training import train_state
 
 from network.checkpoints import Checkpoint, CheckpointManager
 from network.transformer import Transformer, TransformerConfig
-from batch import load, astuple, get_tokens, get_color_count
+from batch import load, astuple, get_tokens
 
 
 class TrainState(train_state.TrainState):
@@ -61,7 +61,6 @@ def loss_fn(
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
-    color_count: jnp.ndarray,
     init_memory: jnp.ndarray,
     segment_offset: int,
     segment_length: int,
@@ -72,17 +71,17 @@ def loss_fn(
     batch_size = x.shape[0]
 
     @jax.checkpoint
-    def apply(_x, read_memory, _color_count):
+    def apply(_x, read_memory):
         return state.apply_fn(
             {'params': params},
-            _x, read_memory=read_memory, color_count=_color_count, eval=eval,
+            _x, read_memory=read_memory, eval=eval,
             rngs={'dropout': dropout_rng}
         )
 
     def scan_f(carry: tuple[jnp.ndarray, jnp.ndarray], i):
         memory_prev, loss_prev = carry
 
-        p, v, c, memory_next = apply(x[:, i], memory_prev, color_count[:, i])
+        p, v, c, memory_next = apply(x[:, i], memory_prev)
         loss_i, losses_i = calc_loss(x[:, i], p, v, c, p_true[:, i], v_true[:, i], c_true[:, i])
 
         memory_next = memory_next.reshape(memory_prev.shape)
@@ -103,7 +102,7 @@ def loss_fn(
 @partial(jax.jit, static_argnames=['eval', 'num_division_of_segment'])
 def train_step(
     state: TrainState,
-    x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray, color_count: jnp.ndarray,
+    x: jnp.ndarray, p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
     num_division_of_segment: int, eval: bool
 ) -> tuple[TrainState, jnp.ndarray, jnp.ndarray]:
 
@@ -121,14 +120,14 @@ def train_step(
         if not eval:
             (loss_i, (losses, next_memory)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 current_state.params, current_state,
-                x, p_true, v_true, c_true, color_count, current_memory, offset, sub_segment_length,
+                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
                 current_state.dropout_rng, eval=eval
             )
             next_state = current_state.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(current_state.epoch))
         else:
             loss_i, (losses, next_memory) = loss_fn(
                 current_state.params, current_state,
-                x, p_true, v_true, c_true, color_count, current_memory, offset, sub_segment_length,
+                x, p_true, v_true, c_true, current_memory, offset, sub_segment_length,
                 current_state.dropout_rng, eval=eval
             )
             next_state = current_state
@@ -269,21 +268,20 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
     train_batch = batch[:n_train]
     test_batch = batch[n_train:]
 
-    # minibatch_producer = MinibatchProducerSimple(batch_size=4)
     minibatch_producer = MinibatchProducerRL(
         replay_buffer_size=2048,
         update_period=64,
         batch_size=16,
         num_batches=32
     )
+    # minibatch_producer = MinibatchProducerSimple(batch_size=16)
 
-    heads = 4,
-    dims = 256,
-    num_layers = 6,
-    memory_length = 0,
-    color_count_length = 8,
+    heads = 8,
+    dims = 512,
+    num_layers = 8,
+    memory_length = 16,
 
-    for h, d, n, m, c in itertools.product(heads, dims, num_layers, memory_length, color_count_length):
+    for h, d, n, m in itertools.product(heads, dims, num_layers, memory_length):
         if log_wandb:
             name = f'h={h}, d={d}, n={n}'
             run_config = {
@@ -299,14 +297,12 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
             embed_dim=d,
             num_hidden_layers=n,
             length_memory_block=m,
-            length_color_count_block=c,
         )
         model = model_config.create_model()
 
         init_x = get_tokens(train_batch[0, :1])
-        init_c = get_color_count(train_batch[0, :1])
 
-        variables = model.init(random.PRNGKey(0), init_x, color_count=init_c)
+        variables = model.init(random.PRNGKey(0), init_x)
         state = TrainState.create(
             apply_fn=model.apply,
             params=variables['params'],
@@ -316,7 +312,7 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
             init_memory=model.create_zero_memory()
         )
 
-        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}_{m}_{c}'
+        ckpt_dir = f'./data/checkpoints/rmt_{h}_{d}_{n}_{m}'
 
         checkpoint_manager = CheckpointManager(ckpt_dir)
         checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
@@ -326,7 +322,7 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
             train_batches=train_batch,
             test_batches=test_batch,
             minibatch_producer=minibatch_producer,
-            epochs=1, num_division_of_segment=8,
+            epochs=4, num_division_of_segment=8,
             log_wandb=log_wandb
         )
 
@@ -335,8 +331,13 @@ def main_train(batch: jnp.ndarray, log_wandb=False):
 
 
 def main():
-    batch = load("./data/replay_buffer/run-7.npy")
+    batch = load("./data/replay_buffer/run-7-new.npy")
     print(batch.shape)
+
+    # indices = jnp.arange(batch.shape[0])
+    # indices = random.shuffle(random.PRNGKey(0), indices)
+
+    # batch = batch[indices]
 
     main_train(batch)
 

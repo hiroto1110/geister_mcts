@@ -1,6 +1,7 @@
 from functools import partial
 from typing import List, Any
 from dataclasses import dataclass
+import time
 
 import numpy as np
 import jax
@@ -16,7 +17,7 @@ import game_analytics
 from network.transformer import TransformerWithCache
 from network.checkpoints import CheckpointManager
 
-from players.base import PlayerBase
+from players.base import PlayerBase, ActionSelectionResult
 from players.config import PlayerMCTSConfig, SearchParameters
 
 
@@ -389,75 +390,89 @@ def create_invalid_actions(actions, state: game.SimulationState, pieces_history:
     return np.array(invalid_actions, dtype=np.int16)
 
 
+@dataclass
+class ActionSelectionResultMCTS(ActionSelectionResult):
+    num_simulations: int
+    checkmate_action: int
+    checkmate_eval: int
+    checkmate_escaped_id: int
+
+
 def select_action_with_mcts(
     node: Node,
     state: game.SimulationState,
     pred_state: PredictState,
     params: SearchParameters,
     pieces_history: np.ndarray = None
-) -> int:
+) -> ActionSelectionResultMCTS:
+
+    start_t = time.perf_counter()
 
     if params.visibilize_node_graph:
         node.state_str = sim_state_to_str(state, [0], [0.5]*8)
 
-    if state.n_ply <= 8:
+    if state.n_ply <= 6:
         node.setup_valid_actions(state, 1)
-        return np.random.choice(node.valid_actions)
+        return ActionSelectionResultMCTS(np.random.choice(node.valid_actions), 0, -1, 0, -1)
 
     action, e, escaped_id = find_checkmate(state, 1, depth=params.depth_search_checkmate_root)
 
-    if e < 0:
-        # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
-        pass
-
     if e > 0:
-        pass
+        return ActionSelectionResultMCTS(action, 0, action, e, escaped_id)
         # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
-    else:
+    if time.perf_counter() - start_t > params.time_limit:
         node.setup_valid_actions(state, 1)
+        return ActionSelectionResultMCTS(np.random.choice(node.valid_actions), 0, action, e, escaped_id)
 
-        if pieces_history is not None:
-            node.invalid_actions = create_invalid_actions(
-                node.valid_actions,
-                state,
-                pieces_history,
-                params.max_duplicates
-            )
-            node.apply_invalid_actions()
+    node.setup_valid_actions(state, 1)
 
-        if params.dirichlet_alpha is not None:
-            dirichlet_noise = np.random.dirichlet(alpha=[params.dirichlet_alpha]*len(node.valid_actions))
+    if pieces_history is not None:
+        node.invalid_actions = create_invalid_actions(
+            node.valid_actions,
+            state,
+            pieces_history,
+            params.max_duplicates
+        )
+        node.apply_invalid_actions()
 
-            for a, noise in zip(node.valid_actions, dirichlet_noise):
-                node.p[a] = (1 - params.dirichlet_eps) * node.p[a] + params.dirichlet_eps * noise
+    if params.dirichlet_alpha is not None:
+        dirichlet_noise = np.random.dirichlet(alpha=[params.dirichlet_alpha]*len(node.valid_actions))
 
-        if params.n_ply_to_apply_noise < state.n_ply:
-            for i in range(params.num_simulations):
-                sorted_n = np.sort(node.n)
-                diff = sorted_n[-1] - sorted_n[-2]
+        for a, noise in zip(node.valid_actions, dirichlet_noise):
+            node.p[a] = (1 - params.dirichlet_eps) * node.p[a] + params.dirichlet_eps * noise
 
-                if diff > params.num_simulations - i:
-                    break
+    if params.n_ply_to_apply_noise < state.n_ply:
+        for i in range(params.num_simulations):
+            if time.perf_counter() - start_t > params.time_limit:
+                break
 
-                simulate(node, state, 1, pred_state, params)
+            sorted_n = np.sort(node.n)
+            diff = sorted_n[-1] - sorted_n[-2]
 
-            action = np.argmax(node.n)
-        else:
-            for i in range(params.num_simulations):
-                simulate(node, state, 1, pred_state, params)
+            if diff > params.num_simulations - i:
+                break
 
-            policy = node.get_policy()
-            action = np.random.choice(range(len(policy)), p=policy)
+            simulate(node, state, 1, pred_state, params)
 
-        if params.visibilize_node_graph:
-            dg = Digraph(format='png')
-            dg.attr('node', fontname="Myrica M")
-            dg.attr('edge', fontname="Myrica M")
-            node.visualize_graph(dg)
-            dg.render(f'./data/graph/n_ply_{state.n_ply}')
+        action = np.argmax(node.n)
+    else:
+        for i in range(params.num_simulations):
+            if time.perf_counter() - start_t > params.time_limit:
+                break
+            simulate(node, state, 1, pred_state, params)
 
-    return action
+        policy = node.get_policy()
+        action = np.random.choice(range(len(policy)), p=policy)
+
+    if params.visibilize_node_graph:
+        dg = Digraph(format='png')
+        dg.attr('node', fontname="Myrica M")
+        dg.attr('edge', fontname="Myrica M")
+        node.visualize_graph(dg)
+        dg.render(f'./data/graph/n_ply_{state.n_ply}')
+
+    return ActionSelectionResultMCTS(action, i, action, e, escaped_id)
 
 
 def apply_action(
@@ -532,7 +547,7 @@ def create_root_node(
     return node, tokens, memory
 
 
-class PlayerMCTS(PlayerBase):
+class PlayerMCTS(PlayerBase[ActionSelectionResultMCTS]):
     def __init__(
         self,
         params,
@@ -563,15 +578,13 @@ class PlayerMCTS(PlayerBase):
         self.node, tokens, self.memory = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
         return tokens
 
-    def select_next_action(self) -> int:
+    def select_next_action(self) -> ActionSelectionResultMCTS:
         self.pieces_history.append(self.state.pieces_p.copy())
 
-        action = select_action_with_mcts(
+        return select_action_with_mcts(
             self.node, self.state, self.pred_state, self.search_params,
             pieces_history=np.array(self.pieces_history, dtype=np.int16)
         )
-
-        return action
 
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
         self.node, tokens = apply_action(
