@@ -11,7 +11,7 @@ import flax.linen as nn
 from graphviz import Digraph
 
 import env.state as game
-import env.checkmate_lib as checkmate_lib
+import env.lib.checkmate_lib as checkmate_lib
 
 import game_analytics
 from network.transformer import TransformerWithCache
@@ -362,7 +362,7 @@ def find_checkmate(state: game.SimulationState, player: int, depth: int):
     return checkmate_lib.find_checkmate(
         state.pieces_p, state.color_p,
         state.pieces_o, state.color_o,
-        player, state.root_player, depth
+        player, 1, depth
     )
 
 
@@ -516,15 +516,13 @@ def create_memory(node: Node, pred_state: PredictState, model: TransformerWithCa
 
 
 def create_root_node(
-    state: game.SimulationState,
+    tokens: list[list[int]],
     pred_state: PredictState,
     model: TransformerWithCache,
     cache_length: int = 220,
     prev_node: Node = None,
-) -> tuple[Node, list[list[int]], np.ndarray]:
+) -> tuple[Node, np.ndarray]:
     node = Node()
-
-    tokens = state.create_init_tokens()
 
     if model.has_memory_block():
         if prev_node is not None:
@@ -544,7 +542,7 @@ def create_root_node(
 
     setup_node(node, pred_state, tokens, cache)
 
-    return node, tokens, memory
+    return node, memory
 
 
 class PlayerMCTS(PlayerBase[ActionSelectionResultMCTS]):
@@ -571,11 +569,14 @@ class PlayerMCTS(PlayerBase[ActionSelectionResultMCTS]):
             search_params=config.mcts_params.sample()
         )
 
-    def init_state(self, state: game.SimulationState):
+    def init_state(self, state: game.SimulationState, first_action: int = None):
         self.state = state
         self.pieces_history = []
 
-        self.node, tokens, self.memory = create_root_node(state, self.pred_state, self.model, prev_node=self.node)
+        tokens = self.state.create_init_tokens(first_action)
+
+        self.node, self.memory = create_root_node(tokens, self.pred_state, self.model, prev_node=self.node)
+
         return tokens
 
     def select_next_action(self) -> ActionSelectionResultMCTS:
@@ -587,9 +588,31 @@ class PlayerMCTS(PlayerBase[ActionSelectionResultMCTS]):
         )
 
     def apply_action(self, action: int, player: int, true_color_o: np.ndarray):
+        if player == -1:
+            action = 31 - action
+
         self.node, tokens = apply_action(
-            self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params)
+            self.node, self.state, action, player, true_color_o, self.pred_state, self.search_params
+        )
         return tokens
+
+
+def test_play_game():
+    mcts_params = SearchParameters(
+        num_simulations=10
+    )
+    from network.checkpoints import Checkpoint
+    ckpt = Checkpoint.from_json_file("./data/projects/run-7/main/600.json")
+
+    player1 = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
+    player2 = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
+
+    from players.base import play_game
+
+    result = play_game(player1, player2, print_board=True)
+
+    for t1, t2 in zip(result.tokens1, result.tokens2):
+        print(t1, t2)
 
 
 def test_mcts():
@@ -626,4 +649,4 @@ def test_mcts():
 
 
 if __name__ == "__main__":
-    test_mcts()
+    test_play_game()

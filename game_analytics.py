@@ -1,111 +1,7 @@
-from enum import Flag, auto
-
 import numpy as np
 import termcolor
 
 import env.state as game
-import env.checkmate_objective_lib
-
-
-class WatershedMomentType(Flag):
-    NONE = 0
-    CONTINUE = auto()
-    WON = auto()
-    LOST = auto()
-
-
-def func(state1: game.SimulationState, state2: game.SimulationState, player: int):
-    valid_actions = game.get_valid_actions(state1, player)
-
-    e = np.zeros(shape=len(valid_actions), dtype=np.int32)
-
-    for i, action in enumerate(valid_actions):
-        tokens, afterstates = state1.step(action, player)
-
-        for afterstate in afterstates:
-            state1.step_afterstate(afterstate, state2.color_p[afterstate.piece_id])
-
-        if state1.winner != 0:
-            e[i] = state1.winner * player
-        else:
-            _, e[i] = env.checkmate_objective_lib.find_checkmate(
-                state1.pieces_p, state1.color_p,
-                state1.pieces_o, state2.color_p,
-                -player, 1, 6
-            )
-
-            e[i] *= -1
-
-        for afterstate in afterstates:
-            state1.undo_step_afterstate(afterstate)
-
-        state1.undo_step(action, player, tokens, afterstates)
-
-    e = np.clip(e, -1, 1)
-
-    watershed_moment_type = WatershedMomentType.NONE
-
-    if np.all(e == e[0]):
-        return watershed_moment_type, [], []
-
-    if np.any(e == 0):
-        watershed_moment_type |= WatershedMomentType.CONTINUE
-
-    if np.any(e == 1):
-        watershed_moment_type |= WatershedMomentType.WON
-
-    if np.any(e == -1):
-        watershed_moment_type |= WatershedMomentType.LOST
-
-    return watershed_moment_type, valid_actions[e < 0], valid_actions[e > 0]
-
-
-def find_watershed_moments(player1, player2, color1, color2, actions, print_info=False):
-    state1 = game.SimulationState(color1, root_player=1)
-    state2 = game.SimulationState(color2, root_player=-1)
-
-    player1.init_state(state1)
-    player2.init_state(state2)
-
-    player = 1
-
-    selected_won_move = []
-    selected_lst_move = []
-
-    for log_action in actions:
-        flags, lst_moves, won_moves = func(state1, state2, player)
-
-        if flags != WatershedMomentType.NONE:
-            if player == 1:
-                player_action = player1.select_next_action()
-            else:
-                player_action = player2.select_next_action()
-
-            if print_info:
-                print()
-                print("player: ", player)
-                print("action: ", player_action)
-                print("won_move", won_moves)
-                print("lst_move", lst_moves)
-                print(state_to_str_objectively(state1.pieces_p, color1, state2.pieces_p, color2, colored=True))
-
-            if WatershedMomentType.WON in flags:
-                selected_won_move.append(player_action in won_moves)
-
-            if WatershedMomentType.LOST in flags:
-                selected_lst_move.append(player_action in lst_moves)
-
-            # break
-
-        player1.apply_action(log_action, player, state2.color_p)
-        player2.apply_action(log_action, player, state1.color_p)
-
-        player = -player
-
-        if state1.is_done or state2.is_done or (log_action in won_moves) or (log_action in lst_moves):
-            break
-
-    return sum(selected_won_move), len(selected_won_move), sum(selected_lst_move), len(selected_lst_move)
 
 
 def state_to_str_objectively(
@@ -139,6 +35,26 @@ def state_to_str_objectively(
     n_cap_r = np.sum((pos_o == game.CAPTURED) & (color_o == game.RED))
 
     lines.append(f"blue={n_cap_b} red={n_cap_r}")
+
+    if concat_line:
+        return "\r\n".join(lines)
+    else:
+        return lines
+
+
+def states_to_str(
+    states: list[game.SimulationState],
+    predicted_colors: list[np.ndarray],
+    true_colors: list[np.ndarray] = None,
+    colored: bool = False,
+    concat_line=True
+) -> str | list[str]:
+    lines_list = [
+        state_to_str(s, p, c, colored, concat_line=False)
+        for s, p, c in zip(states, predicted_colors, true_colors)
+    ]
+
+    lines = [" ".join(line) for line in zip(*lines_list)]
 
     if concat_line:
         return "\r\n".join(lines)
