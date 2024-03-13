@@ -1,7 +1,5 @@
-import time
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import List, Tuple
 
 import numpy as np
 
@@ -51,96 +49,129 @@ class Afterstate:
     piece_id: int
 
 
-class SimulationState:
-    def __init__(self, color: np.ndarray):
-        self.pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
-        self.pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
+@dataclass
+class StepResult:
+    tokens: list[list[int]]
+    afterstates: list[Afterstate]
+    winner: int
+    win_type: WinType
 
-        self.color_p = color
-        self.color_o = np.array([UNCERTAIN_PIECE]*8, dtype=np.int16)
 
-        self.escape_pos_p = ESCAPE_POS_P
-        self.escape_pos_o = ESCAPE_POS_O
+POS_P = 0
+POS_O = 1
+COL_P = 2
+COL_O = 3
 
-        self.is_done = False
-        self.winner = 0
-        self.win_type: WinType = WinType.DRAW
-        self.n_ply = 0
 
-    def create_init_tokens(self, first_action: int = None):
-        if first_action is not None:
-            p_id, d = action_to_id(first_action)
+@dataclass
+class State:
+    # shape: [4, 8]
+    board: np.ndarray
+    n_ply: int
 
-            pos = self.pieces_p[p_id]
-            pos_next = pos + d
-            self.pieces_p[p_id] = pos_next
+    @staticmethod
+    def create(color: np.ndarray) -> "State":
+        pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
+        pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
 
-        return [[self.color_p[i], i, self.pieces_p[i] % 6, self.pieces_p[i] // 6, 0] for i in range(8)]
+        color_p = color.astype(np.int16)
+        color_o = np.array([UNCERTAIN_PIECE]*8, dtype=np.int16)
 
-    def step_afterstate(self, afterstate: Afterstate, color: int) -> List[List[int]]:
-        self.color_o[afterstate.piece_id] = color
+        board = np.stack([pieces_p, pieces_o, color_p, color_o])
+
+        return State(board, 0)
+
+    def create_init_tokens(self):
+        return [[self.board[COL_P, i], i, self.board[POS_P, i] % 6, self.board[POS_P, i] // 6, 0] for i in range(8)]
+
+    @staticmethod
+    def is_done_caused_by_capturing(board: np.ndarray) -> tuple[int, WinType]:
+        if 4 <= np.sum(board[POS_P][board[COL_P] == BLUE] == CAPTURED):
+            return -1, WinType.BLUE_4
+
+        if 4 <= np.sum(board[POS_P][board[COL_P] == RED] == CAPTURED):
+            return 1, WinType.RED_4
+
+        if 4 <= np.sum(board[POS_O][board[COL_O] == BLUE] == CAPTURED):
+            return 1, WinType.BLUE_4
+
+        if 4 <= np.sum(board[POS_O][board[COL_O] == RED] == CAPTURED):
+            return -1, WinType.RED_4
+
+        return 0, WinType.DRAW
+
+    def step_afterstate(self, afterstate: Afterstate, color: int) -> tuple["State", StepResult]:
+        next_board = self.board.copy()
+
+        next_board[COL_O, afterstate.piece_id] = color
 
         if afterstate.type == AfterstateType.CAPTURING:
-            self.update_is_done_caused_by_capturing()
+            winner, win_type = State.is_done_caused_by_capturing(next_board)
 
-            return [(
+            tokens = [(
                 color + 2,
                 afterstate.piece_id + 8,
                 6, 6, self.n_ply
             )]
 
+            return (
+                State(next_board, self.n_ply),
+                StepResult(tokens, [], winner, win_type)
+            )
+
         elif afterstate.type == AfterstateType.ESCAPING:
             if color == BLUE:
-                self.is_done = True
-                self.winner = -1
-                self.win_type = WinType.ESCAPE
+                winner = -1
+                win_type = WinType.ESCAPE
+            else:
+                winner = 0
+                win_type = WinType.DRAW
 
-            pos = self.pieces_o[afterstate.piece_id]
+            pos = next_board[POS_O, afterstate.piece_id]
 
-            return [(
+            tokens = [(
                 4,
                 afterstate.piece_id + 8,
                 pos % 6,
                 pos // 6,
                 self.n_ply
             )]
+            # tokens = []
 
-    def undo_step_afterstate(self, afterstate: Afterstate):
-        self.color_o[afterstate.piece_id] = UNCERTAIN_PIECE
+            return (
+                State(next_board, self.n_ply),
+                StepResult(tokens, [], winner, win_type)
+            )
 
-        self.is_done = False
-        self.win_type = WinType.DRAW
-        self.winner = 0
-
-    def step(self, action: int, player: int) -> Tuple[List[List[int]], List[Afterstate]]:
+    def step(self, action: int, player: int) -> tuple["State", StepResult]:
         if player == 1:
             return self.step_p(action)
         else:
             return self.step_o(action)
 
-    def step_p(self, action: int) -> Tuple[List[List[int]], List[Afterstate]]:
-        self.n_ply += 1
+    def step_p(self, action: int) -> tuple["State", StepResult]:
+        next_board = self.board.copy()
 
         p_id, d = action_to_id(action)
 
-        pos = self.pieces_p[p_id]
+        pos = next_board[POS_P, p_id]
         pos_next = pos + d
 
-        p_cap_id = np.where(self.pieces_o == pos_next)[0]
+        p_cap_id = np.where(next_board[POS_O] == pos_next)[0]
 
         afterstates = []
 
         tokens = [[
-            self.color_p[p_id],
+            next_board[COL_P, p_id],
             p_id,
             pos_next % 6,
             pos_next // 6,
-            self.n_ply]]
+            self.n_ply + 1]]
 
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
-            self.pieces_o[p_cap_id] = CAPTURED
-            color = self.color_o[p_cap_id]
+            next_board[POS_O, p_cap_id] = CAPTURED
+            color = next_board[COL_O, p_cap_id]
 
             if color == UNCERTAIN_PIECE:
                 afterstates.append(Afterstate(AfterstateType.CAPTURING, p_cap_id))
@@ -148,133 +179,71 @@ class SimulationState:
             elif color == RED or color == BLUE:
                 tokens.append([
                     color + 2, p_cap_id + 8,
-                    6, 6, self.n_ply])
+                    6, 6, self.n_ply + 1])
 
-        self.pieces_p[p_id] = pos_next
+        next_board[POS_P, p_id] = pos_next
 
-        self.update_is_done_caused_by_capturing()
+        winner, win_type = State.is_done_caused_by_capturing(next_board)
 
-        escaped = (self.pieces_o == self.escape_pos_o[0]) | (self.pieces_o == self.escape_pos_o[1])
-        escaped_u = escaped & (self.color_o == UNCERTAIN_PIECE)
+        if winner == 0:
+            escaped = (next_board[POS_O] == ESCAPE_POS_O[0]) | (next_board[POS_O] == ESCAPE_POS_O[1])
+            escaped_u = escaped & (next_board[COL_O] == UNCERTAIN_PIECE)
 
-        if np.any(escaped_u):
-            escaped_u_id = np.where(escaped_u)[0][0]
-            afterstates.append(Afterstate(AfterstateType.ESCAPING, escaped_u_id))
+            if np.any(escaped_u):
+                escaped_u_id = np.where(escaped_u)[0][0]
+                afterstates.append(Afterstate(AfterstateType.ESCAPING, escaped_u_id))
 
-        escaped_b = escaped & (self.color_o == BLUE)
-        if np.any(escaped_b):
-            self.is_done = True
-            self.winner = -1
-            self.win_type = WinType.ESCAPE
+            escaped_b = escaped & (next_board[COL_O] == BLUE)
 
-        return tokens, afterstates
+            if np.any(escaped_b):
+                winner = -1
+                win_type = WinType.ESCAPE
 
-    def step_o(self, action: int) -> Tuple[List[List[int]], List[Afterstate]]:
-        self.n_ply += 1
+        return (
+            State(next_board, self.n_ply + 1),
+            StepResult(tokens, afterstates, winner, win_type)
+        )
+
+    def step_o(self, action: int) -> tuple["State", StepResult]:
+        next_board = self.board.copy()
 
         p_id, d = action_to_id(action)
 
-        pos = self.pieces_o[p_id]
+        pos = next_board[POS_O, p_id]
         pos_next = pos + d
 
-        p_cap_id = np.where(self.pieces_p == pos_next)[0]
+        p_cap_id = np.where(next_board[POS_P] == pos_next)[0]
 
         tokens = [[
             4, p_id + 8,
             pos_next % 6,
             pos_next // 6,
-            self.n_ply]]
+            self.n_ply + 1 if self.n_ply > 0 else 2]]
 
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
-            self.pieces_p[p_cap_id] = CAPTURED
+            next_board[POS_P, p_cap_id] = CAPTURED
 
             tokens.append([
-                self.color_p[p_cap_id], p_cap_id,
-                6, 6, self.n_ply])
+                next_board[COL_P, p_cap_id], p_cap_id,
+                6, 6, self.n_ply + 1])
 
-        self.pieces_o[p_id] = pos_next
+        next_board[POS_O, p_id] = pos_next
 
-        self.update_is_done_caused_by_capturing()
+        winner, win_type = State.is_done_caused_by_capturing(next_board)
 
-        escaped = (self.pieces_p == self.escape_pos_p[0]) | (self.pieces_p == self.escape_pos_p[1])
-        escaped = escaped & (self.color_p == BLUE)
+        if winner != 0:
+            escaped = (next_board[POS_P] == ESCAPE_POS_P[0]) | (next_board[POS_P] == ESCAPE_POS_P[1])
+            escaped = escaped & (next_board[COL_P] == BLUE)
 
-        if np.any(escaped):
-            self.is_done = True
-            self.winner = 1
-            self.win_type = WinType.ESCAPE
+            if np.any(escaped):
+                winner = 1
+                win_type = WinType.ESCAPE
 
-        return tokens, []
-
-    def update_is_done_caused_by_capturing(self):
-        if 4 <= np.sum(self.pieces_p[self.color_p == BLUE] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.BLUE_4
-            self.winner = -1
-            return
-
-        if 4 <= np.sum(self.pieces_p[self.color_p == RED] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.RED_4
-            self.winner = 1
-            return
-
-        if 4 <= np.sum(self.pieces_o[self.color_o == BLUE] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.BLUE_4
-            self.winner = 1
-            return
-
-        if 4 <= np.sum(self.pieces_o[self.color_o == RED] == CAPTURED):
-            self.is_done = True
-            self.win_type = WinType.RED_4
-            self.winner = -1
-            return
-
-        self.is_done = False
-        self.win_type = WinType.DRAW
-        self.winner = 0
-
-    def undo_step(self, action: int, player: int,
-                  tokens: List[List[int]],
-                  info: Afterstate):
-
-        if player == 1:
-            self.undo_step_p(action, tokens, info)
-        else:
-            self.undo_step_o(action, tokens)
-
-    def undo_step_p(self, action: int, tokens: List[List[int]], info: List[Afterstate]):
-        p_id, d = action_to_id(action)
-
-        pos_next = self.pieces_p[p_id]
-        self.pieces_p[p_id] = pos_next - d
-
-        if len(info) > 0 and info[0].type == AfterstateType.CAPTURING:
-            self.pieces_o[info[0].piece_id] = pos_next
-
-        if len(tokens) == 2:
-            p_cap_id = tokens[1][Token.ID] - 8
-            self.pieces_o[p_cap_id] = pos_next
-
-        self.n_ply -= 1
-        self.is_done = False
-        self.winner = 0
-
-    def undo_step_o(self, action: int, tokens: List[List[int]]):
-        p_id, d = action_to_id(action)
-
-        pos_next = self.pieces_o[p_id]
-        self.pieces_o[p_id] = pos_next - d
-
-        if len(tokens) == 2:
-            p_cap_id = tokens[1][Token.ID]
-            self.pieces_p[p_cap_id] = pos_next
-
-        self.n_ply -= 1
-        self.is_done = False
-        self.winner = 0
+        return (
+            State(next_board, self.n_ply + 1 if self.n_ply > 0 else 2),
+            StepResult(tokens, [], winner, win_type)
+        )
 
 
 def create_random_color() -> np.ndarray:
@@ -285,12 +254,12 @@ def create_random_color() -> np.ndarray:
     return color
 
 
-def get_initial_state_pair() -> Tuple[SimulationState, SimulationState]:
+def get_initial_state_pair() -> tuple[State, State]:
     color_p = create_random_color()
     color_o = create_random_color()
 
-    state_p = SimulationState(color_p)
-    state_o = SimulationState(color_o)
+    state_p = State.create(color_p)
+    state_o = State.create(color_o)
 
     return state_p, state_o
 
@@ -311,11 +280,11 @@ def action_to_pos(action):
     return pos, pos + d
 
 
-def get_valid_actions_mask(state: SimulationState, player: int):
+def get_valid_actions_mask(state: State, player: int):
     if player == 1:
-        pieces = state.pieces_p
+        pieces = state.board[POS_P]
     else:
-        pieces = state.pieces_o
+        pieces = state.board[POS_O]
 
     pos = np.stack([pieces]*4, axis=1)
 
@@ -333,47 +302,8 @@ def get_valid_actions_mask(state: SimulationState, player: int):
     return within_board & is_not_player_piece
 
 
-def get_valid_actions(state: SimulationState, player: int):
+def get_valid_actions(state: State, player: int):
     mask = get_valid_actions_mask(state, player)
     moves = np.where(mask)[0]
 
     return moves
-
-
-def test_moves():
-    state1, state2 = get_initial_state_pair()
-
-    player = 1
-
-    while not state1.is_done:
-        moves = get_valid_actions(state1, player)
-
-        move = np.random.choice(moves)
-
-        state1.step(move, player)
-        state2.step(move, -player)
-
-        board = np.zeros(36, dtype=np.int8)
-
-        board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 1)]] = 1
-        board[state1.pieces_p[(state1.pieces_p >= 0) & (state1.color_p == 0)]] = 2
-        board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 1)]] = 1
-        board[state2.pieces_p[(state2.pieces_p >= 0) & (state2.color_p == 0)]] = 2
-
-        print(str(board.reshape((6, 6))).replace('0', ' '))
-        print(state1.n_ply)
-
-        player = -player
-
-    print(f"winner: {state1.winner}")
-
-
-if __name__ == "__main__":
-    np.random.seed(12)
-
-    start = time.perf_counter()
-    for i in range(1):
-        test_moves()
-    end = time.perf_counter()
-
-    print(f"time: {end - start}")

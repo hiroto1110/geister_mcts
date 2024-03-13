@@ -295,7 +295,7 @@ int calc_min_distance(vector<ulong>* distance_mask, ulong pieces) {
 	return 6;
 }
 
-bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* action, int* distance, ulong* escaped_mask) {
+bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* action, int* distance, ulong* escaped_mask, bool* is_tension_state) {
 	vector<ulong>* masks = &search->escape_distance_mask_p[i];
 
 	int distance_p_b = calc_min_distance(masks, b->p_b);
@@ -303,6 +303,11 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* ac
 	int distance_o = calc_min_distance(masks, b->o_b | b->o_r | b->o_u);
 
 	int offset = player == 1 ? 0 : -1;
+
+	if(distance_p_b == distance_o + offset) {
+		*is_tension_state = true;
+		return false;
+	}
 
 	if(distance_p_b < distance_o + offset && distance_p_b <= distance_p_r) {
 		*distance = distance_p_b;
@@ -332,15 +337,19 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int i, int* ac
 	return false;
 }
 
-bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, int* distance, ulong* escaped_mask) {
+bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, int* distance, ulong* escaped_mask, bool* is_tension_state) {
 	int d1 = 6, d2 = 6;
 	int a1 = 0, a2 = 0;
 	ulong m1 = 0, m2 = 0;
-	bool esc1 = is_escaped_root_p(search, b, player, 0, &a1, &d1, &m1);
-	bool esc2 = is_escaped_root_p(search, b, player, 1, &a2, &d2, &m2);
+	bool t1 = false, t2 = false;
+	bool esc1 = is_escaped_root_p(search, b, player, 0, &a1, &d1, &m1, &t1);
+	bool esc2 = is_escaped_root_p(search, b, player, 1, &a2, &d2, &m2, &t2);
 
-	if (!esc1 && !esc2)
+	*is_tension_state = t1 || t2;
+
+	if (!esc1 && !esc2) {
 		return false;
+	}
 
 	if(d1 < d2) {
 		*distance = d1;
@@ -355,7 +364,7 @@ bool is_escaped_root_p(SearchParam* search, Board* b, int player, int* action, i
 	return true;
 }
 
-bool is_escaped_root_o(SearchParam* search, Board* b, int player, int i, int* action, int* distance, ulong* escaped_mask) {
+bool is_escaped_root_o(SearchParam* search, Board* b, int player, int i, int* action, int* distance, ulong* escaped_mask, bool* is_tension_state) {
 	vector<ulong>* masks = &search->escape_distance_mask_o[i];
 
 	int distance_p = calc_min_distance(masks, b->p_b | b->p_r);
@@ -363,6 +372,11 @@ bool is_escaped_root_o(SearchParam* search, Board* b, int player, int i, int* ac
 	int distance_or = calc_min_distance(masks, b->o_r);
 
 	int offset = player == -1 ? 0 : -1;
+
+	if(distance_ob == distance_p + offset) {
+		*is_tension_state = true;
+		return false;
+	}
 
 	if(distance_ob < distance_p + offset && distance_ob <= distance_or) {
 		*distance = distance_ob;
@@ -392,15 +406,19 @@ bool is_escaped_root_o(SearchParam* search, Board* b, int player, int i, int* ac
 	return false;
 }
 
-bool is_escaped_root_o(SearchParam* search, Board* b, int player, int* action, int* distance, ulong* escaped_mask) {
+bool is_escaped_root_o(SearchParam* search, Board* b, int player, int* action, int* distance, ulong* escaped_mask, bool* is_tension_state) {
 	int d1 = 6, d2 = 6;
 	int a1 = 0, a2 = 0;
 	ulong m1 = 0, m2 = 0;
-	bool esc1 = is_escaped_root_o(search, b, player, 0, &a1, &d1, &m1);
-	bool esc2 = is_escaped_root_o(search, b, player, 1, &a2, &d2, &m2);
+	bool t1 = false, t2 = false;
+	bool esc1 = is_escaped_root_o(search, b, player, 0, &a1, &d1, &m1, &t1);
+	bool esc2 = is_escaped_root_o(search, b, player, 1, &a2, &d2, &m2, &t2);
 
-	if (!esc1 && !esc2)
+	*is_tension_state = t1 || t2;
+
+	if (!esc1 && !esc2) {
 		return false;
+	}
 
 	if(d1 < d2) {
 		*distance = d1;
@@ -419,10 +437,14 @@ bool is_escaped_root(SearchParam* search, Board* b, int player, int* winner, int
 	int d1 = 6, d2 = 6;
 	int a1 = 0, a2 = 0;
 	ulong m1 = 0, m2 = 0;
-	bool esc1 = is_escaped_root_p(search, b, player, &a1, &d1, &m1);
-	bool esc2 = is_escaped_root_o(search, b, player, &a2, &d2, &m2);
+	bool t1 = false, t2 = false;
+	bool esc1 = is_escaped_root_p(search, b, player, &a1, &d1, &m1, &t1);
+	bool esc2 = is_escaped_root_o(search, b, player, &a2, &d2, &m2, &t2);
 
 	if (!esc1 && !esc2)
+		return false;
+
+	if (t1 || t2)
 		return false;
 	
 	if (player == 1) {
@@ -615,6 +637,7 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 	int escaped_root_e = 0;
 
 	if (is_escaped_root(search, board, player, &winner, max_action, &escaped_root_depth, escaped_mask)) {
+		// cout << "root: " << winner << ", " << escaped_root_depth << endl;
 		escaped_root_e = winner * (EVAL_OFFSET + depth - escaped_root_depth);
 
 		if(winner != 0 && escaped_root_depth == 0)
@@ -657,6 +680,12 @@ int solve_root(SearchParam* search, Board* board, int alpha, int beta, int playe
 				}
 
 				result = solve(search, next_board, -beta, -alpha, -player, depth - 1);
+
+				/*cout << "alpha, beta: " << alpha << ", " << beta << endl;
+				cout << "player: " << player << endl;
+				cout << "eval: " << result.eval << endl;
+				cout << "cause: " << tzcnt(result.cause_piece_mask) << ", " << result.cause_piece_color << endl;
+				cout << b_to_string(next_board) << endl;*/
 
 				if(abs(escaped_root_e_i) > abs(result.eval)) {
 					result.eval = escaped_root_e_i;

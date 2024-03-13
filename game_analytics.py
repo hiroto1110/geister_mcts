@@ -63,7 +63,7 @@ def states_to_str(
 
 
 def state_to_str(
-    state: game.SimulationState,
+    state: game.State,
     predicted_color: np.ndarray,
     true_color: np.ndarray = None,
     colored: bool = False,
@@ -74,7 +74,7 @@ def state_to_str(
     color_int = np.clip(color_int, 0, 9)
 
     if true_color is None:
-        true_color = state.color_o
+        true_color = state.board[game.COL_O]
 
     if colored:
         B_str = termcolor.colored('B', color='blue')
@@ -89,15 +89,15 @@ def state_to_str(
 
     line = [" " for _ in range(36)]
     for i in range(8):
-        pos = state.pieces_p[i]
-        color = state.color_p[i]
+        pos = state.board[game.POS_P, i]
+        color = state.board[game.COL_P, i]
         if 0 <= pos < 36:
             if color == game.BLUE:
                 line[pos] = B_str
             else:
                 line[pos] = R_str
 
-        pos = state.pieces_o[i]
+        pos = state.board[game.POS_O, i]
         color = true_color[i]
 
         if 0 <= pos < 36:
@@ -110,8 +110,8 @@ def state_to_str(
 
     lines = ["|" + "  ".join(line[i*6: (i+1)*6]) + "|" for i in range(6)]
 
-    n_cap_b = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.BLUE))
-    n_cap_r = np.sum((state.pieces_o == game.CAPTURED) & (state.color_o == game.RED))
+    n_cap_b = np.sum((state.board[game.POS_O] == game.CAPTURED) & (state.board[game.COL_O] == game.BLUE))
+    n_cap_r = np.sum((state.board[game.POS_O] == game.CAPTURED) & (state.board[game.COL_O] == game.RED))
 
     lines.append(f"blue={n_cap_b} red={n_cap_r}")
 
