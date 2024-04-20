@@ -333,7 +333,7 @@ def try_expand_checkmate(
     return True, next_node, v
 
 
-def find_checkmate(state: game.State, player: int, depth: int):
+def find_checkmate(state: game.State, player: int, depth: int) -> tuple[int, int, int]:
     return checkmate_lib.find_checkmate(
         state.board[game.POS_P], state.board[game.COL_P],
         state.board[game.POS_O], state.board[game.COL_O],
@@ -520,8 +520,6 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
             player_state.node, state, self.get_pred_state(), self.mcts_params,
             pieces_history=np.array(player_state.pieces_history, dtype=np.int16)
         )
-
-        print(result)
 
         return result
 
