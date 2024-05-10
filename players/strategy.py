@@ -1,26 +1,50 @@
+import enum
 import numpy as np
 
 from base import PlayerBase
-from env.state import State, CAPTURED, BLUE, RED, POS_P, POS_O, COL_P, COL_O
+from env.state import State
+from env.checkmate import find_checkmate
+import env.state as game
+
+
+class ResultType(enum.Flag):
+    NONE = enum.auto()
+    ESC = enum.auto()
+    BLUE = enum.auto()
+    RED = enum.auto()
+
+    @classmethod
+    def from_win_type(t: game.WinType) -> "ResultType":
+        if t == game.WinType.ESCAPE:
+            return ResultType.ESC
+        if t == game.WinType.BLUE_4:
+            return ResultType.BLUE
+        if t == game.WinType.RED_4:
+            return ResultType.RED
 
 
 class StrategyPlayer(PlayerBase):
     strategy: np.ndarray
 
-    def get_cap_prob(self, state: State):
-        b = state.board
+    def search(self, state: State, player: int, depth: int) -> ResultType:
+        if depth == 0:
+            return ResultType.NONE
 
-        cap_p_b = np.sum((b[POS_P] == CAPTURED) * (b[COL_P] == BLUE))
-        cap_p_r = np.sum((b[POS_P] == CAPTURED) * (b[COL_P] == RED))
-        cap_o_b = np.sum((b[POS_O] == CAPTURED) * (b[COL_O] == BLUE))
-        cap_o_r = np.sum((b[POS_O] == CAPTURED) * (b[COL_O] == RED))
+        actions = game.get_valid_actions(state, player)
 
-        n = np.array([cap_p_b, cap_p_r, cap_o_b, cap_o_r], dtype=np.uint8)
-        n = np.clip(n, 0, 1)
+        for action in actions:
+            next_state, result = state.step(action, player)
 
-        s = self.strategy[:16].reshape(2, 2, 2, 2)
+            if result.winner < 0:
+                return ResultType.from_win_type(result.win_type)
 
-        return s[tuple(n)]
+            result = find_checkmate(next_state, -player, depth=5)
+
+            if result.eval < 0:
+                return ResultType.ESC
+
+            return self.search(next_state, -player, depth - 1)
+
 
     def select_action(self):
         pass

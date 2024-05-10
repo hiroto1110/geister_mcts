@@ -11,7 +11,7 @@ import flax.linen as nn
 from graphviz import Digraph
 
 import env.state as game
-import env.lib.checkmate_lib as checkmate_lib
+from env.checkmate import find_checkmate
 
 import game_analytics
 from network.transformer import TransformerWithCache
@@ -317,28 +317,19 @@ def try_expand_checkmate(
     pred_state: PredictState,
     params: SearchParameters
 ) -> tuple[bool, Node, float]:
+    result = find_checkmate(state, player, depth=params.depth_search_checkmate_leaf)
 
-    action, e, escaped_id = find_checkmate(state, player, depth=params.depth_search_checkmate_leaf)
-
-    if e > 0:
+    if result.eval > 0:
         next_node = EndNode(state, winner=1, win_type=game.WinType.ESCAPE)
         return True, next_node, 1
 
-    if e == 0 or escaped_id == -1:
+    if result.eval == 0 or result.escaped_id == -1:
         return False, None, 0
 
-    afterstate = game.Afterstate(game.AfterstateType.ESCAPING, escaped_id)
+    afterstate = game.Afterstate(game.AfterstateType.ESCAPING, result.escaped_id)
     next_node, v = expand(node, tokens, [afterstate], state, pred_state, params)
 
     return True, next_node, v
-
-
-def find_checkmate(state: game.State, player: int, depth: int) -> tuple[int, int, int]:
-    return checkmate_lib.find_checkmate(
-        state.board[game.POS_P], state.board[game.COL_P],
-        state.board[game.POS_O], state.board[game.COL_O],
-        player, 1, depth
-    )
 
 
 def create_invalid_actions(actions, state: game.State, pieces_history: np.ndarray, max_duplicates=0):
@@ -378,22 +369,33 @@ def select_action_with_mcts(
     params: SearchParameters,
     pieces_history: np.ndarray = None
 ) -> ActionSelectionResultMCTS:
-
     start_t = time.perf_counter()
 
     if state.n_ply <= 6:
         node.setup_valid_actions(state, 1)
         return ActionSelectionResultMCTS(np.random.choice(node.valid_actions), 0, -1, 0, -1)
 
-    action, e, escaped_id = find_checkmate(state, 1, depth=params.depth_search_checkmate_root)
+    result = find_checkmate(state, 1, depth=params.depth_search_checkmate_root)
 
-    if e > 0:
-        return ActionSelectionResultMCTS(action, 0, action, e, escaped_id)
+    if result.eval > 0:
+        return ActionSelectionResultMCTS(
+            result.action,
+            0,
+            result.action,
+            result.eval,
+            result.escaped_id
+        )
         # print(f"find checkmate: ({e}, {action}, {escaped_id}), {state.pieces_o}")
 
     if time.perf_counter() - start_t > params.time_limit:
         node.setup_valid_actions(state, 1)
-        return ActionSelectionResultMCTS(np.random.choice(node.valid_actions), 0, action, e, escaped_id)
+        return ActionSelectionResultMCTS(
+            np.random.choice(node.valid_actions),
+            0,
+            result.action,
+            result.eval,
+            result.escaped_id
+        )
 
     node.setup_valid_actions(state, 1)
 
@@ -435,7 +437,7 @@ def select_action_with_mcts(
         policy = node.get_policy()
         action = np.random.choice(range(len(policy)), p=policy)
 
-    return ActionSelectionResultMCTS(action, i, action, e, escaped_id)
+    return ActionSelectionResultMCTS(action, i, action, result.eval, result.escaped_id)
 
 
 def create_memory(node: Node, pred_state: PredictState) -> jnp.ndarray:
