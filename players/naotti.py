@@ -1,9 +1,10 @@
+from dataclasses import dataclass
+
 import numpy as np
 
-from players.config import PlayerNaotti2020Config
-from players.base import PlayerBase
-from env.state import SimulationState
-import env.naotti2020 as naotti2020
+from players.base import PlayerBase, PlayerConfig
+from env.state import State
+import env.lib.naotti2020 as naotti2020
 import gat.server_util
 
 
@@ -14,16 +15,7 @@ class PlayerNaotti2020(PlayerBase):
         self.num_random_ply = num_random_ply
         self.print_log = print_log
 
-    @classmethod
-    def from_config(cls, config: PlayerNaotti2020Config, project_dir: str) -> "PlayerNaotti2020":
-        return PlayerNaotti2020(
-            depth_min=config.depth_min,
-            depth_max=config.depth_max,
-            num_random_ply=config.num_random_ply,
-            print_log=config.print_log,
-        )
-
-    def init_state(self, state: SimulationState):
+    def init_state(self, state: State):
         self.state = state
         self.turn_count = 0
 
@@ -48,3 +40,19 @@ class PlayerNaotti2020(PlayerBase):
         self.turn_count += 2
 
         return action
+
+
+@dataclass
+class PlayerNaotti2020Config(PlayerConfig[PlayerNaotti2020]):
+    depth_min: int
+    depth_max: int
+    num_random_ply: int
+    print_log: bool = False
+
+    def create_player(self, project_dir: str) -> PlayerNaotti2020:
+        return PlayerNaotti2020(
+            depth_min=self.depth_min,
+            depth_max=self.depth_max,
+            num_random_ply=self.num_random_ply,
+            print_log=self.print_log,
+        )

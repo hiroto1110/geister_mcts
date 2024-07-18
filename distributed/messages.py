@@ -6,7 +6,7 @@ from distributed.config import RunConfig
 from distributed.communication import SerdeJsonSerializable
 
 from network.checkpoints import Checkpoint
-from players.config import PlayerConfig
+from players.base import PlayerConfig
 
 
 @dataclass(frozen=True)

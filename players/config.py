@@ -2,8 +2,6 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from distributed.communication import SerdeJsonSerializable
-
 
 @dataclass
 class SearchParameters:
@@ -18,6 +16,7 @@ class SearchParameters:
     depth_search_checkmate_leaf: int = 4
     value_weight: np.ndarray = np.array([-1, -1, -1, 0, 1, 1, 1])
     time_limit: float = 10
+    test_c: bool = False
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -66,6 +65,7 @@ class SearchParametersRange:
     depth_search_checkmate_root: IntRange = IntRange(7, 7)
     depth_search_checkmate_leaf: IntRange = IntRange(4, 4)
     value_weight: VectorRange = VectorRange(np.array([-1, -1, -1, 0, 1, 1, 1]), np.array([-1, -1, -1, 0, 1, 1, 1]))
+    test_c: bool = False
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -83,38 +83,6 @@ class SearchParametersRange:
             depth_search_checkmate_root=self.depth_search_checkmate_root.sample(),
             depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.sample(),
             value_weight=self.value_weight.sample(),
+            test_c=self.test_c,
             visibilize_node_graph=self.visibilize_node_graph
         )
-
-
-@dataclass
-class PlayerConfig(SerdeJsonSerializable):
-    def get_name(self) -> str:
-        pass
-
-
-@dataclass
-class PlayerRandomConfig(SerdeJsonSerializable):
-    def get_name(self) -> str:
-        return "random"
-
-
-@dataclass
-class PlayerNaotti2020Config(PlayerConfig):
-    depth_min: int
-    depth_max: int
-    num_random_ply: int
-    print_log: bool
-
-    def get_name(self) -> str:
-        return "Naotti2020"
-
-
-@dataclass
-class PlayerMCTSConfig(PlayerConfig):
-    name: str
-    step: int
-    mcts_params: SearchParametersRange
-
-    def get_name(self) -> str:
-        return f"{self.name}-{self.step}"

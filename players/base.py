@@ -1,4 +1,3 @@
-from typing import Generic, TypeVar
 from dataclasses import dataclass
 
 import numpy as np
@@ -6,6 +5,7 @@ import numpy as np
 import env.state as game
 from env.state import State, WinType, get_initial_state_pair, get_valid_actions
 from game_analytics import states_to_str
+from distributed.communication import SerdeJsonSerializable
 import batch
 
 
@@ -19,28 +19,24 @@ class PlayerState:
     pass
 
 
-T_Result = TypeVar("T_Result", bound=ActionSelectionResult)
-T_State = TypeVar("T_State", bound=PlayerState)
-
-
 @dataclass(frozen=True)
-class PlayerBase(Generic[T_State, T_Result]):
+class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
     def select_first_action(self, state: State) -> int:
         return np.random.choice(get_valid_actions(state, player=1))
 
-    def init_state(self, state: game.State, prev_state: T_State = None) -> tuple[T_State, list[list[int]]]:
-        return T_State(), state.create_init_tokens()
+    def init_state(self, state: game.State, prev_state: S = None) -> tuple[S, list[list[int]]]:
+        return PlayerState(), state.create_init_tokens()
 
-    def select_next_action(self, state: State, player_state: T_State) -> T_Result:
+    def select_next_action(self, state: State, player_state: S) -> T:
         pass
 
     def apply_action(
         self,
         state: game.State,
-        player_state: T_State,
+        player_state: S,
         action: int, player: int,
         true_color_o: np.ndarray
-    ) -> tuple[T_State, game.State, list[list[int]], game.StepResult]:
+    ) -> tuple[S, game.State, list[list[int]], game.StepResult]:
 
         if player == -1:
             action = 31 - action
@@ -52,9 +48,18 @@ class PlayerBase(Generic[T_State, T_Result]):
             state, result = state.step_afterstate(afterstate, true_color_o[afterstate.piece_id])
             tokens += result.tokens
 
-        return PlayerState(), state, tokens, result
+        return player_state, state, tokens, result
 
-    def visualize_state(self, player_state: T_State, output_path: str):
+    def visualize_state(self, player_state: S, output_path: str):
+        pass
+
+
+@dataclass
+class PlayerConfig[T: PlayerBase](SerdeJsonSerializable):
+    def get_name(self) -> str:
+        pass
+
+    def create_player(self, project_dir: str) -> T:
         pass
 
 
@@ -104,11 +109,11 @@ class GameResult:
         )
 
 
-def play_game(
-    player1: PlayerBase[T_State, T_Result],
-    player2: PlayerBase[T_State, T_Result],
-    player_state1: T_State = None,
-    player_state2: T_State = None,
+def play_game[T: ActionSelectionResult, S: PlayerState](
+    player1: PlayerBase[T, S],
+    player2: PlayerBase[T, S],
+    player_state1: S = None,
+    player_state2: S = None,
     visualization_directory: str = None,
     game_length=200,
     print_board=False

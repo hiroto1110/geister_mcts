@@ -84,7 +84,7 @@ def get_length_of_one_sample(seq_len: int) -> int:
 
 
 def get_seq_len(length_of_one_sample: int) -> int:
-    assert (length_of_one_sample - 9) % 6 == 0
+    assert (length_of_one_sample - 9) % 6 == 0, f"{length_of_one_sample}"
     return (length_of_one_sample - 9) // 6
 
 

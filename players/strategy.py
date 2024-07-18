@@ -1,50 +1,225 @@
+from __future__ import annotations
+
 import enum
+import dataclasses
+import itertools
+
 import numpy as np
 
-from base import PlayerBase
+from players.base import PlayerBase, PlayerState, ActionSelectionResult, PlayerConfig
 from env.state import State
 from env.checkmate import find_checkmate
 import env.state as game
 
 
-class ResultType(enum.Flag):
-    NONE = enum.auto()
-    ESC = enum.auto()
-    BLUE = enum.auto()
-    RED = enum.auto()
+class GameResult(enum.IntFlag):
+    NONE = 0
+    WON_E = 2**0
+    WON_B = 2**1
+    WON_R = 2**2
+    LST_E = 2**3
+    LST_B = 2**4
+    LST_R = 2**5
 
     @classmethod
-    def from_win_type(t: game.WinType) -> "ResultType":
-        if t == game.WinType.ESCAPE:
-            return ResultType.ESC
-        if t == game.WinType.BLUE_4:
-            return ResultType.BLUE
-        if t == game.WinType.RED_4:
-            return ResultType.RED
+    def from_step_result(cls, result: game.StepResult) -> "GameResult":
+        if result.winner > 0:
+            if result.win_type == game.WinType.BLUE_4:
+                return GameResult.WON_B
+            if result.win_type == game.WinType.RED_4:
+                return GameResult.WON_R
+            if result.win_type == game.WinType.ESCAPE:
+                return GameResult.WON_E
+
+        if result.winner < 0:
+            if result.win_type == game.WinType.BLUE_4:
+                return GameResult.LST_B
+            if result.win_type == game.WinType.RED_4:
+                return GameResult.LST_R
+            if result.win_type == game.WinType.ESCAPE:
+                return GameResult.LST_E
+
+        return GameResult.NONE
 
 
-class StrategyPlayer(PlayerBase):
-    strategy: np.ndarray
+@dataclasses.dataclass(frozen=True)
+class PlayerStatisticsZ(PlayerBase):
+    z: np.ndarray
+    player: PlayerBase
+    checkmate_depth: int
 
-    def search(self, state: State, player: int, depth: int) -> ResultType:
+    def init_state(self, state: game.State, prev_state: PlayerState = None) -> tuple[PlayerState, list[list[int]]]:
+        return self.player.init_state(state, prev_state)
+
+    def apply_action(
+        self,
+        state: game.State,
+        player_state: PlayerState,
+        action: int, player: int,
+        true_color_o: np.ndarray
+    ) -> tuple[PlayerState, game.State, list[list[int]], game.StepResult]:
+        return self.player.apply_action(state, player_state, action, player, true_color_o)
+
+    def select_next_action(self, state: State, player_state: PlayerState) -> ActionSelectionResult:
+        action_dict = self.create_action_dict(state)
+
+        if len(action_dict.keys()) == 1:
+            return self.player.select_next_action(state, player_state)
+
+        flags = [int(flag) for flag in action_dict.keys()]
+
+        p = self.z[flags]
+        p = p / np.sum(p)
+        flag = np.random.choice(flags, p=p)
+
+        actions = action_dict[flag]
+
+        return self.player.select_next_action(state, player_state, actions)
+
+    def create_action_dict(self, state: State):
+        action_dict: dict[GameResult, list[int]] = {}
+
+        for action in game.get_valid_actions(state, player=1):
+            flag = self.search(state, player=1, action=action, depth=2)
+
+            if flag not in action_dict:
+                action_dict[flag] = []
+
+            action_dict[flag].append(action)
+
+        return action_dict
+
+    def search(self, state: State, player: int, action: int, depth: int) -> GameResult:
         if depth == 0:
-            return ResultType.NONE
+            return GameResult.NONE
 
-        actions = game.get_valid_actions(state, player)
+        next_state, a_result = state.step(action, player)
 
-        for action in actions:
-            next_state, result = state.step(action, player)
+        next_states: list[tuple[State, game.StepResult]] = []
 
-            if result.winner < 0:
-                return ResultType.from_win_type(result.win_type)
+        if len(a_result.afterstates) == 0:
+            next_states.append((next_state, a_result))
 
-            result = find_checkmate(next_state, -player, depth=5)
+        else:
+            for colors in itertools.product([game.BLUE, game.RED], repeat=len(a_result.afterstates)):
+                for i, color in enumerate(colors):
+                    next_state_i, a_result_i = next_state.step_afterstate(a_result.afterstates[i], color)
 
-            if result.eval < 0:
-                return ResultType.ESC
+                    if a_result_i.winner != 0:
+                        break
+                next_states.append((next_state_i, a_result_i))
 
-            return self.search(next_state, -player, depth - 1)
+        result = GameResult.NONE
+
+        for next_state_i, a_result_i in next_states:
+            if a_result_i.winner != 0:
+                result |= GameResult.from_step_result(a_result_i)
+            else:
+                c_result = find_checkmate(next_state_i, -player, depth=self.checkmate_depth)
+
+                if c_result.eval > 0:
+                    result |= GameResult.WON_E
+                    continue
+                if c_result.eval < 0:
+                    result |= GameResult.LST_E
+                    continue
+
+                if depth > 1:
+                    for next_action in game.get_valid_actions(next_state_i, -player):
+                        result |= self.search(next_state_i, -player, next_action, depth - 1)
+
+        return result
 
 
-    def select_action(self):
+@dataclasses.dataclass
+class StatisticsZFactory:
+    def create_z(self) -> np.ndarray:
         pass
+
+
+@dataclasses.dataclass
+class StatisticsZFactoryRandom:
+    def create_z(self) -> np.ndarray:
+        return np.random.random(2**6)
+
+
+@dataclasses.dataclass
+class PlayerStatisticsZConfig(PlayerConfig[PlayerStatisticsZ]):
+    z: StatisticsZFactory
+    player: PlayerConfig
+    checkmate_depth: int
+
+    def get_name(self) -> str:
+        return "Statistics"
+
+    def create_player(self, project_dir: str) -> PlayerStatisticsZ:
+        return PlayerStatisticsZ(
+            z=self.z.create_z(),
+            player=self.player.create_player(project_dir),
+            checkmate_depth=self.checkmate_depth
+        )
+
+
+def test_game():
+    from players.base import play_game
+    from players.mcts import SearchParameters, PlayerMCTS
+
+    np.random.seed(3)
+
+    mcts_params = SearchParameters(
+        num_simulations=100,
+        time_limit=20
+    )
+    from network.checkpoints import Checkpoint
+    ckpt = Checkpoint.from_json_file("./data/projects/run-7/main/600.json")
+
+    player_mcts = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
+
+    z = np.random.random(2**6)
+    z[8] = 0
+
+    player = PlayerStatisticsZ(
+        player=player_mcts,
+        z=z,
+        checkmate_depth=5
+    )
+
+    play_game(player, player, print_board=True)
+
+
+def test():
+    import game_analytics
+
+    state = State(
+        board=np.array([
+                [0, 13, 14, 17, -1, -1, -1, -1],
+                [19, 29, 30, 31, -1, -1, -1, -1],
+                [1, 0, 1, 1, 1, 0, 0, 0],
+                [2, 2, 2, 2, 1, 0, 0, 0]
+            ]),
+        n_ply=64
+    )
+
+    print(game_analytics.state_to_str(state, predicted_color=[5]*8, colored=True))
+
+    z = np.random.random(2**6)
+    z[8] = 0
+
+    player = PlayerStatisticsZ(
+        player=None,
+        z=z,
+        checkmate_depth=5
+    )
+
+    action_dict = player.create_action_dict(state)
+
+    for key in action_dict:
+        print(key, action_dict[key])
+        for action in action_dict[key]:
+            next_state, _ = state.step(action, player=1)
+            print(action)
+            print(game_analytics.state_to_str(next_state, predicted_color=[5]*8, colored=True))
+
+
+if __name__ == "__main__":
+    test_game()

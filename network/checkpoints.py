@@ -12,10 +12,16 @@ import jax
 from flax.core.frozen_dict import FrozenDict
 
 from distributed.communication import SerdeJsonSerializable
-from network.transformer import TransformerConfig
+from network.rmt import TransformerConfig
+from network.cnn import CNNConfig
+
+
+NetworkConfig = TransformerConfig | CNNConfig
 
 NAMEDTUPLE_FLAG = "__namedtuple__"
-NDARRAY_FLAG = "__ndarray__"
+NDARRAY_SHAPE = "__ndarray_shape__"
+NDARRAY_DTYPE = "__ndarray_dtype__"
+NDARRAY_BYTES = "__ndarray_bytes__"
 
 
 def post_converted_from_json(obj):
@@ -23,14 +29,14 @@ def post_converted_from_json(obj):
         return None
 
     if isinstance(obj, dict):
-        if NDARRAY_FLAG in obj and obj[NDARRAY_FLAG]:
-            shape = obj['shape']
-            dtype = obj['dtype']
+        if (NDARRAY_SHAPE in obj) and (NDARRAY_DTYPE in obj) and (NDARRAY_BYTES in obj):
+            shape = obj[NDARRAY_SHAPE]
+            dtype = obj[NDARRAY_DTYPE]
 
             if len(shape) > 0 and isinstance(shape[0], str):
                 shape = [int(s) for s in shape]
 
-            buffer_str: str = obj['bytes']
+            buffer_str: str = obj[NDARRAY_BYTES]
             buffer = base64.b64decode(buffer_str.encode('utf-8'))
 
             return np.frombuffer(buffer, dtype).reshape(shape)
@@ -61,10 +67,9 @@ def pre_converting_to_json(obj):
 
     if isinstance(obj, np.ndarray):
         return {
-            NDARRAY_FLAG: True,
-            'shape': obj.shape,
-            'dtype': str(obj.dtype),
-            'bytes': base64.b64encode(obj.tobytes()).decode('utf-8')
+            NDARRAY_SHAPE: obj.shape,
+            NDARRAY_DTYPE: str(obj.dtype),
+            NDARRAY_BYTES: base64.b64encode(obj.tobytes()).decode('utf-8')
         }
 
     return str(obj)
@@ -81,7 +86,7 @@ def deserialize_params(d):
 @dataclasses.dataclass
 class Checkpoint(SerdeJsonSerializable):
     step: int
-    model: TransformerConfig
+    model: NetworkConfig
     params: FrozenDict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
 
     def __post_init__(self):
@@ -96,7 +101,7 @@ class CheckpointManagerOptions:
 
 @dataclasses.dataclass
 class CheckpointManager:
-    def __init__(self, path: str, options: CheckpointManagerOptions = None) -> None:
+    def __init__(self, path: str, options: CheckpointManagerOptions | None = None) -> None:
         if not os.path.exists(path):
             os.makedirs(path)
 

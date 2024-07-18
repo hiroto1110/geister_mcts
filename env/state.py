@@ -56,6 +56,12 @@ class StepResult:
     winner: int
     win_type: WinType
 
+    def is_captured(self) -> bool:
+        for afterstate in self.afterstates:
+            if afterstate.type == AfterstateType.CAPTURING:
+                return True
+        return False
+
 
 POS_P = 0
 POS_O = 1
@@ -83,6 +89,12 @@ class State:
 
     def create_init_tokens(self):
         return [[self.board[COL_P, i], i, self.board[POS_P, i] % 6, self.board[POS_P, i] // 6, 0] for i in range(8)]
+
+    def num_captured_pieces(self, player: int, color: int):
+        if player == 1:
+            return np.sum(self.board[POS_P][self.board[COL_P] == color] == CAPTURED)
+        else:
+            return np.sum(self.board[POS_O][self.board[COL_O] == color] == CAPTURED)
 
     @staticmethod
     def is_done_caused_by_capturing(board: np.ndarray) -> tuple[int, WinType]:

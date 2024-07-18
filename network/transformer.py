@@ -1,7 +1,16 @@
+from __future__ import annotations
+
+from functools import partial
 import dataclasses
 import serde
-from jax import numpy as jnp
+
+import jax
+import optax
+from jax import random, numpy as jnp
 from flax import linen as nn
+
+from network.train_state import TrainStateBase
+from batch import astuple
 
 
 @serde.serde
@@ -10,7 +19,6 @@ class TransformerConfig:
     num_heads: int
     embed_dim: int
     num_hidden_layers: int
-    length_memory_block: int = 0
     max_n_ply: int = 201
 
     def create_model(self) -> 'Transformer':
@@ -169,45 +177,19 @@ class Transformer(nn.Module):
     def __hash__(self):
         return hash(self.config)
 
-    def has_memory_block(self):
-        return self.config.length_memory_block > 0
-
-    def create_zero_memory(self):
-        return jnp.zeros((self.config.length_memory_block, self.config.embed_dim))
-
     def setup(self):
         self.embeddings = Embeddings(self.config.embed_dim, max_n_ply=self.config.max_n_ply)
-
-        if self.has_memory_block():
-            self.read_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
-            self.write_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
 
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
                        for _ in range(self.config.num_hidden_layers)]
 
     @nn.compact
-    def __call__(self, x, read_memory=None, eval=True):
-        mem_len = self.config.length_memory_block
-
-        mask = mask = jnp.any(x != 0, axis=-1)
+    def __call__(self, x, eval=True):
+        mask = jnp.any(x != 0, axis=-1)
         x = self.embeddings(x, eval)
-
-        if self.has_memory_block():
-            write_memory = self.write_memory_embeddings(jnp.arange(mem_len))
-            write_memory = jnp.tile(write_memory, (x.shape[0], 1, 1))
-
-            if read_memory is None:
-                read_memory = jnp.zeros((x.shape[0], mem_len, self.config.embed_dim))
-
-            read_memory += self.read_memory_embeddings(jnp.arange(mem_len).reshape(1, -1))
-
-            x = jnp.concatenate([read_memory, x, write_memory], axis=1)
 
         # [Batch, 1, SeqLen, SeqLen]
         causal_mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
-
-        ones = jnp.ones((x.shape[0], mem_len))
-        mask = jnp.concatenate([ones, mask, ones], axis=1)
 
         mask = causal_mask * mask[:, jnp.newaxis, jnp.newaxis, :]
 
@@ -216,17 +198,11 @@ class Transformer(nn.Module):
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
-        if self.has_memory_block():
-            write_memory_out = x[:, -mem_len:]
-            x = x[:, mem_len: -mem_len]
-        else:
-            write_memory_out = jnp.zeros(0)
+        c = nn.Dense(features=8, name="head_c")(x)
+        p = nn.Dense(features=32, name="head_p")(x)
+        v = nn.Dense(features=7, name="head_v")(x)
 
-        pi = nn.Dense(features=32)(x)
-        v = nn.Dense(features=7)(x)
-        color = nn.Dense(features=8)(x)
-
-        return pi, v, color, write_memory_out  # [Batch, SeqLen, ...]
+        return p, v, c  # [Batch, SeqLen, ...]
 
 
 class TransformerWithCache(nn.Module):
@@ -235,62 +211,33 @@ class TransformerWithCache(nn.Module):
     def __hash__(self):
         return hash(self.config)
 
-    def has_memory_block(self):
-        return self.config.length_memory_block > 0
-
     def setup(self):
         self.embeddings = Embeddings(self.config.embed_dim, max_n_ply=self.config.max_n_ply)
-
-        self.read_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
-        self.write_memory_embeddings = nn.Embed(self.config.length_memory_block, self.config.embed_dim)
 
         self.layers = [
             TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
             for _ in range(self.config.num_hidden_layers)
         ]
 
-    def get_read_memory(self):
-        return self.read_memory_embeddings(jnp.arange(self.config.length_memory_block))
-
-    def get_write_memory(self):
-        return self.write_memory_embeddings(jnp.arange(self.config.length_memory_block))
-
-    def create_cache(self, seq_len, memory: jnp.ndarray = None):
+    def create_cache(self, seq_len):
         head_dim = self.config.embed_dim // self.config.num_heads
 
         # [2, Layer, SeqLen, Head, HeadDim]
         cache = jnp.zeros((self.config.num_hidden_layers, 2, seq_len, self.config.num_heads, head_dim))
-
-        if memory is not None:
-            for j in range(len(memory)):
-                _, _, _, _, cache = self(memory[j], cache)
-
         return cache
-
-    def create_zero_memory(self):
-        return jnp.zeros((self.config.length_memory_block, self.config.embed_dim))
 
     @nn.compact
     def __call__(
         self,
         x: jnp.ndarray,
         cache: jnp.ndarray,
-        read_memory_i: int = None,
-        write_memory_i: int = None,
         eval=True
     ):
         if x.shape[0] == 5:
             x = self.embeddings(x, eval)
 
-        elif x is None or x.shape[0] == self.config.embed_dim:
-            if x is None:
-                x = jnp.zeros(self.config.embed_dim)
-
-            if read_memory_i is not None:
-                x += self.read_memory_embeddings(read_memory_i)
-
-            if write_memory_i is not None:
-                x += self.write_memory_embeddings(write_memory_i)
+        elif x is None:
+            x = jnp.zeros(self.config.embed_dim)
 
         for i, layer in enumerate(self.layers):
             x, cache_i = layer(x, cache[i], eval=eval)
@@ -298,11 +245,82 @@ class TransformerWithCache(nn.Module):
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
-        logits_pi = nn.Dense(features=32)(x)
-        logits_v = nn.Dense(features=7)(x)
-        logits_color = nn.Dense(features=8)(x)
+        c = nn.Dense(features=8, name="head_c")(x)
+        p = nn.Dense(features=32, name="head_p")(x)
+        v = nn.Dense(features=7, name="head_v")(x)
 
-        return x, logits_pi, logits_v, logits_color, cache
+        return x, c, p, v, cache
+
+
+class TrainStateTransformer(TrainStateBase):
+
+    @partial(jax.jit, static_argnames=['eval'])
+    def train_step(
+        self, x: jnp.ndarray, eval: bool
+    ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
+        x, p_true, v_true, c_true = astuple(x)
+
+        if not eval:
+            (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+                self.params, self, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
+            )
+            state = self.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(self.epoch))
+        else:
+            loss, losses = loss_fn(
+                self.params, state, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
+            )
+            state = self
+
+        return state, loss, losses
+
+    def get_head_names(self) -> list[str]:
+        return ['P', 'V', 'C']
+
+
+@jax.jit
+def calc_loss(
+    x: jnp.ndarray,
+    p_pred: jnp.ndarray, v_pred: jnp.ndarray, c_pred: jnp.ndarray,
+    p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    mask = jnp.any(x != 0, axis=2)
+
+    # [Batch, SeqLen, 32]
+    p_true = p_true.reshape(-1, x.shape[1])
+    v_true = v_true.reshape(-1, 1)
+    c_true = c_true.reshape(-1, 1, 8)
+
+    loss_p = optax.softmax_cross_entropy_with_integer_labels(p_pred, p_true)
+    loss_v = optax.softmax_cross_entropy_with_integer_labels(v_pred, v_true)
+    loss_c = optax.sigmoid_binary_cross_entropy(c_pred, c_true).mean(axis=2)
+
+    loss_p = jnp.average(loss_p, weights=mask)
+    loss_v = jnp.average(loss_v, weights=mask)
+    loss_c = jnp.average(loss_c, weights=mask)
+
+    loss = loss_p + loss_v + loss_c
+    losses = jnp.array([loss_p, loss_v, loss_c])
+
+    return loss, losses
+
+
+@partial(jax.jit, static_argnames=['eval'])
+def loss_fn(
+    params,
+    state: TrainStateTransformer,
+    x: jnp.ndarray,
+    p_true: jnp.ndarray,
+    v_true: jnp.ndarray,
+    c_true: jnp.ndarray,
+    dropout_rng,
+    eval: bool
+) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
+    # x: [Batch, Seq Len, 5]
+
+    p, v, c = state.apply_fn({'params': params}, x, eval=eval, rngs={'dropout': dropout_rng})
+    loss, losses = calc_loss(x, p, v, c, p_true, v_true, c_true)
+
+    return loss, losses
 
 
 def test_performance():

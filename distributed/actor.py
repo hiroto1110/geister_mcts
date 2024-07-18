@@ -5,7 +5,6 @@ import numpy as np
 import jax
 
 from messages import MatchInfo, MessageMatchResult
-from players.factory import create_player
 from players.base import play_game
 
 
@@ -42,8 +41,8 @@ def play_games(
     series_length: int,
     tokens_length: int,
 ):
-    player1 = create_player(match.player, project_dir)
-    player2 = create_player(match.opponent, project_dir)
+    player1 = match.player.create_player(project_dir)
+    player2 = match.opponent.create_player(project_dir)
 
     samples = []
 

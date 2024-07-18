@@ -6,24 +6,22 @@ from sklearn.linear_model import LinearRegression
 
 import actor
 from messages import MatchInfo, MessageMatchResult
-from players.config import (
-    PlayerMCTSConfig,
-    PlayerNaotti2020Config,
-    SearchParametersRange, IntRange, FloatRange
-)
+from players.config import SearchParametersRange, IntRange, FloatRange
+from players.mcts import PlayerMCTSConfig
+from players.strategy import PlayerStatisticsZConfig, StatisticsZFactoryRandom
 
 from batch import get_reward
 
 
 def main(
-    n_clients=30,
+    n_clients=16,
     ckpt_dir='./data/projects/run-7',
     ckpt_step=600,
-    series_length=32,
+    series_length=4,
     tokens_length=220,
 ):
     mcts_params = SearchParametersRange(
-        num_simulations=IntRange(50, 50),
+        num_simulations=IntRange(100, 100),
         dirichlet_alpha=FloatRange(0.1, 0.1),
         n_ply_to_apply_noise=IntRange(0, 10),
         max_duplicates=IntRange(1, 3),
@@ -32,8 +30,11 @@ def main(
         c_base=IntRange(25, 40)
     )
 
+    mcts_params_o = mcts_params.replace(test_c=True)
+
     player = PlayerMCTSConfig("main", ckpt_step, mcts_params)
-    opponent = PlayerNaotti2020Config(depth_min=3, depth_max=7, num_random_ply=8, print_log=False)
+    # opponent = PlayerNaotti2020Config(depth_min=3, depth_max=7, num_random_ply=8, print_log=False)
+    opponent = PlayerMCTSConfig("main", ckpt_step, mcts_params_o)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)

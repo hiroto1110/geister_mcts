@@ -1,5 +1,5 @@
 from functools import partial
-from typing import List, Any
+from typing import Any
 from dataclasses import dataclass
 import time
 
@@ -17,8 +17,8 @@ import game_analytics
 from network.transformer import TransformerWithCache
 from network.checkpoints import CheckpointManager
 
-from players.base import PlayerBase, ActionSelectionResult
-from players.config import PlayerMCTSConfig, SearchParameters
+from players.base import PlayerBase, ActionSelectionResult, PlayerConfig
+from players.config import SearchParameters, SearchParametersRange
 
 
 @dataclass
@@ -207,7 +207,7 @@ class Node(NodeBase):
 
 
 class AfterStateNode(NodeBase):
-    def __init__(self, state: game.State, pred_result: PredictResult, afterstates: List[game.Afterstate]):
+    def __init__(self, state: game.State, pred_result: PredictResult, afterstates: list[game.Afterstate]):
         super().__init__(state, action_space=2)
 
         self.predic_result = pred_result
@@ -226,6 +226,7 @@ class AfterStateNode(NodeBase):
         params: SearchParameters
     ) -> float:
         p = 0.5 + (self.p - 0.5) * 1
+
         color: int = np.random.choice([game.RED, game.BLUE], p=p)
 
         state, result = state.step_afterstate(self.afterstate, color)
@@ -289,8 +290,8 @@ def sim_state_to_str(state: game.State, v, color: np.ndarray):
 
 def expand(
     node: Node,
-    tokens: List[List[int]],
-    afterstates: List[game.Afterstate],
+    tokens: list[list[int]],
+    afterstates: list[game.Afterstate],
     state: game.State,
     pred_state: PredictState,
     params: SearchParameters
@@ -298,6 +299,10 @@ def expand(
 
     if len(tokens) > 0:
         result = predict_with_tokens(pred_state, tokens, node.predic_result.cache)
+
+        if params.test_c:
+            result.color = node.predic_result.color
+
     else:
         result = node.predic_result
 
@@ -311,7 +316,7 @@ def expand(
 
 def try_expand_checkmate(
     node: Node,
-    tokens: List[List[int]],
+    tokens: list[list[int]],
     state: game.State,
     player: int,
     pred_state: PredictState,
@@ -367,7 +372,8 @@ def select_action_with_mcts(
     state: game.State,
     pred_state: PredictState,
     params: SearchParameters,
-    pieces_history: np.ndarray = None
+    pieces_history: np.ndarray = None,
+    actions: list[int] = None
 ) -> ActionSelectionResultMCTS:
     start_t = time.perf_counter()
 
@@ -399,7 +405,11 @@ def select_action_with_mcts(
 
     node.setup_valid_actions(state, 1)
 
-    if pieces_history is not None:
+    if actions is not None:
+        node.invalid_actions = [i for i in range(32) if i not in actions]
+        node.apply_invalid_actions()
+
+    elif pieces_history is not None:
         node.invalid_actions = create_invalid_actions(
             node.valid_actions,
             state,
@@ -497,16 +507,6 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
     model: TransformerWithCache
     mcts_params: SearchParameters
 
-    @classmethod
-    def from_config(cls, config: PlayerMCTSConfig, project_dir: str) -> "PlayerMCTS":
-        ckpt = CheckpointManager(f"{project_dir}/{config.name}").load(config.step)
-
-        return PlayerMCTS(
-            params=ckpt.params,
-            model=ckpt.model.create_caching_model(),
-            mcts_params=config.mcts_params.sample()
-        )
-
     def get_pred_state(self) -> PredictState:
         return PredictState(self.model, self.params)
 
@@ -517,10 +517,16 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
         return PlayerStateMCTS(Node(state, result), memory, []), tokens
 
-    def select_next_action(self, state: game.State, player_state: PlayerStateMCTS) -> ActionSelectionResultMCTS:
+    def select_next_action(
+        self,
+        state: game.State,
+        player_state: PlayerStateMCTS,
+        actions: list[int] = None
+    ) -> ActionSelectionResultMCTS:
         result = select_action_with_mcts(
             player_state.node, state, self.get_pred_state(), self.mcts_params,
-            pieces_history=np.array(player_state.pieces_history, dtype=np.int16)
+            pieces_history=np.array(player_state.pieces_history, dtype=np.int16),
+            actions=actions
         )
 
         return result
@@ -566,6 +572,25 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         dg.render(output_file)
 
 
+@dataclass
+class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
+    name: str
+    step: int
+    mcts_params: SearchParametersRange
+
+    def get_name(self) -> str:
+        return f"{self.name}-{self.step}"
+
+    def create_player(self, project_dir: str) -> PlayerMCTS:
+        ckpt = CheckpointManager(f"{project_dir}/{self.name}").load(self.step)
+
+        return PlayerMCTS(
+            params=ckpt.params,
+            model=ckpt.model.create_caching_model(),
+            mcts_params=self.mcts_params.sample()
+        )
+
+
 def test_play_game():
     np.random.seed(4)
 
@@ -581,31 +606,7 @@ def test_play_game():
 
     from players.base import play_game
 
-    result = play_game(player1, player2, print_board=True, visualization_directory="./data/graph")
-
-    for t1, t2 in zip(result.tokens1, result.tokens2):
-        print(t1, t2)
-
-    model = ckpt.model.create_caching_model()
-    cache = model.create_cache(240)
-
-    memory = model.create_zero_memory()
-
-    for i in range(len(memory)):
-        _, _, _, _, cache = predict(
-            ckpt.params, model, memory[i], cache, read_memory_i=jnp.array(i)
-        )
-
-    cache1 = cache
-    cache2 = cache
-
-    tokens1 = result.tokens1
-    tokens2 = result.tokens2
-
-    for t1, t2 in zip(tokens1, tokens2):
-        _, p, v1, c, cache1 = predict(ckpt.params, model, jnp.array(t1), cache1)
-        _, p, v2, c, cache2 = predict(ckpt.params, model, jnp.array(t2), cache2)
-        print(np.array(t1), np.array(t2), np.array(v1 * 100, dtype=np.int16), np.array(v2 * 100, dtype=np.int16))
+    play_game(player1, player2, print_board=True, visualization_directory="./data/graph")
 
 
 def test_mcts():

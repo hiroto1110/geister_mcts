@@ -43,7 +43,7 @@ def state_to_str_objectively(
 
 
 def states_to_str(
-    states: list[game.SimulationState],
+    states: list[game.State],
     predicted_colors: list[np.ndarray],
     true_colors: list[np.ndarray] = None,
     colored: bool = False,
