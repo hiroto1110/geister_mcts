@@ -10,6 +10,7 @@ from jax import random, numpy as jnp
 from flax import linen as nn
 
 from network.train_state import TrainStateBase
+from network.cnn import CNN, CNNConfig, pos_to_board, ResNet
 from batch import astuple
 
 
@@ -20,6 +21,7 @@ class TransformerConfig:
     embed_dim: int
     num_hidden_layers: int
     max_n_ply: int = 201
+    cnn_config: CNNConfig | None = None
 
     def create_model(self) -> 'Transformer':
         return Transformer(self)
@@ -183,15 +185,19 @@ class Transformer(nn.Module):
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
                        for _ in range(self.config.num_hidden_layers)]
 
+        if self.config.cnn_config is not None:
+            self.cnn = CNN(self.config.cnn_config, name="cnn")
+            # self.cnn = ResNet()
+        else:
+            self.cnn = None
+
     @nn.compact
-    def __call__(self, x, eval=True):
-        mask = jnp.any(x != 0, axis=-1)
-        x = self.embeddings(x, eval)
-
+    def __call__(self, x: jnp.ndarray, eval=True, pos=None, concat=None):
+        color = x[..., :8, 0]
         # [Batch, 1, SeqLen, SeqLen]
-        causal_mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
+        mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
 
-        mask = causal_mask * mask[:, jnp.newaxis, jnp.newaxis, :]
+        x = self.embeddings(x, eval)
 
         for i in range(self.config.num_hidden_layers):
             x = self.layers[i](x, mask, eval=eval)
@@ -199,10 +205,23 @@ class Transformer(nn.Module):
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         c = nn.Dense(features=8, name="head_c")(x)
-        p = nn.Dense(features=32, name="head_p")(x)
-        v = nn.Dense(features=7, name="head_v")(x)
+   
+        if self.cnn is not None:
+            color_1 = jnp.stack([color]*x.shape[-2], axis=-2) * 255
+            color_2 = (jax.nn.sigmoid(jax.lax.stop_gradient(c)) * 255).clip(0, 255).astype(jnp.uint8)
+            # color_2 = jnp.zeros(color_1.shape, dtype=jnp.uint8) + 128
+            board = pos_to_board(pos[..., :8], pos[..., 8:], color_1, color_2)
 
-        return p, v, c  # [Batch, SeqLen, ...]
+            p1, v1 = self.cnn(board, concat=concat)
+            p2 = nn.Dense(features=144, name="head_p")(x)
+            v2 = nn.Dense(features=7, name="head_v")(x)
+        else:
+            p1 = nn.Dense(features=144, name="head_p")(x)
+            v1 = nn.Dense(features=7, name="head_v")(x)
+            p2 = p1
+            v2 = v1
+
+        return p1, v1, p2, v2, c  # [Batch, SeqLen, ...]
 
 
 class TransformerWithCache(nn.Module):
@@ -218,6 +237,9 @@ class TransformerWithCache(nn.Module):
             TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
             for _ in range(self.config.num_hidden_layers)
         ]
+
+        if self.config.cnn_config is not None:
+            self.cnn = CNN(self.config.cnn_config, name="cnn")
 
     def create_cache(self, seq_len):
         head_dim = self.config.embed_dim // self.config.num_heads
@@ -246,7 +268,7 @@ class TransformerWithCache(nn.Module):
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         c = nn.Dense(features=8, name="head_c")(x)
-        p = nn.Dense(features=32, name="head_p")(x)
+        p = nn.Dense(features=144, name="head_p")(x)
         v = nn.Dense(features=7, name="head_v")(x)
 
         return x, c, p, v, cache
@@ -258,48 +280,61 @@ class TrainStateTransformer(TrainStateBase):
     def train_step(
         self, x: jnp.ndarray, eval: bool
     ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
-        x, p_true, v_true, c_true = astuple(x)
+        # tokens, p_true, v_true, c_true = astuple(x)
+        posses, tokens, p_true, v_true, c_true = astuple(x)
 
         if not eval:
             (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-                self.params, self, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, tokens, posses, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(self.epoch))
         else:
             loss, losses = loss_fn(
-                self.params, state, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, tokens, posses, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self
 
         return state, loss, losses
 
     def get_head_names(self) -> list[str]:
-        return ['P', 'V', 'C']
+        return ['P1', 'V1', 'P2', 'V2', 'C']
 
 
 @jax.jit
 def calc_loss(
     x: jnp.ndarray,
-    p_pred: jnp.ndarray, v_pred: jnp.ndarray, c_pred: jnp.ndarray,
+    p_pred_1: jnp.ndarray, v_pred_1: jnp.ndarray, p_pred_2: jnp.ndarray, v_pred_2: jnp.ndarray, c_pred: jnp.ndarray,
     p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    mask = jnp.any(x != 0, axis=2)
+    mask = jnp.any(x != 0, axis=-1)
+    mask = mask.reshape(-1)
 
-    # [Batch, SeqLen, 32]
-    p_true = p_true.reshape(-1, x.shape[1])
-    v_true = v_true.reshape(-1, 1)
-    c_true = c_true.reshape(-1, 1, 8)
+    # [Batch, SeqLen, 144]
+    p_true = p_true.reshape(-1)
+    v_true = jnp.stack([v_true]*v_pred_1.shape[-2], axis=-1).reshape(-1)
+    c_true = jnp.stack([c_true]*c_pred.shape[-2], axis=-1).reshape(-1, 8)
+    # c_true = c_true.reshape(-1, 1, 8)
 
-    loss_p = optax.softmax_cross_entropy_with_integer_labels(p_pred, p_true)
-    loss_v = optax.softmax_cross_entropy_with_integer_labels(v_pred, v_true)
-    loss_c = optax.sigmoid_binary_cross_entropy(c_pred, c_true).mean(axis=2)
+    p_pred_1 = p_pred_1.reshape(-1, 144)
+    p_pred_2 = p_pred_2.reshape(-1, 144)
+    v_pred_1 = v_pred_1.reshape(-1, 7)
+    v_pred_2 = v_pred_2.reshape(-1, 7)
+    c_pred = c_pred.reshape(-1, 8)
 
-    loss_p = jnp.average(loss_p, weights=mask)
-    loss_v = jnp.average(loss_v, weights=mask)
+    loss_p_1 = optax.softmax_cross_entropy_with_integer_labels(p_pred_1, p_true)
+    loss_p_2 = optax.softmax_cross_entropy_with_integer_labels(p_pred_2, p_true)
+    loss_v_1 = optax.softmax_cross_entropy_with_integer_labels(v_pred_1, v_true)
+    loss_v_2 = optax.softmax_cross_entropy_with_integer_labels(v_pred_2, v_true)
+    loss_c = optax.sigmoid_binary_cross_entropy(c_pred, c_true).mean(axis=-1)
+
+    loss_p_1 = jnp.average(loss_p_1, weights=mask)
+    loss_p_2 = jnp.average(loss_p_2, weights=mask)
+    loss_v_1 = jnp.average(loss_v_1, weights=mask)
+    loss_v_2 = jnp.average(loss_v_2, weights=mask)
     loss_c = jnp.average(loss_c, weights=mask)
 
-    loss = loss_p + loss_v + loss_c
-    losses = jnp.array([loss_p, loss_v, loss_c])
+    loss = loss_p_1 + loss_p_2 + loss_v_1 + loss_v_2 + loss_c
+    losses = jnp.array([loss_p_1, loss_p_2 ,loss_v_1, loss_v_2, loss_c])
 
     return loss, losses
 
@@ -308,19 +343,34 @@ def calc_loss(
 def loss_fn(
     params,
     state: TrainStateTransformer,
-    x: jnp.ndarray,
+    tokens: jnp.ndarray,
+    posses: jnp.ndarray,
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
     dropout_rng,
     eval: bool
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
-    # x: [Batch, Seq Len, 5]
+    concat = create_concat_input(tokens, posses, c_true)
 
-    p, v, c = state.apply_fn({'params': params}, x, eval=eval, rngs={'dropout': dropout_rng})
-    loss, losses = calc_loss(x, p, v, c, p_true, v_true, c_true)
+    # p, v, c = state.apply_fn({'params': params}, tokens, eval=eval, rngs={'dropout': dropout_rng})
+    p1, v1, p2, v2, c = state.apply_fn({'params': params}, tokens, pos=posses, concat=concat, eval=eval, rngs={'dropout': dropout_rng})
+    loss, losses = calc_loss(tokens, p1, v1, p2, v2, c, p_true, v_true, c_true)
 
     return loss, losses
+
+
+def create_concat_input(tokens: jnp.ndarray, pos: jnp.ndarray, c_true: jnp.ndarray):
+    n_cap_1 = ((pos[..., 8:] == 36) * (c_true[..., None, :] == 0)).sum(axis=-1)
+    n_cap_2 = ((pos[..., 8:] == 36) * (c_true[..., None, :] == 1)).sum(axis=-1)
+
+    n_cap_1 = jax.nn.one_hot(n_cap_1, num_classes=4)
+    n_cap_2 = jax.nn.one_hot(n_cap_2, num_classes=4)
+
+    t = (tokens[..., 4] % 2 == 0) ^ (tokens[..., 8, :1] < 2)
+    t = jax.nn.one_hot(t.astype(jnp.uint8), num_classes=2)
+
+    return jnp.concatenate([n_cap_1, n_cap_2, t], axis=-1)
 
 
 def test_performance():

@@ -33,7 +33,6 @@ def create_batch(
     action: [..., seq_len]
     reward: [..., 1]
     color: [..., 8]
-    color_count: [..., 3, 6, 2 * 3**4]
     """
     seq_len = x.shape[-2]
 
@@ -52,27 +51,33 @@ def astuple(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     """
     batch: [..., seq_len * 6 + 9 + COLOR_COUNT_FEATURE_LENGTH]
     """
-    return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
+    return get_posses(batch), get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
+    # return get_tokens(batch), get_action(batch), get_reward(batch), get_color(batch)
+
+
+def get_posses(batch: np.ndarray) -> np.ndarray:
+    seq_len = get_seq_len(batch.shape[-1])
+    return batch[..., :seq_len * 16].reshape((*batch.shape[:-1], seq_len, 16))
 
 
 def get_tokens(batch: np.ndarray) -> np.ndarray:
     seq_len = get_seq_len(batch.shape[-1])
-    return batch[..., :seq_len * 5].reshape((*batch.shape[:-1], seq_len, 5))
+    return batch[..., seq_len * 16: seq_len * 21].reshape((*batch.shape[:-1], seq_len, 5))
 
 
 def get_action(batch: np.ndarray) -> np.ndarray:
     seq_len = get_seq_len(batch.shape[-1])
-    return batch[..., seq_len * 5: seq_len * 6].reshape((*batch.shape[:-1], seq_len))
+    return batch[..., seq_len * 21: seq_len * 22].reshape((*batch.shape[:-1], seq_len))
 
 
 def get_reward(batch: np.ndarray) -> np.ndarray:
     seq_len = get_seq_len(batch.shape[-1])
-    return batch[..., seq_len * 6]
+    return batch[..., seq_len * 22]
 
 
 def get_color(batch: np.ndarray) -> np.ndarray:
     seq_len = get_seq_len(batch.shape[-1])
-    return batch[..., seq_len * 6 + 1: seq_len * 6 + 9]
+    return batch[..., seq_len * 22 + 1: seq_len * 22 + 9]
 
 
 def is_won(batch: np.ndarray) -> bool:
@@ -80,12 +85,12 @@ def is_won(batch: np.ndarray) -> bool:
 
 
 def get_length_of_one_sample(seq_len: int) -> int:
-    return seq_len * 6 + 9
+    return seq_len * 22 + 9
 
 
 def get_seq_len(length_of_one_sample: int) -> int:
-    assert (length_of_one_sample - 9) % 6 == 0, f"{length_of_one_sample}"
-    return (length_of_one_sample - 9) // 6
+    assert (length_of_one_sample - 9) % 22 == 0, f"{length_of_one_sample}"
+    return (length_of_one_sample - 9) // 22
 
 
 class ReplayBuffer:

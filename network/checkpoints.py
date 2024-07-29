@@ -12,7 +12,7 @@ import jax
 from flax.core.frozen_dict import FrozenDict
 
 from distributed.communication import SerdeJsonSerializable
-from network.rmt import TransformerConfig
+from network.transformer import TransformerConfig
 from network.cnn import CNNConfig
 
 
