@@ -271,7 +271,7 @@ def _handle_client_actor(
     init_msg_server = agent_manager.create_init_actor_message(init_msg_client.n_processes)
     communicator.send_json_obj(sock, init_msg_server)
 
-    sent_steps = {name: [s.step for s in snapshots] for name, snapshots in init_msg_server.snapshots.items()}
+    sent_players = []
 
     while result_msg := communicator.recv_json_obj(sock, MessageMatchResult):
         match_result_queue.put(result_msg)
@@ -281,13 +281,14 @@ def _handle_client_actor(
         updated = {name: [] for name in agent_manager.agents}
 
         for info in [next_match.player, next_match.opponent]:
-            if info.name not in sent_steps:
-                continue
-            if info.step in sent_steps[info.name]:
+            if info in sent_players:
                 continue
 
-            sent_steps[info.name].append(info.step)
-            updated[info.name].append(agent_manager.agents[info.name].ckpt_manager.load(info.step))
+            sent_players.append(info)
+
+            ckpt = info.get_checkpoint(agent_manager.config.project_dir)
+            if ckpt is not None:
+                updated[info.name].append(ckpt)
 
         communicator.send_json_obj(sock, MessageNextMatch(next_match, updated))
 

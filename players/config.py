@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 
 import numpy as np
 
@@ -14,7 +14,7 @@ class SearchParameters:
     c_base: int = 25
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
-    value_weight: np.ndarray = np.array([-1, -1, -1, 0, 1, 1, 1])
+    value_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
     time_limit: float = 10
     test_c: bool = False
     visibilize_node_graph: bool = False

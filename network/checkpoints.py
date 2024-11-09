@@ -13,10 +13,9 @@ from flax.core.frozen_dict import FrozenDict
 
 from distributed.communication import SerdeJsonSerializable
 from network.transformer import TransformerConfig
-from network.cnn import CNNConfig
 
 
-NetworkConfig = TransformerConfig | CNNConfig
+NetworkConfig = TransformerConfig
 
 NAMEDTUPLE_FLAG = "__namedtuple__"
 NDARRAY_SHAPE = "__ndarray_shape__"

@@ -175,50 +175,9 @@ def test_game():
 
     player_mcts = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
 
-    z = np.random.random(2**6)
-    z[8] = 0
-
-    player = PlayerStatisticsZ(
-        player=player_mcts,
-        z=z,
-        checkmate_depth=5
-    )
+    player = player_mcts
 
     play_game(player, player, print_board=True)
-
-
-def test():
-    import game_analytics
-
-    state = State(
-        board=np.array([
-                [0, 13, 14, 17, -1, -1, -1, -1],
-                [19, 29, 30, 31, -1, -1, -1, -1],
-                [1, 0, 1, 1, 1, 0, 0, 0],
-                [2, 2, 2, 2, 1, 0, 0, 0]
-            ]),
-        n_ply=64
-    )
-
-    print(game_analytics.state_to_str(state, predicted_color=[5]*8, colored=True))
-
-    z = np.random.random(2**6)
-    z[8] = 0
-
-    player = PlayerStatisticsZ(
-        player=None,
-        z=z,
-        checkmate_depth=5
-    )
-
-    action_dict = player.create_action_dict(state)
-
-    for key in action_dict:
-        print(key, action_dict[key])
-        for action in action_dict[key]:
-            next_state, _ = state.step(action, player=1)
-            print(action)
-            print(game_analytics.state_to_str(next_state, predicted_color=[5]*8, colored=True))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,56 @@
 import os
+import dataclasses
 import numpy as np
+
+
+@dataclasses.dataclass
+class Feature:
+    length_const: int
+    length_per_token: int
+    shape: list[int] = (-1,)
+
+
+@dataclasses.dataclass
+class BatchFormat:
+    features: list[Feature]
+    dtype = np.uint8
+
+    def from_tuple(self, *a: np.ndarray) -> np.ndarray:
+        def _reshape(x: np.ndarray, feature: Feature) -> np.ndarray:
+            return x.reshape((*x.shape[:-len(feature.shape)], -1)).astype(self.dtype)
+        
+        reshaped_a = [_reshape(a_i, f_i) for a_i, f_i in zip(a, self.features)]
+
+        return np.concatenate(reshaped_a, axis=-1, dtype=self.dtype)
+    
+    def astuple(self, batch: np.ndarray) -> list[np.ndarray]:
+        num_tokens = (batch.shape[-1] - self.length_const) // self.length_per_token
+
+        results = []
+
+        for feature in self.features:
+            length = feature.length_const + num_tokens * feature.length_per_token
+
+            results.append(batch[..., :length])
+            batch = batch[..., length:]
+
+        return tuple(results)
+
+    @property
+    def length_const(self) -> int:
+        return sum([f.length_const for f in self.features])
+    
+    @property
+    def length_per_token(self) -> int:
+        return sum([f.length_per_token for f in self.features])
+
+
+FORMAT_XARC = BatchFormat([
+    Feature(length_const=0, length_per_token=5, shape=(-1, 5)),
+    Feature(length_const=0, length_per_token=1),
+    Feature(length_const=1, length_per_token=0),
+    Feature(length_const=8, length_per_token=0),
+])
 
 
 def load(path: str) -> np.ndarray:

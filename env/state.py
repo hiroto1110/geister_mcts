@@ -47,6 +47,7 @@ class AfterstateType(Enum):
 class Afterstate:
     type: AfterstateType
     piece_id: int
+    player_id: int = 1
 
 
 @dataclass
@@ -115,14 +116,14 @@ class State:
     def step_afterstate(self, afterstate: Afterstate, color: int) -> tuple["State", StepResult]:
         next_board = self.board.copy()
 
-        next_board[COL_O, afterstate.piece_id] = color
+        next_board[COL_P + afterstate.player_id, afterstate.piece_id] = color
 
         if afterstate.type == AfterstateType.CAPTURING:
             winner, win_type = State.is_done_caused_by_capturing(next_board)
 
             tokens = [(
                 color + 2,
-                afterstate.piece_id + 8,
+                afterstate.piece_id + 8 * afterstate.player_id,
                 6, 6, self.n_ply
             )]
 
@@ -133,17 +134,20 @@ class State:
 
         elif afterstate.type == AfterstateType.ESCAPING:
             if color == BLUE:
-                winner = -1
+                if afterstate.player_id == 1:
+                    winner = -1
+                else:
+                    winner = 1
                 win_type = WinType.ESCAPE
             else:
                 winner = 0
                 win_type = WinType.DRAW
 
-            pos = next_board[POS_O, afterstate.piece_id]
+            pos = next_board[POS_P + afterstate.player_id, afterstate.piece_id]
 
             tokens = [(
                 4,
-                afterstate.piece_id + 8,
+                afterstate.piece_id + 8 * afterstate.player_id,
                 pos % 6,
                 pos // 6,
                 self.n_ply
@@ -192,6 +196,8 @@ class State:
                 tokens.append([
                     color + 2, p_cap_id + 8,
                     6, 6, self.n_ply + 1])
+            else:
+                RuntimeError(f"Unknown color: {self.board}")
 
         next_board[POS_P, p_id] = pos_next
 
@@ -226,6 +232,8 @@ class State:
 
         p_cap_id = np.where(next_board[POS_P] == pos_next)[0]
 
+        afterstates = []
+
         tokens = [[
             4, p_id + 8,
             pos_next % 6,
@@ -235,10 +243,14 @@ class State:
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
             next_board[POS_P, p_cap_id] = CAPTURED
+            color = next_board[COL_P, p_cap_id]
 
-            tokens.append([
-                next_board[COL_P, p_cap_id], p_cap_id,
-                6, 6, self.n_ply + 1])
+            if color == UNCERTAIN_PIECE:
+                afterstates.append(Afterstate(AfterstateType.CAPTURING, p_cap_id, player_id=0))
+            elif color == RED or color == BLUE:
+                tokens.append([color, p_cap_id, 6, 6, self.n_ply + 1])
+            else:
+                RuntimeError(f"Unknown color: {self.board}")
 
         next_board[POS_O, p_id] = pos_next
 
@@ -246,15 +258,21 @@ class State:
 
         if winner != 0:
             escaped = (next_board[POS_P] == ESCAPE_POS_P[0]) | (next_board[POS_P] == ESCAPE_POS_P[1])
-            escaped = escaped & (next_board[COL_P] == BLUE)
+            escaped_u = escaped & (next_board[COL_P] == UNCERTAIN_PIECE)
 
-            if np.any(escaped):
+            if np.any(escaped_u):
+                escaped_u_id = np.where(escaped_u)[0][0]
+                afterstates.append(Afterstate(AfterstateType.ESCAPING, escaped_u_id, player_id=0))
+
+            escaped_b = escaped & (next_board[COL_O] == BLUE)
+
+            if np.any(escaped_b):
                 winner = 1
                 win_type = WinType.ESCAPE
 
         return (
             State(next_board, self.n_ply + 1 if self.n_ply > 0 else 2),
-            StepResult(tokens, [], winner, win_type)
+            StepResult(tokens, afterstates, winner, win_type)
         )
 
 

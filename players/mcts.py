@@ -574,21 +574,25 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
 @dataclass
 class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
-    name: str
+    base_name: str
     step: int
     mcts_params: SearchParametersRange
 
-    def get_name(self) -> str:
-        return f"{self.name}-{self.step}"
+    @property
+    def name(self) -> str:
+        return f"{self.base_name}-{self.step}"
 
     def create_player(self, project_dir: str) -> PlayerMCTS:
-        ckpt = CheckpointManager(f"{project_dir}/{self.name}").load(self.step)
+        ckpt = CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
 
         return PlayerMCTS(
             params=ckpt.params,
             model=ckpt.model.create_caching_model(),
             mcts_params=self.mcts_params.sample()
         )
+    
+    def get_checkpoint(self, project_dir: str):
+        return CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
 
 
 def test_play_game():

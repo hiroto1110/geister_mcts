@@ -10,8 +10,7 @@ from jax import random, numpy as jnp
 from flax import linen as nn
 
 from network.train_state import TrainStateBase
-from network.cnn import CNN, CNNConfig, pos_to_board, ResNet
-from batch import astuple
+from batch import FORMAT_XARC
 
 
 @serde.serde
@@ -21,7 +20,6 @@ class TransformerConfig:
     embed_dim: int
     num_hidden_layers: int
     max_n_ply: int = 201
-    cnn_config: CNNConfig | None = None
 
     def create_model(self) -> 'Transformer':
         return Transformer(self)
@@ -185,15 +183,8 @@ class Transformer(nn.Module):
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
                        for _ in range(self.config.num_hidden_layers)]
 
-        if self.config.cnn_config is not None:
-            self.cnn = CNN(self.config.cnn_config, name="cnn")
-            # self.cnn = ResNet()
-        else:
-            self.cnn = None
-
     @nn.compact
-    def __call__(self, x: jnp.ndarray, eval=True, pos=None, concat=None):
-        color = x[..., :8, 0]
+    def __call__(self, x: jnp.ndarray, eval=True):
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
 
@@ -205,21 +196,10 @@ class Transformer(nn.Module):
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
         c = nn.Dense(features=8, name="head_c")(x)
-        p1 = nn.Dense(features=144, name="head_p")(x)
-        v1 = nn.Dense(features=7, name="head_v")(x)
-   
-        if self.cnn is not None:
-            color_1 = jnp.stack([color]*x.shape[-2], axis=-2) * 255
-            color_2 = (jax.nn.sigmoid(jax.lax.stop_gradient(c)) * 255).clip(0, 255).astype(jnp.uint8)
-            # color_2 = jnp.zeros(color_1.shape, dtype=jnp.uint8) + 128
-            board = pos_to_board(pos[..., :8], pos[..., 8:], color_1, color_2)
+        p = nn.Dense(features=144, name="head_p")(x)
+        v = nn.Dense(features=7, name="head_v")(x)
 
-            p2, v2 = self.cnn(board, concat=concat)
-        else:
-            p2 = p1
-            v2 = v1
-
-        return p1, p2, v1, v2, c  # [Batch, SeqLen, ...]
+        return p, v, c  # [Batch, SeqLen, ...]
 
 
 class TransformerWithCache(nn.Module):
@@ -235,9 +215,6 @@ class TransformerWithCache(nn.Module):
             TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
             for _ in range(self.config.num_hidden_layers)
         ]
-
-        if self.config.cnn_config is not None:
-            self.cnn = CNN(self.config.cnn_config, name="cnn")
 
     def create_cache(self, seq_len):
         head_dim = self.config.embed_dim // self.config.num_heads
@@ -273,74 +250,60 @@ class TransformerWithCache(nn.Module):
 
 
 class TrainStateTransformer(TrainStateBase):
-
     @partial(jax.jit, static_argnames=['eval'])
     def train_step(
         self, x: jnp.ndarray, eval: bool
     ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
         # tokens, p_true, v_true, c_true = astuple(x)
-        posses, tokens, p_true, v_true, c_true = astuple(x)
+        tokens, p_true, v_true, c_true = FORMAT_XARC.astuple(x)
 
         if not eval:
             (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-                self.params, self, tokens, posses, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, tokens, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(self.epoch))
         else:
             loss, losses = loss_fn(
-                self.params, self, tokens, posses, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, tokens, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self
 
         return state, loss, losses
 
     def get_head_names(self) -> list[str]:
-        return ['P1', 'P2', 'V1', 'V2', 'C']
+        return ['P', 'V', 'C']
 
 
 @jax.jit
 def calc_loss(
     x: jnp.ndarray,
-    p_pred_1: jnp.ndarray, p_pred_2: jnp.ndarray,
-    v_pred_1: jnp.ndarray, v_pred_2: jnp.ndarray,
-    c_pred: jnp.ndarray,
+    p_pred: jnp.ndarray, v_pred: jnp.ndarray, c_pred: jnp.ndarray,
     p_true: jnp.ndarray, v_true: jnp.ndarray, c_true: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
+
     mask = jnp.any(x != 0, axis=-1)
     mask = mask.reshape(-1)
 
     # [Batch, SeqLen, 144]
     p_true = p_true.reshape(-1)
-    v_true = jnp.stack([v_true]*v_pred_1.shape[-2], axis=-1).reshape(-1)
+    v_true = jnp.stack([v_true]*v_pred.shape[-2], axis=-1).reshape(-1)
     c_true = jnp.stack([c_true]*c_pred.shape[-2], axis=-1).reshape(-1, 8)
     # c_true = c_true.reshape(-1, 1, 8)
 
-    p_pred_1 = p_pred_1.reshape(-1, 144)
-    p_pred_2 = p_pred_2.reshape(-1, 144)
-
-    v_pred_1 = v_pred_1.reshape(-1, 7)
-    v_pred_2 = v_pred_2.reshape(-1, 7)
-
+    p_pred = p_pred.reshape(-1, 144)
+    v_pred = v_pred.reshape(-1, 7)
     c_pred = c_pred.reshape(-1, 8)
 
-    loss_p_1 = optax.softmax_cross_entropy_with_integer_labels(p_pred_1, p_true)
-    loss_p_2 = optax.softmax_cross_entropy_with_integer_labels(p_pred_2, p_true)
-
-    loss_v_1 = optax.softmax_cross_entropy_with_integer_labels(v_pred_1, v_true)
-    loss_v_2 = optax.softmax_cross_entropy_with_integer_labels(v_pred_2, v_true)
-
+    loss_p = optax.softmax_cross_entropy_with_integer_labels(p_pred, p_true)
+    loss_v = optax.softmax_cross_entropy_with_integer_labels(v_pred, v_true)
     loss_c = optax.sigmoid_binary_cross_entropy(c_pred, c_true).mean(axis=-1)
 
-    loss_p_1 = jnp.average(loss_p_1, weights=mask)
-    loss_p_2 = jnp.average(loss_p_2, weights=mask)
-
-    loss_v_1 = jnp.average(loss_v_1, weights=mask)
-    loss_v_2 = jnp.average(loss_v_2, weights=mask)
-
+    loss_p = jnp.average(loss_p, weights=mask)
+    loss_v = jnp.average(loss_v, weights=mask)
     loss_c = jnp.average(loss_c, weights=mask)
 
-    loss = loss_p_1 + loss_p_2 + loss_v_1 + loss_v_2 + loss_c
-    losses = jnp.array([loss_p_1, loss_p_2 ,loss_v_1, loss_v_2, loss_c])
+    loss = loss_p + loss_v + loss_c
+    losses = jnp.array([loss_p, loss_v, loss_c])
 
     return loss, losses
 
@@ -360,8 +323,8 @@ def loss_fn(
     concat = create_concat_input(tokens, posses, c_true)
 
     # p, v, c = state.apply_fn({'params': params}, tokens, eval=eval, rngs={'dropout': dropout_rng})
-    p1, p2, v1, v2, c = state.apply_fn({'params': params}, tokens, pos=posses, concat=concat, eval=eval, rngs={'dropout': dropout_rng})
-    loss, losses = calc_loss(tokens, p1, p2, v1, v2, c, p_true, v_true, c_true)
+    p, v, c = state.apply_fn({'params': params}, tokens, pos=posses, concat=concat, eval=eval, rngs={'dropout': dropout_rng})
+    loss, losses = calc_loss(tokens, p, v, c, p_true, v_true, c_true)
 
     return loss, losses
 
