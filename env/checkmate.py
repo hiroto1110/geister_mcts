@@ -2,7 +2,6 @@ import dataclasses
 
 import env.state as game
 import env.lib.checkmate_lib as checkmate_lib
-import env.lib.checkmate_u_lib as checkmate_u_libc
 
 
 @dataclasses.dataclass

@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace, field
 import numpy as np
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchParameters:
     num_simulations: int
     dirichlet_alpha: float = 0.3
@@ -23,7 +23,7 @@ class SearchParameters:
         return replace(self, **args)
 
 
-@dataclass
+@dataclass(frozen=True)
 class FloatRange:
     min: int
     max: int
@@ -33,7 +33,7 @@ class FloatRange:
         return self.min + (self.max - self.min) * p
 
 
-@dataclass
+@dataclass(frozen=True)
 class IntRange:
     min: int
     max: int
@@ -43,7 +43,7 @@ class IntRange:
         return int(np.round(self.min + (self.max - self.min) * p, 0))
 
 
-@dataclass
+@dataclass(frozen=True)
 class VectorRange:
     min: np.ndarray
     max: np.ndarray
@@ -53,7 +53,7 @@ class VectorRange:
         return self.min + (self.max - self.min) * p
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchParametersRange:
     num_simulations: IntRange
     dirichlet_alpha: FloatRange = FloatRange(0.3, 0.3)
