@@ -34,6 +34,7 @@ class Embeddings(nn.Module):
     n_pieces: int = 16
     board_size: int = 7
     max_n_ply: int = 201
+    num_pieces: int = 8
 
     @nn.compact
     def __call__(self, tokens: jnp.ndarray, eval: bool):
@@ -42,6 +43,11 @@ class Embeddings(nn.Module):
         embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
         embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
         embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
+
+        """embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 5] % 10)
+        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 5] // 10)
+        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 6] & 10)
+        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 6] // 10)"""
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)

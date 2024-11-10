@@ -9,7 +9,7 @@ import optax
 
 from network.train import TrainState, train_step
 from network.checkpoints import Checkpoint
-from batch import astuple
+from batch import FORMAT_XARC
 
 from messages import (
     MessageLeanerInitServer,
@@ -46,7 +46,7 @@ class Agent:
         for i in tqdm(range(num_batches), desc=f' Training {self.config.name} '):
             self.state, loss_i, losses_i = train_step(
                 self.state,
-                *astuple(train_batches[i]),
+                *FORMAT_XARC.astuple(train_batches[i]),
                 num_division_of_segment=self.config.training.num_division_of_segment,
                 eval=False
             )

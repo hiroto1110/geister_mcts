@@ -294,20 +294,12 @@ def get_initial_state_pair() -> tuple[State, State]:
     return state_p, state_o
 
 
-def action_to_id(action):
+def action_to_id(action: int) -> tuple[int, int]:
     p_id = action // 4
     d_i = action % 4
     d = DIRECTIONS[d_i]
 
     return p_id, d
-
-
-def action_to_pos(action):
-    pos = action // 4
-    d_i = action % 4
-    d = DIRECTIONS[d_i]
-
-    return pos, pos + d
 
 
 def get_valid_actions_mask(state: State, player: int):

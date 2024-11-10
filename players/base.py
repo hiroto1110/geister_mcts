@@ -173,43 +173,49 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
 ) -> GameResult:
     action_history = np.zeros(game_length + 20, dtype=np.int16)
 
-    state1, state2 = get_initial_state_pair()
+    players = player1, player2
+    player_states = [player_state1, player_state2]
 
-    player_state1, tokens1 = player1.init_state(state1, player_state1)
-    player_state2, tokens2 = player2.init_state(state2, player_state2)
+    states = get_initial_state_pair()
+    states = list(states)
 
-    player = 1
+    tokens: list[list[list[int]]] = [[], []]
+
+    for i in range(2):
+        player_states[i], tokens[i] = players[i].init_state(states[i], player_states[i])
+
+    turn_player = 1
+
+    attacked_count = np.zeros((2, 2))
 
     for i in range(game_length):
-        if player == 1:
-            action = player1.select_next_action(state1, player_state1).action
+        p = 0 if turn_player == 1 else 1
 
-            if visualization_directory is not None:
-                player1.visualize_state(player_state1, f"{visualization_directory}/{i}")
-        else:
-            action = player2.select_next_action(state2, player_state2).action
+        action = players[p].select_next_action(states[p], player_states[p]).action
 
-            if visualization_directory is not None:
-                player2.visualize_state(player_state2, f"{visualization_directory}/{i}")
+        if visualization_directory is not None:
+            players[p].visualize_state(player_states[p], f"{visualization_directory}/{i}")
 
-        if is_action_to_enter_deadlock(state1 if player == 1 else state2, action, 1):
-            print("True!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        if is_action_to_enter_deadlock(states[p], action, 1):
+            p_id, _ = game.action_to_id(action)
+            color = states[p].board[game.COL_P, p_id]
+            attacked_count[p, color] += 1
+            print("t!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
-        player_state1, state1, tokens1_i, result1 = player1.apply_action(
-            state1, player_state1, action, player, state2.board[game.COL_P, ::-1]
-        )
-        player_state2, state2, tokens2_i, result2 = player2.apply_action(
-            state2, player_state2, action, -player, state1.board[game.COL_P, ::-1]
-        )
+        results: list[game.StepResult] = [None, None]
 
-        tokens1 += tokens1_i
-        tokens2 += tokens2_i
+        for j in range(2):
+            player_states[j], states[j], tokens_i, result = players[j].apply_action(
+                states[j], player_states[j], action, turn_player * (1 if j == 0 else -1), states[1 - j].board[game.COL_P, ::-1]
+            )
+            tokens[j] += tokens_i
+            results[j] = result
 
         action_history[i] = action
 
         if print_board:
             s = states_to_str(
-                states=[state1, state2],
+                states=states,
                 predicted_colors=[[0.5]*8, [0.5]*8],
                 true_colors=[None, None],
                 colored=True
@@ -217,17 +223,19 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
             print(s)
             print(i)
 
-        if result1.winner != 0 or result2.winner != 0:
+        if results[0].winner != 0 or results[1].winner != 0:
             break
 
-        player = -player
+        turn_player = -turn_player
+    
+    print(attacked_count)
 
     return GameResult(
         actions=action_history,
-        winner=result1.winner,
-        win_type=result1.win_type,
-        color1=state1.board[game.COL_P],
-        color2=state2.board[game.COL_P],
-        tokens1=tokens1,
-        tokens2=tokens2
+        winner=results[0].winner,
+        win_type=results[0].win_type,
+        color1=states[0].board[game.COL_P],
+        color2=states[1].board[game.COL_P],
+        tokens1=tokens[0],
+        tokens2=tokens[1]
     )
