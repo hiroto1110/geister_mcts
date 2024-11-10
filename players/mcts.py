@@ -32,19 +32,17 @@ def predict(
     params: dict[str, Any],
     model: TransformerWithCache,
     x: jnp.ndarray,
-    cache: jnp.ndarray,
-    read_memory_i=None,
-    write_memory_i=None
+    cache: jnp.ndarray
 ):
-    x, pi, v, c, cache = model.apply(
+    x, p, v, c, cache = model.apply(
         {'params': params},
-        x, cache, read_memory_i, write_memory_i, eval=True
+        x, cache, eval=True
     )
 
     v = nn.softmax(v)
     c = nn.sigmoid(c)
 
-    return x, pi, v, c, cache
+    return x, p, v, c, cache
 
 
 @dataclass
@@ -64,7 +62,7 @@ def predict_with_tokens(pred_state: PredictState, tokens: list, cache: jnp.ndarr
 
     for i in range(x.shape[0]):
         _, p, v, c, cache = predict(pred_state.params, pred_state.model, x[i], cache)
-
+    
     return PredictResult(p, v, c, cache)
 
 
@@ -450,21 +448,6 @@ def select_action_with_mcts(
     return ActionSelectionResultMCTS(action, i, action, result.eval, result.escaped_id)
 
 
-def create_memory(node: Node, pred_state: PredictState) -> jnp.ndarray:
-    write_memory = pred_state.model.create_zero_memory()
-    next_memory = []
-
-    cache = node.predic_result.cache
-
-    for i in range(pred_state.model.config.length_memory_block):
-        x, _, _, _, cache = predict(
-            pred_state.params, pred_state.model, write_memory[i], cache, write_memory_i=jnp.array(i)
-        )
-        next_memory.append(x)
-
-    return jnp.array(next_memory)
-
-
 def create_root_node(
     tokens: list[list[int]],
     pred_state: PredictState,
@@ -473,25 +456,11 @@ def create_root_node(
 ) -> tuple[PredictResult, np.ndarray]:
     model = pred_state.model
 
-    if model.has_memory_block():
-        if prev_node is not None:
-            memory = create_memory(prev_node, pred_state)
-        else:
-            memory = model.create_zero_memory()
-
-        cache = model.create_cache(cache_length + model.config.length_memory_block * 2)
-
-        for i in range(len(memory)):
-            _, _, _, _, cache = predict(
-                pred_state.params, pred_state.model, memory[i], cache, read_memory_i=jnp.array(i)
-            )
-    else:
-        memory = None
-        cache = model.create_cache(cache_length)
+    cache = model.create_cache(cache_length)
 
     result = predict_with_tokens(pred_state, tokens, cache)
 
-    return result, memory
+    return result, None
 
 
 @dataclass(frozen=True)
@@ -611,39 +580,6 @@ def test_play_game():
     from players.base import play_game
 
     play_game(player1, player2, print_board=True, visualization_directory="./data/graph")
-
-
-def test_mcts():
-    def c(n, c_init, c_base):
-        return c_init * np.log((np.sum(n) + 1 + c_base) / c_base) * np.sqrt(np.sum(n) + 1) / (n + 1)
-
-    num_a = 10
-    num_sim = 50
-
-    p = nn.softmax(np.random.random(num_a))
-    w = np.random.random(num_a) - 0.5
-    n = np.zeros(num_a)
-
-    print("p:", [round(float(p_i), 2) for p_i in p])
-    print("w:", [round(p_i, 2) for p_i in w])
-
-    score_history = np.zeros((num_sim, num_a))
-    n_history = np.zeros((num_sim, num_a))
-
-    for i in range(num_sim):
-        score = w + p * c(n, c_init=1.25, c_base=25)
-        a = np.argmax(score)
-        n[a] += 1
-
-        score_history[i] = score
-        n_history[i] = n
-
-    print(n)
-
-    import matplotlib.pyplot as plt
-
-    plt.plot(np.arange(num_sim), score_history)
-    plt.savefig("test.png")
 
 
 if __name__ == "__main__":

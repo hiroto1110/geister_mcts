@@ -18,7 +18,7 @@ class BatchFormat:
     def from_tuple(self, *a: np.ndarray) -> np.ndarray:
         def _reshape(x: np.ndarray, feature: Feature) -> np.ndarray:
             return x.reshape((*x.shape[:-len(feature.shape)], -1)).astype(self.dtype)
-        
+
         reshaped_a = [_reshape(a_i, f_i) for a_i, f_i in zip(a, self.features)]
 
         return np.concatenate(reshaped_a, axis=-1, dtype=self.dtype)
@@ -31,7 +31,10 @@ class BatchFormat:
         for feature in self.features:
             length = feature.length_const + num_tokens * feature.length_per_token
 
-            results.append(batch[..., :length])
+            feature_batch = batch[..., :length]
+            feature_batch = feature_batch.reshape((*feature_batch.shape[:-1], *feature.shape))
+            results.append(feature_batch)
+
             batch = batch[..., length:]
 
         return tuple(results)

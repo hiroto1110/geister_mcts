@@ -191,8 +191,8 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
 
             if visualization_directory is not None:
                 player2.visualize_state(player_state2, f"{visualization_directory}/{i}")
-        
-        if is_action_to_enter_deadlock(state1, action, player):
+
+        if is_action_to_enter_deadlock(state1 if player == 1 else state2, action, 1):
             print("True!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         player_state1, state1, tokens1_i, result1 = player1.apply_action(

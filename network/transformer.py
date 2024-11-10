@@ -195,9 +195,9 @@ class Transformer(nn.Module):
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
-        c = nn.Dense(features=8, name="head_c")(x)
-        p = nn.Dense(features=144, name="head_p")(x)
+        p = nn.Dense(features=32, name="head_p")(x)
         v = nn.Dense(features=7, name="head_v")(x)
+        c = nn.Dense(features=8, name="head_c")(x)
 
         return p, v, c  # [Batch, SeqLen, ...]
 
@@ -242,11 +242,11 @@ class TransformerWithCache(nn.Module):
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
 
-        c = nn.Dense(features=8, name="head_c")(x)
-        p = nn.Dense(features=144, name="head_p")(x)
+        p = nn.Dense(features=32, name="head_p")(x)
         v = nn.Dense(features=7, name="head_v")(x)
+        c = nn.Dense(features=8, name="head_c")(x)
 
-        return x, c, p, v, cache
+        return x, p, v, c, cache
 
 
 class TrainStateTransformer(TrainStateBase):
@@ -290,7 +290,7 @@ def calc_loss(
     c_true = jnp.stack([c_true]*c_pred.shape[-2], axis=-1).reshape(-1, 8)
     # c_true = c_true.reshape(-1, 1, 8)
 
-    p_pred = p_pred.reshape(-1, 144)
+    p_pred = p_pred.reshape(-1, 32)
     v_pred = v_pred.reshape(-1, 7)
     c_pred = c_pred.reshape(-1, 8)
 
@@ -313,17 +313,14 @@ def loss_fn(
     params,
     state: TrainStateTransformer,
     tokens: jnp.ndarray,
-    posses: jnp.ndarray,
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
     dropout_rng,
     eval: bool
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
-    concat = create_concat_input(tokens, posses, c_true)
-
     # p, v, c = state.apply_fn({'params': params}, tokens, eval=eval, rngs={'dropout': dropout_rng})
-    p, v, c = state.apply_fn({'params': params}, tokens, pos=posses, concat=concat, eval=eval, rngs={'dropout': dropout_rng})
+    p, v, c = state.apply_fn({'params': params}, tokens, eval=eval, rngs={'dropout': dropout_rng})
     loss, losses = calc_loss(tokens, p, v, c, p_true, v_true, c_true)
 
     return loss, losses

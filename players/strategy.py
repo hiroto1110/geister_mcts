@@ -171,7 +171,7 @@ def test_game():
         time_limit=20
     )
     from network.checkpoints import Checkpoint
-    ckpt = Checkpoint.from_json_file("./data/projects/run-7/main/600.json")
+    ckpt = Checkpoint.from_json_file("./network/data/checkpoints/tr/2.json")
 
     player_mcts = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
 
