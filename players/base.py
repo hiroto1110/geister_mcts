@@ -179,14 +179,19 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     states = get_initial_state_pair()
     states = list(states)
 
-    tokens: list[list[list[int]]] = [[], []]
+    tokens = np.zeros((2, game_length + 20, 7), dtype=np.uint8)
+    num_tokens = [0, 0]
 
     for i in range(2):
-        player_states[i], tokens[i] = players[i].init_state(states[i], player_states[i])
+        player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
+
+        tokens[i, :len(init_tokens), :5] = np.array(init_tokens, dtype=np.uint8)
+        num_tokens[i] += len(init_tokens)
 
     turn_player = 1
 
     attacked_count = np.zeros((2, 2))
+    last_capturing_t = 0
 
     for i in range(game_length):
         p = 0 if turn_player == 1 else 1
@@ -205,9 +210,22 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
         results: list[game.StepResult] = [None, None]
 
         for j in range(2):
+            turn_player_j = turn_player * (1 if j == 0 else -1)
+            col_o = states[1 - j].board[game.COL_P, ::-1]
+
             player_states[j], states[j], tokens_i, result = players[j].apply_action(
-                states[j], player_states[j], action, turn_player * (1 if j == 0 else -1), states[1 - j].board[game.COL_P, ::-1]
+                states[j], player_states[j], action, turn_player_j, col_o
             )
+
+            if any([t[game.Token.X] == 6 for t in tokens_i]):
+                mask = tokens[j, :, game.Token.T] == last_capturing_t
+                mask *= tokens[j, :, game.Token.X] == 6
+
+                tokens[j, mask, 5] = attacked_count[j, 0] * 5 + attacked_count[j, 1]
+
+                attacked_count[:] = 0
+                last_capturing_t = tokens_i[-1][game.Token.T]
+
             tokens[j] += tokens_i
             results[j] = result
 

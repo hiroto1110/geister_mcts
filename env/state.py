@@ -43,14 +43,14 @@ class AfterstateType(Enum):
     CAPTURING = 1
 
 
-@dataclass
+@dataclass(frozen=True)
 class Afterstate:
     type: AfterstateType
     piece_id: int
     player_id: int = 1
 
 
-@dataclass
+@dataclass(frozen=True)
 class StepResult:
     tokens: list[list[int]]
     afterstates: list[Afterstate]
@@ -58,10 +58,7 @@ class StepResult:
     win_type: WinType
 
     def is_captured(self) -> bool:
-        for afterstate in self.afterstates:
-            if afterstate.type == AfterstateType.CAPTURING:
-                return True
-        return False
+        return any([token[Token.X] == 6 for token in self.tokens])
 
 
 POS_P = 0
