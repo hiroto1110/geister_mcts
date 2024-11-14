@@ -162,11 +162,37 @@ def is_action_to_enter_deadlock(state: game.State, action: int, player: int) -> 
     return True
 
 
+@dataclass(frozen=True)
+class TokenProducer:
+    tokens: np.ndarray
+    attacked_id_history = np.zeros((100, 2, 8), dtype=np.uint8)
+
+    def on_step(self, state: game.State, action: int, player: int):
+        if not is_action_to_enter_deadlock(state, action, 1):
+            return
+
+        player_id = 0 if player == 1 else 1
+        piece_id, _ = game.action_to_id(action)
+
+        self.attacked_id_history[state.n_ply + 1, player_id, piece_id] = 1
+    
+    def add_init_tokens(self, init_tokens: list[list[int]], player_id: int):
+        self.tokens[player_id, :len(init_tokens), :5] = init_tokens
+
+    def add_tokens(
+        self, tokens_in_step: list[list[int]], player_id: int
+    ) -> np.ndarray:
+        empty_mask = np.all(self.tokens[player_id] == 0, axis=-1)
+        idx = np.arange(len(empty_mask))[empty_mask].min()
+        self.tokens[player_id, idx: idx + len(tokens_in_step), :5] = tokens_in_step
+
+
 def play_game[T: ActionSelectionResult, S: PlayerState](
     player1: PlayerBase[T, S],
     player2: PlayerBase[T, S],
     player_state1: S = None,
     player_state2: S = None,
+    token_producer: TokenProducer = None,
     visualization_directory: str = None,
     game_length=200,
     print_board=False
@@ -184,14 +210,11 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
 
     for i in range(2):
         player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
-
-        tokens[i, :len(init_tokens), :5] = np.array(init_tokens, dtype=np.uint8)
-        num_tokens[i] += len(init_tokens)
+        token_producer.add_init_tokens(init_tokens, player_id=i)
 
     turn_player = 1
 
-    attacked_count = np.zeros((2, 2))
-    last_capturing_t = 0
+    attacked_id_history = np.zeros((game_length, 2, 8), dtype=np.uint8)
 
     for i in range(game_length):
         p = 0 if turn_player == 1 else 1
@@ -203,9 +226,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
 
         if is_action_to_enter_deadlock(states[p], action, 1):
             p_id, _ = game.action_to_id(action)
-            color = states[p].board[game.COL_P, p_id]
-            attacked_count[p, color] += 1
-            print("t!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            attacked_id_history[i + 1, p, p_id] = 1
 
         results: list[game.StepResult] = [None, None]
 
@@ -217,17 +238,49 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
                 states[j], player_states[j], action, turn_player_j, col_o
             )
 
-            if any([t[game.Token.X] == 6 for t in tokens_i]):
-                mask = tokens[j, :, game.Token.T] == last_capturing_t
-                mask *= tokens[j, :, game.Token.X] == 6
+            token_producer.add_token(tokens_i, j)
 
-                tokens[j, mask, 5] = attacked_count[j, 0] * 5 + attacked_count[j, 1]
-
-                attacked_count[:] = 0
-                last_capturing_t = tokens_i[-1][game.Token.T]
-
-            tokens[j] += tokens_i
+            tokens[j, num_tokens[j]: num_tokens[j] + len(tokens_i), :5] = tokens_i
+            num_tokens[j] += len(tokens_i)
             results[j] = result
+
+            if not any([t[game.Token.X] == 6 for t in tokens_i]):
+                continue
+
+            captured_id = tokens_i[0][game.Token.ID]
+
+            mask = tokens[j, :, game.Token.X] == 6
+
+            if captured_id < 8:
+                mask *= tokens[j, :, game.Token.ID] < 8
+            else:
+                mask *= tokens[j, :, game.Token.ID] >= 8
+
+            if not np.any(mask):
+                mask[:8] = 1
+                mask_pos = 0
+            else:
+                mask_poses = np.arange(len(mask), dtype=np.uint16)[mask]
+                mask_pos = mask_poses.max()
+                mask[:mask_pos] = 0
+
+            last_captured_t = tokens[j, mask_pos, game.Token.T]
+
+            if captured_id < 8:
+                attacked_id = attacked_id_history[last_captured_t:, 1 - j].any(axis=0)
+
+                count_attacked = np.sum(attacked_id == 1)
+                count_captured = np.sum((attacked_id == 1) * (states[j].pos_o == game.CAPTURED))
+
+                tokens[j, mask, 5] = 1 + np.clip(count_attacked, 0, 1) * 2 + np.clip(count_captured, 0, 1)
+
+            else:
+                attacked_id = attacked_id_history[last_captured_t:, j].any(axis=0)
+
+                count_r = np.sum((attacked_id[j] == 1) * (states[j].col_p == game.RED))
+                count_b = np.sum((attacked_id[j] == 1) * (states[j].col_p == game.BLUE))
+
+                tokens[j, mask, 6] = 1 + np.clip(count_b, 0, 1) * 2 + np.clip(count_r, 0, 1)
 
         action_history[i] = action
 
@@ -246,7 +299,11 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
 
         turn_player = -turn_player
     
-    print(attacked_count)
+    print(tokens[0, :, 5])
+    print(tokens[0, :, 6])
+    print()
+    print(tokens[1, :, 5])
+    print(tokens[1, :, 6])
 
     return GameResult(
         actions=action_history,

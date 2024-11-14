@@ -73,6 +73,22 @@ class State:
     board: np.ndarray
     n_ply: int
 
+    @property
+    def pos_p(self) -> np.ndarray:
+        return self.board[POS_P]
+
+    @property
+    def pos_o(self) -> np.ndarray:
+        return self.board[POS_O]
+
+    @property
+    def col_p(self) -> np.ndarray:
+        return self.board[COL_P]
+
+    @property
+    def col_o(self) -> np.ndarray:
+        return self.board[COL_O]
+
     @staticmethod
     def create(color: np.ndarray) -> "State":
         pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)

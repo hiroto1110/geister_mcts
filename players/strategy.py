@@ -158,27 +158,3 @@ class PlayerStatisticsZConfig(PlayerConfig[PlayerStatisticsZ]):
             player=self.player.create_player(project_dir),
             checkmate_depth=self.checkmate_depth
         )
-
-
-def test_game():
-    from players.base import play_game
-    from players.mcts import SearchParameters, PlayerMCTS
-
-    np.random.seed(3)
-
-    mcts_params = SearchParameters(
-        num_simulations=100,
-        time_limit=20
-    )
-    from network.checkpoints import Checkpoint
-    ckpt = Checkpoint.from_json_file("./network/data/checkpoints/tr/2.json")
-
-    player_mcts = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
-
-    player = player_mcts
-
-    play_game(player, player, print_board=True)
-
-
-if __name__ == "__main__":
-    test_game()
