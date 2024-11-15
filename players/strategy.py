@@ -1,160 +1,115 @@
 from __future__ import annotations
 
-import enum
-import dataclasses
-import itertools
-
 import numpy as np
 
-from players.base import PlayerBase, PlayerState, ActionSelectionResult, PlayerConfig
-from env.state import State
-from env.checkmate import find_checkmate
+from players.base import TokenProducer
 import env.state as game
 
 
-class GameResult(enum.IntFlag):
-    NONE = 0
-    WON_E = 2**0
-    WON_B = 2**1
-    WON_R = 2**2
-    LST_E = 2**3
-    LST_B = 2**4
-    LST_R = 2**5
+def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
+    mask = pieses_pos == game.CAPTURED
 
-    @classmethod
-    def from_step_result(cls, result: game.StepResult) -> "GameResult":
-        if result.winner > 0:
-            if result.win_type == game.WinType.BLUE_4:
-                return GameResult.WON_B
-            if result.win_type == game.WinType.RED_4:
-                return GameResult.WON_R
-            if result.win_type == game.WinType.ESCAPE:
-                return GameResult.WON_E
+    x = (pieses_pos % 6) - (target_pos % 6)
+    y = (pieses_pos // 6) - (target_pos // 6)
 
-        if result.winner < 0:
-            if result.win_type == game.WinType.BLUE_4:
-                return GameResult.LST_B
-            if result.win_type == game.WinType.RED_4:
-                return GameResult.LST_R
-            if result.win_type == game.WinType.ESCAPE:
-                return GameResult.LST_E
+    d = np.abs(x) + np.abs(y)
+    d[mask] = 100
 
-        return GameResult.NONE
+    closest_mask = d == np.min(d)
+    pieses_id = np.arange(len(pieses_pos))[closest_mask]
+
+    return list(pieses_id)
 
 
-@dataclasses.dataclass(frozen=True)
-class PlayerStatisticsZ(PlayerBase):
-    z: np.ndarray
-    player: PlayerBase
-    checkmate_depth: int
+def is_action_to_enter_deadlock(state: game.State, action: int, player: int) -> bool:
+    if player == 1:
+        pos_p, pos_o = state.board[game.POS_P], state.board[game.POS_O]
+        escaping_pos = game.ESCAPE_POS_P
+    else:
+        pos_p, pos_o = state.board[game.POS_O], state.board[game.POS_P]
+        escaping_pos = game.ESCAPE_POS_O
 
-    def init_state(self, state: game.State, prev_state: PlayerState = None) -> tuple[PlayerState, list[list[int]]]:
-        return self.player.init_state(state, prev_state)
+    defenders_0 = find_closest_pieses(pos_o, target_pos=escaping_pos[0])
+    defenders_1 = find_closest_pieses(pos_o, target_pos=escaping_pos[1])
+    defenders = defenders_0 + defenders_1
 
-    def apply_action(
-        self,
-        state: game.State,
-        player_state: PlayerState,
-        action: int, player: int,
-        true_color_o: np.ndarray
-    ) -> tuple[PlayerState, game.State, list[list[int]], game.StepResult]:
-        return self.player.apply_action(state, player_state, action, player, true_color_o)
+    defender_pos = pos_o[defenders]
+    defender_pos = np.stack([defender_pos] * 4, axis=0)
+    defender_pos[0] -= 6
+    defender_pos[1] -= 1
+    defender_pos[2] += 1
+    defender_pos[3] += 6
 
-    def select_next_action(self, state: State, player_state: PlayerState) -> ActionSelectionResult:
-        action_dict = self.create_action_dict(state)
+    defender_pos[1, defender_pos[1] % 6 == 5] = -1
+    defender_pos[2, defender_pos[2] % 6 == 0] = -1
 
-        if len(action_dict.keys()) == 1:
-            return self.player.select_next_action(state, player_state)
+    defender_pos = defender_pos.flatten()
 
-        flags = [int(flag) for flag in action_dict.keys()]
+    p_id, d = game.action_to_id(action)
+    action_pos = pos_p[p_id] + d
 
-        p = self.z[flags]
-        p = p / np.sum(p)
-        flag = np.random.choice(flags, p=p)
+    if action_pos not in defender_pos:
+        return False
 
-        actions = action_dict[flag]
+    return True
 
-        return self.player.select_next_action(state, player_state, actions)
+class StrategyTokenProducer(TokenProducer):
+    def __init__(self):
+        self.tokens: np.ndarray = None
+        self.attacked_id_history: np.ndarray = None
 
-    def create_action_dict(self, state: State):
-        action_dict: dict[GameResult, list[int]] = {}
+    def init_game(self, game_length: int):
+        self.tokens = np.zeros((2, game_length, 7), dtype=np.uint8)
+        self.attacked_id_history = np.zeros((2, game_length, 8), dtype=np.uint8)
 
-        for action in game.get_valid_actions(state, player=1):
-            flag = self.search(state, player=1, action=action, depth=2)
+    def on_step(self, state: game.State, action: int, player: int):
+        if not is_action_to_enter_deadlock(state, action, 1):
+            return
 
-            if flag not in action_dict:
-                action_dict[flag] = []
+        player_id = 0 if player == 1 else 1
+        piece_id, _ = game.action_to_id(action)
 
-            action_dict[flag].append(action)
+        self.attacked_id_history[player_id, state.n_ply + 1, piece_id] = 1
 
-        return action_dict
+    def add_tokens(self, state: game.State, tokens_in_step: list[list[int]], player_id: int):
+        empty_mask = np.all(self.tokens[player_id] == 0, axis=-1)
+        idx = np.arange(len(empty_mask))[empty_mask].min()
+        self.tokens[player_id, idx: idx + len(tokens_in_step), :5] = tokens_in_step
 
-    def search(self, state: State, player: int, action: int, depth: int) -> GameResult:
-        if depth == 0:
-            return GameResult.NONE
+        if not any([t[game.Token.X] == 6 for t in tokens_in_step]):
+            return
 
-        next_state, a_result = state.step(action, player)
+        captured_id = tokens_in_step[0][game.Token.ID]
 
-        next_states: list[tuple[State, game.StepResult]] = []
+        mask = self.tokens[player_id, :, game.Token.X] == 6
 
-        if len(a_result.afterstates) == 0:
-            next_states.append((next_state, a_result))
+        if captured_id < 8:
+            mask *= self.tokens[player_id, :, game.Token.ID] < 8
+        else:
+            mask *= self.tokens[player_id, :, game.Token.ID] >= 8
+
+        if not np.any(mask):
+            mask[:8] = 1
+            mask_pos = 0
+        else:
+            mask_poses = np.arange(len(mask), dtype=np.uint16)[mask]
+            mask_pos = mask_poses.max()
+            mask[:mask_pos] = 0
+
+        last_captured_t = self.tokens[player_id, mask_pos, game.Token.T]
+
+        if captured_id < 8:
+            attacked_id = self.attacked_id_history[1 - player_id, last_captured_t:].any(axis=0)
+
+            count_attacked = np.sum(attacked_id == 1)
+            count_captured = np.sum((attacked_id == 1) * (state.pos_o == game.CAPTURED))
+
+            self.tokens[player_id, mask, 5] = 1 + np.clip(count_attacked, 0, 1) * 2 + np.clip(count_captured, 0, 1)
 
         else:
-            for colors in itertools.product([game.BLUE, game.RED], repeat=len(a_result.afterstates)):
-                for i, color in enumerate(colors):
-                    next_state_i, a_result_i = next_state.step_afterstate(a_result.afterstates[i], color)
+            attacked_id = self.attacked_id_history[player_id, last_captured_t:].any(axis=0)
 
-                    if a_result_i.winner != 0:
-                        break
-                next_states.append((next_state_i, a_result_i))
+            count_r = np.sum((attacked_id[player_id] == 1) * (state.col_p == game.RED))
+            count_b = np.sum((attacked_id[player_id] == 1) * (state.col_p == game.BLUE))
 
-        result = GameResult.NONE
-
-        for next_state_i, a_result_i in next_states:
-            if a_result_i.winner != 0:
-                result |= GameResult.from_step_result(a_result_i)
-            else:
-                c_result = find_checkmate(next_state_i, -player, depth=self.checkmate_depth)
-
-                if c_result.eval > 0:
-                    result |= GameResult.WON_E
-                    continue
-                if c_result.eval < 0:
-                    result |= GameResult.LST_E
-                    continue
-
-                if depth > 1:
-                    for next_action in game.get_valid_actions(next_state_i, -player):
-                        result |= self.search(next_state_i, -player, next_action, depth - 1)
-
-        return result
-
-
-@dataclasses.dataclass
-class StatisticsZFactory:
-    def create_z(self) -> np.ndarray:
-        pass
-
-
-@dataclasses.dataclass
-class StatisticsZFactoryRandom:
-    def create_z(self) -> np.ndarray:
-        return np.random.random(2**6)
-
-
-@dataclasses.dataclass
-class PlayerStatisticsZConfig(PlayerConfig[PlayerStatisticsZ]):
-    z: StatisticsZFactory
-    player: PlayerConfig
-    checkmate_depth: int
-
-    def get_name(self) -> str:
-        return "Statistics"
-
-    def create_player(self, project_dir: str) -> PlayerStatisticsZ:
-        return PlayerStatisticsZ(
-            z=self.z.create_z(),
-            player=self.player.create_player(project_dir),
-            checkmate_depth=self.checkmate_depth
-        )
+            self.tokens[player_id, mask, 6] = 1 + np.clip(count_b, 0, 1) * 2 + np.clip(count_r, 0, 1)

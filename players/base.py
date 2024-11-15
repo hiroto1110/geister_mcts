@@ -68,19 +68,19 @@ class PlayerConfig[T: PlayerBase](SerdeJsonSerializable):
         return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class GameResult:
     actions: np.ndarray
     winner: int
     win_type: WinType
     color1: np.ndarray
     color2: np.ndarray
-    tokens1: list[list[int]]
-    tokens2: list[list[int]]
+    tokens1: np.ndarray
+    tokens2: np.ndarray
 
     @staticmethod
     def create_sample(
-        tokens_list: list[list[int]],
+        tokens_list: np.ndarray,
         actions: np.ndarray,
         color_o: np.ndarray,
         reward: int,
@@ -113,78 +113,20 @@ class GameResult:
             self.tokens2, self.actions, self.color1[::-1], reward, token_length
         )
 
-
-def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
-    mask = pieses_pos == game.CAPTURED
-
-    x = (pieses_pos % 6) - (target_pos % 6)
-    y = (pieses_pos // 6) - (target_pos // 6)
-
-    d = np.abs(x) + np.abs(y)
-    d[mask] = 100
-
-    closest_mask = d == np.min(d)
-    pieses_id = np.arange(len(pieses_pos))[closest_mask]
-
-    return list(pieses_id)
-
-
-def is_action_to_enter_deadlock(state: game.State, action: int, player: int) -> bool:
-    if player == 1:
-        pos_p, pos_o = state.board[game.POS_P], state.board[game.POS_O]
-        escaping_pos = game.ESCAPE_POS_P
-    else:
-        pos_p, pos_o = state.board[game.POS_O], state.board[game.POS_P]
-        escaping_pos = game.ESCAPE_POS_O
-
-    defenders_0 = find_closest_pieses(pos_o, target_pos=escaping_pos[0])
-    defenders_1 = find_closest_pieses(pos_o, target_pos=escaping_pos[1])
-    defenders = defenders_0 + defenders_1
-
-    defender_pos = pos_o[defenders]
-    defender_pos = np.stack([defender_pos] * 4, axis=0)
-    defender_pos[0] -= 6
-    defender_pos[1] -= 1
-    defender_pos[2] += 1
-    defender_pos[3] += 6
-
-    defender_pos[1, defender_pos[1] % 6 == 5] = -1
-    defender_pos[2, defender_pos[2] % 6 == 0] = -1
-
-    defender_pos = defender_pos.flatten()
-
-    p_id, d = game.action_to_id(action)
-    action_pos = pos_p[p_id] + d
-
-    if action_pos not in defender_pos:
-        return False
-
-    return True
-
-
-@dataclass(frozen=True)
 class TokenProducer:
-    tokens: np.ndarray
-    attacked_id_history = np.zeros((100, 2, 8), dtype=np.uint8)
+    def __init__(self):
+        self.tokens: np.ndarray = None
+
+    def init_game(self, game_length: int):
+        self.tokens = np.zeros((2, game_length, 5), dtype=np.uint8)
 
     def on_step(self, state: game.State, action: int, player: int):
-        if not is_action_to_enter_deadlock(state, action, 1):
-            return
+        pass
 
-        player_id = 0 if player == 1 else 1
-        piece_id, _ = game.action_to_id(action)
-
-        self.attacked_id_history[state.n_ply + 1, player_id, piece_id] = 1
-    
-    def add_init_tokens(self, init_tokens: list[list[int]], player_id: int):
-        self.tokens[player_id, :len(init_tokens), :5] = init_tokens
-
-    def add_tokens(
-        self, tokens_in_step: list[list[int]], player_id: int
-    ) -> np.ndarray:
+    def add_tokens(self, state: game.State, tokens_in_step: list[list[int]], player_id: int):
         empty_mask = np.all(self.tokens[player_id] == 0, axis=-1)
         idx = np.arange(len(empty_mask))[empty_mask].min()
-        self.tokens[player_id, idx: idx + len(tokens_in_step), :5] = tokens_in_step
+        self.tokens[player_id, idx: idx + len(tokens_in_step)] = tokens_in_step
 
 
 def play_game[T: ActionSelectionResult, S: PlayerState](
@@ -192,7 +134,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     player2: PlayerBase[T, S],
     player_state1: S = None,
     player_state2: S = None,
-    token_producer: TokenProducer = None,
+    token_producer: TokenProducer = TokenProducer(),
     visualization_directory: str = None,
     game_length=200,
     print_board=False
@@ -205,16 +147,13 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     states = get_initial_state_pair()
     states = list(states)
 
-    tokens = np.zeros((2, game_length + 20, 7), dtype=np.uint8)
-    num_tokens = [0, 0]
+    token_producer.init_game(game_length)
 
     for i in range(2):
         player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
-        token_producer.add_init_tokens(init_tokens, player_id=i)
+        token_producer.add_tokens(states[i], init_tokens, player_id=i)
 
     turn_player = 1
-
-    attacked_id_history = np.zeros((game_length, 2, 8), dtype=np.uint8)
 
     for i in range(game_length):
         p = 0 if turn_player == 1 else 1
@@ -224,9 +163,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
         if visualization_directory is not None:
             players[p].visualize_state(player_states[p], f"{visualization_directory}/{i}")
 
-        if is_action_to_enter_deadlock(states[p], action, 1):
-            p_id, _ = game.action_to_id(action)
-            attacked_id_history[i + 1, p, p_id] = 1
+        token_producer.on_step(states[p], action, turn_player)
 
         results: list[game.StepResult] = [None, None]
 
@@ -234,53 +171,11 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
             turn_player_j = turn_player * (1 if j == 0 else -1)
             col_o = states[1 - j].board[game.COL_P, ::-1]
 
-            player_states[j], states[j], tokens_i, result = players[j].apply_action(
+            player_states[j], states[j], tokens_i, results[j] = players[j].apply_action(
                 states[j], player_states[j], action, turn_player_j, col_o
             )
 
-            token_producer.add_token(tokens_i, j)
-
-            tokens[j, num_tokens[j]: num_tokens[j] + len(tokens_i), :5] = tokens_i
-            num_tokens[j] += len(tokens_i)
-            results[j] = result
-
-            if not any([t[game.Token.X] == 6 for t in tokens_i]):
-                continue
-
-            captured_id = tokens_i[0][game.Token.ID]
-
-            mask = tokens[j, :, game.Token.X] == 6
-
-            if captured_id < 8:
-                mask *= tokens[j, :, game.Token.ID] < 8
-            else:
-                mask *= tokens[j, :, game.Token.ID] >= 8
-
-            if not np.any(mask):
-                mask[:8] = 1
-                mask_pos = 0
-            else:
-                mask_poses = np.arange(len(mask), dtype=np.uint16)[mask]
-                mask_pos = mask_poses.max()
-                mask[:mask_pos] = 0
-
-            last_captured_t = tokens[j, mask_pos, game.Token.T]
-
-            if captured_id < 8:
-                attacked_id = attacked_id_history[last_captured_t:, 1 - j].any(axis=0)
-
-                count_attacked = np.sum(attacked_id == 1)
-                count_captured = np.sum((attacked_id == 1) * (states[j].pos_o == game.CAPTURED))
-
-                tokens[j, mask, 5] = 1 + np.clip(count_attacked, 0, 1) * 2 + np.clip(count_captured, 0, 1)
-
-            else:
-                attacked_id = attacked_id_history[last_captured_t:, j].any(axis=0)
-
-                count_r = np.sum((attacked_id[j] == 1) * (states[j].col_p == game.RED))
-                count_b = np.sum((attacked_id[j] == 1) * (states[j].col_p == game.BLUE))
-
-                tokens[j, mask, 6] = 1 + np.clip(count_b, 0, 1) * 2 + np.clip(count_r, 0, 1)
+            token_producer.add_tokens(states[j], tokens_i, player_id=j)
 
         action_history[i] = action
 
@@ -298,19 +193,13 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
             break
 
         turn_player = -turn_player
-    
-    print(tokens[0, :, 5])
-    print(tokens[0, :, 6])
-    print()
-    print(tokens[1, :, 5])
-    print(tokens[1, :, 6])
 
     return GameResult(
         actions=action_history,
         winner=results[0].winner,
         win_type=results[0].win_type,
-        color1=states[0].board[game.COL_P],
-        color2=states[1].board[game.COL_P],
-        tokens1=tokens[0],
-        tokens2=tokens[1]
+        color1=states[0].col_p,
+        color2=states[1].col_p,
+        tokens1=token_producer.tokens[0],
+        tokens2=token_producer.tokens[1]
     )
