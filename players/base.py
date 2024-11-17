@@ -55,7 +55,7 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
         pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class PlayerConfig[T: PlayerBase](SerdeJsonSerializable):
     @property
     def name(self) -> str:
@@ -78,21 +78,26 @@ class GameResult:
     tokens1: np.ndarray
     tokens2: np.ndarray
 
-    @staticmethod
+    @classmethod
+    def get_batch_format(cls) -> batch.BatchFormat:
+        return batch.FORMAT_XARC
+
+    @classmethod
     def create_sample(
+        cls,
         tokens_list: np.ndarray,
         actions: np.ndarray,
         color_o: np.ndarray,
         reward: int,
         token_length: int
     ) -> np.ndarray:
-        tokens = np.zeros((token_length, 5), dtype=np.uint8)
+        tokens = np.zeros((token_length, tokens_list.shape[-1]), dtype=np.uint8)
         tokens[:min(token_length, len(tokens_list))] = tokens_list[:token_length]
 
         actions = actions[tokens[:, 4]]
         reward = np.array([reward], dtype=np.uint8)
 
-        return batch.FORMAT_XARC.from_tuple(
+        return cls.get_batch_format().from_tuple(
             tokens.astype(np.uint8),
             actions.astype(np.uint8),
             reward.astype(np.uint8),
@@ -118,13 +123,17 @@ class TokenProducer:
         self.tokens: np.ndarray = None
 
     def init_game(self, game_length: int):
-        self.tokens = np.zeros((2, game_length, 5), dtype=np.uint8)
+        self.tokens = np.zeros((2, game_length + 40, 5), dtype=np.uint8)
 
     def on_step(self, state: game.State, action: int, player: int):
         pass
 
     def add_tokens(self, state: game.State, tokens_in_step: list[list[int]], player_id: int):
         empty_mask = np.all(self.tokens[player_id] == 0, axis=-1)
+
+        if not np.any(empty_mask):
+            return
+
         idx = np.arange(len(empty_mask))[empty_mask].min()
         self.tokens[player_id, idx: idx + len(tokens_in_step)] = tokens_in_step
 
@@ -134,6 +143,8 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     player2: PlayerBase[T, S],
     player_state1: S = None,
     player_state2: S = None,
+    color1: np.ndarray = None,
+    color2: np.ndarray = None,
     token_producer: TokenProducer = TokenProducer(),
     visualization_directory: str = None,
     game_length=200,
@@ -144,7 +155,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     players = player1, player2
     player_states = [player_state1, player_state2]
 
-    states = get_initial_state_pair()
+    states = get_initial_state_pair(color1, color2)
     states = list(states)
 
     token_producer.init_game(game_length)
@@ -189,15 +200,25 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
             print(s)
             print(i)
 
-        if results[0].winner != 0 or results[1].winner != 0:
+        if results[0].winner != 0:
+            winner = results[0].winner
+            win_type = results[0].win_type
+            break
+
+        if results[1].winner != 0:
+            winner = -results[1].winner
+            win_type = results[1].win_type
             break
 
         turn_player = -turn_player
+    else:
+        winner = 0
+        win_type = WinType.DRAW
 
     return GameResult(
         actions=action_history,
-        winner=results[0].winner,
-        win_type=results[0].win_type,
+        winner=winner,
+        win_type=win_type,
         color1=states[0].col_p,
         color2=states[1].col_p,
         tokens1=token_producer.tokens[0],

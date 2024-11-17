@@ -39,7 +39,19 @@ class PlayerTracing(PlayerBase):
         if actions is None:
             actions = get_valid_actions(state, 1)
 
-        return ActionSelectionResult(np.random.choice(actions))
+        if len(self.tracing_actions) <= state.n_ply:
+            print("not enough length", state.n_ply)
+            action = np.random.choice(actions)
+        else:
+            action = self.tracing_actions[state.n_ply]
+
+        if action not in actions:
+            print("invalid action", action, actions)
+            action = np.random.choice(actions)
+
+        # assert action in actions, f"invalid action {action}, valid actions {actions}"
+
+        return ActionSelectionResult(action)
 
 
 @dataclass(frozen=True)

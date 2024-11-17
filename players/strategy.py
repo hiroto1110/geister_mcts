@@ -4,6 +4,7 @@ import numpy as np
 
 from players.base import TokenProducer
 import env.state as game
+import batch
 
 
 def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
@@ -58,9 +59,13 @@ class StrategyTokenProducer(TokenProducer):
         self.tokens: np.ndarray = None
         self.attacked_id_history: np.ndarray = None
 
+    @classmethod
+    def get_batch_format(cls) -> batch.BatchFormat:
+        return batch.FORMAT_X7ARC
+
     def init_game(self, game_length: int):
-        self.tokens = np.zeros((2, game_length, 7), dtype=np.uint8)
-        self.attacked_id_history = np.zeros((2, game_length, 8), dtype=np.uint8)
+        self.tokens = np.zeros((2, game_length + 40, 7), dtype=np.uint8)
+        self.attacked_id_history = np.zeros((2, game_length + 40, 8), dtype=np.uint8)
 
     def on_step(self, state: game.State, action: int, player: int):
         if not is_action_to_enter_deadlock(state, action, 1):

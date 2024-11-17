@@ -251,7 +251,7 @@ class State:
             4, p_id + 8,
             pos_next % 6,
             pos_next // 6,
-            self.n_ply + 1 if self.n_ply > 0 else 2]]
+            self.n_ply + 1]]
 
         if len(p_cap_id) > 0:
             p_cap_id = p_cap_id[0]
@@ -284,7 +284,7 @@ class State:
                 win_type = WinType.ESCAPE
 
         return (
-            State(next_board, self.n_ply + 1 if self.n_ply > 0 else 2),
+            State(next_board, self.n_ply + 1),
             StepResult(tokens, afterstates, winner, win_type)
         )
 
@@ -297,9 +297,12 @@ def create_random_color() -> np.ndarray:
     return color
 
 
-def get_initial_state_pair() -> tuple[State, State]:
-    color_p = create_random_color()
-    color_o = create_random_color()
+def get_initial_state_pair(color_p: np.ndarray = None, color_o: np.ndarray = None) -> tuple[State, State]:
+    if color_p is None:
+        color_p = create_random_color()
+    
+    if color_o is None:
+        color_o = create_random_color()
 
     state_p = State.create(color_p)
     state_o = State.create(color_o)

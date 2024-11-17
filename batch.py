@@ -58,6 +58,13 @@ FORMAT_XARC = BatchFormat([
     Feature(length_const=8, length_per_token=0),
 ])
 
+FORMAT_X7ARC = BatchFormat([
+    Feature(length_const=0, length_per_token=7, shape=(-1, 7)),
+    Feature(length_const=0, length_per_token=1),
+    Feature(length_const=1, length_per_token=0),
+    Feature(length_const=8, length_per_token=0),
+])
+
 
 def load(path: str) -> np.ndarray:
     if path.endswith('.npy'):

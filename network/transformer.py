@@ -10,7 +10,7 @@ from jax import random, numpy as jnp
 from flax import linen as nn
 
 from network.train_state import TrainStateBase
-from batch import FORMAT_XARC
+from batch import FORMAT_X7ARC
 
 
 @serde.serde
@@ -34,7 +34,6 @@ class Embeddings(nn.Module):
     n_pieces: int = 16
     board_size: int = 7
     max_n_ply: int = 201
-    num_pieces: int = 8
 
     @nn.compact
     def __call__(self, tokens: jnp.ndarray, eval: bool):
@@ -44,10 +43,8 @@ class Embeddings(nn.Module):
         embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
         embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
 
-        """embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 5] % 10)
-        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 5] // 10)
-        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 6] & 10)
-        embeddings += nn.Embed(self.num_pieces + 2, self.embed_dim)(tokens[..., 6] // 10)"""
+        # embeddings += nn.Embed(5, self.embed_dim)(tokens[..., 5])
+        # embeddings += nn.Embed(5, self.embed_dim)(tokens[..., 6])
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)
@@ -260,8 +257,7 @@ class TrainStateTransformer(TrainStateBase):
     def train_step(
         self, x: jnp.ndarray, eval: bool
     ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
-        # tokens, p_true, v_true, c_true = astuple(x)
-        tokens, p_true, v_true, c_true = FORMAT_XARC.astuple(x)
+        tokens, p_true, v_true, c_true = FORMAT_X7ARC.astuple(x)
 
         if not eval:
             (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(

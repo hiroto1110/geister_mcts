@@ -2,17 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-import itertools
 
 from tqdm import tqdm
 
 import jax
 from jax import random, numpy as jnp
-import optax
 
 from network.checkpoints import Checkpoint, CheckpointManager, NetworkConfig
 from train_state import TrainStateBase
-from batch import load, get_tokens
 
 
 class MinibatchProducer:
@@ -126,86 +123,3 @@ def fit(
         checkpoint_manager.save(Checkpoint(int(state.epoch), model_config, state.params))
 
     return state
-
-
-def main_train(batch: jnp.ndarray, log_wandb=False):
-    import wandb
-    from transformer import TrainStateTransformer
-
-    n_train = int(batch.shape[0] * 0.8)
-    train_batch = batch[:n_train]
-    test_batch = batch[n_train:]
-
-    minibatch_producer = MinibatchProducerRL(
-        replay_buffer_size=2048,
-        update_period=64,
-        batch_size=16,
-        num_batches=32
-    )
-    minibatch_producer = MinibatchProducerSimple(batch_size=16)
-
-    heads = 4,
-    dims = 256,
-    num_layers = 4,
-
-    for h, d, n in itertools.product(heads, dims, num_layers):
-        if log_wandb:
-            name = f'h={h}, d={d}, n={n}'
-            run_config = {
-                'num heads': h,
-                'embed dim': d,
-                'num layers': n,
-            }
-            run = wandb.init(project='network benchmark', config=run_config, name=name)
-
-        model_config = TransformerConfig(
-            num_heads=h,
-            embed_dim=d,
-            num_hidden_layers=n,
-        )
-        model = model_config.create_model()
-
-        init_x = get_tokens(train_batch[0, :1])
-
-        variables = model.init(random.PRNGKey(0), init_x)
-        state = TrainStateTransformer.create(
-            apply_fn=model.apply,
-            params=variables['params'],
-            tx=optax.adam(learning_rate=0.0005),
-            dropout_rng=random.PRNGKey(0),
-            epoch=0,
-        )
-
-        ckpt_dir = f'./data/checkpoints/{h}_{d}_{n}'
-
-        checkpoint_manager = CheckpointManager(ckpt_dir)
-        checkpoint_manager.save(Checkpoint(state.epoch, model_config, state.params))
-
-        state = fit(
-            state, model_config, checkpoint_manager,
-            train_batches=train_batch,
-            test_batches=test_batch,
-            minibatch_producer=minibatch_producer,
-            epochs=4,
-            log_wandb=log_wandb
-        )
-
-        if log_wandb:
-            run.finish()
-
-
-def main():
-    batch = load("./data/replay_buffer/run-7.npy")
-    batch = batch.reshape(-1, batch.shape[-1])
-    print(batch.shape)
-
-    # indices = jnp.arange(batch.shape[0])
-    # indices = random.shuffle(random.PRNGKey(0), indices)
-
-    # batch = batch[indices]
-
-    main_train(batch)
-
-
-if __name__ == "__main__":
-    main()
