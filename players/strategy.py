@@ -5,7 +5,7 @@ from enum import IntEnum
 
 import numpy as np
 
-from players.base import TokenProducer, PlayerBase, PlayerConfig, PlayerState
+from players.base import TokenProducer
 import env.state as game
 import batch
 
@@ -131,8 +131,10 @@ class StrategyTokenProducer(TokenProducer):
             count_attacked = np.sum(attacked_id == 1)
             count_captured = np.sum((attacked_id == 1) * (state.pos_o == game.CAPTURED))
 
-            self.tokens[player_id, mask, 5] = 1 + np.clip(count_attacked, 0, 1) * 2 + np.clip(count_captured, 0, 1)
-
+            if count_attacked == 0:
+                self.tokens[player_id, mask, 5] = 0
+            else:
+                self.tokens[player_id, mask, 5] = 1 + np.clip(count_captured, 0, 1)
         else:
             attacked_id = self.attacked_id_history[player_id, last_captured_t:].any(axis=0)
 
@@ -172,7 +174,13 @@ class StateWithStrategy(game.State):
 
     @staticmethod
     def create_category_id(table: np.ndarray, cap_r: int, cap_b: int) -> int:
-        return 1 + table[cap_r, cap_b, 0] + table[cap_r, cap_b, 1] * 2
+        cnt_0 = table[cap_r, cap_b, 0]
+        cnt_1 = table[cap_r, cap_b, 1]
+
+        if cnt_0 == -1 and cnt_1 == -1:
+            return 0
+        else:
+            return 1 + cnt_0 + cnt_1 * 2
 
     def create_init_tokens(self):
         tokens = super().create_init_tokens()

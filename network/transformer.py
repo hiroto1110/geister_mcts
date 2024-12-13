@@ -46,8 +46,8 @@ class Embeddings(nn.Module):
         embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
 
         if self.strategy_features is not None:
-            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 5])
-            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 6])
+            embeddings += nn.Embed(3, self.embed_dim)(tokens[..., 5])
+            embeddings += nn.Embed(5, self.embed_dim)(tokens[..., 6])
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)
