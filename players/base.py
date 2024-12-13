@@ -25,8 +25,8 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
     def select_first_action(self, state: State) -> int:
         return np.random.choice(get_valid_actions(state, player=1))
 
-    def init_state(self, state: game.State, prev_state: S = None) -> tuple[S, list[list[int]]]:
-        return PlayerState(), state.create_init_tokens()
+    def init_state(self, state: game.State, prev_state: S = None) -> tuple[game.State, S, list[list[int]]]:
+        return state, PlayerState(), state.create_init_tokens()
 
     def select_next_action(self, state: State, player_state: S) -> T:
         pass
@@ -171,7 +171,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     token_producer.init_game(game_length)
 
     for i in range(2):
-        player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
+        states[i], player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
         token_producer.add_tokens(states[i], init_tokens, player_id=i)
 
     turn_player = 1

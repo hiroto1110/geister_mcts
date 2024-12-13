@@ -19,6 +19,7 @@ from network.checkpoints import CheckpointManager
 
 from players.base import PlayerBase, ActionSelectionResult, PlayerConfig
 from players.config import SearchParameters, SearchParametersRange
+from players.strategy import Strategy, StateWithStrategy
 
 
 @dataclass
@@ -475,16 +476,20 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
     params: dict
     model: TransformerWithCache
     mcts_params: SearchParameters
+    strategy: Strategy = None
 
     def get_pred_state(self) -> PredictState:
         return PredictState(self.model, self.params)
 
-    def init_state(self, state: game.State, prev_state: PlayerStateMCTS = None) -> PlayerStateMCTS:
+    def init_state(self, state: game.State, prev_state: PlayerStateMCTS = None) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
+        if self.strategy is not None:
+            state = StateWithStrategy(state.board, state.n_ply, self.strategy)
+
         tokens = state.create_init_tokens()
 
         result, memory = create_root_node(tokens, self.get_pred_state(), prev_node=prev_state)
 
-        return PlayerStateMCTS(Node(state, result), memory, []), tokens
+        return state, PlayerStateMCTS(Node(state, result), memory, []), tokens
 
     def select_next_action(
         self,
@@ -546,6 +551,7 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
     base_name: str
     step: int
     mcts_params: SearchParametersRange
+    strategy: Strategy = None
 
     @property
     def name(self) -> str:
@@ -557,9 +563,10 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
         return PlayerMCTS(
             params=ckpt.params,
             model=ckpt.model.create_caching_model(),
-            mcts_params=self.mcts_params.sample()
+            mcts_params=self.mcts_params.sample(),
+            strategy=self.strategy
         )
-    
+
     def get_checkpoint(self, project_dir: str):
         return CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
 

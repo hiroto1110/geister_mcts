@@ -89,8 +89,8 @@ class State:
     def col_o(self) -> np.ndarray:
         return self.board[COL_O]
 
-    @staticmethod
-    def create(color: np.ndarray) -> "State":
+    @classmethod
+    def create(cls, color: np.ndarray) -> "State":
         pieces_p = np.array([1, 2, 3, 4, 7, 8, 9, 10], dtype=np.int16)
         pieces_o = np.array([25, 26, 27, 28, 31, 32, 33, 34], dtype=np.int16)
 
@@ -99,7 +99,7 @@ class State:
 
         board = np.stack([pieces_p, pieces_o, color_p, color_o])
 
-        return State(board, 0)
+        return cls(board, 0)
 
     def create_init_tokens(self):
         return [[self.board[COL_P, i], i, self.board[POS_P, i] % 6, self.board[POS_P, i] // 6, 0] for i in range(8)]
@@ -109,6 +109,9 @@ class State:
             return np.sum(self.board[POS_P][self.board[COL_P] == color] == CAPTURED)
         else:
             return np.sum(self.board[POS_O][self.board[COL_O] == color] == CAPTURED)
+
+    def get_num_captured(self, player: int, color: int):
+        return np.sum(self.board[player][self.board[COL_P + player] == color] == CAPTURED)
 
     @staticmethod
     def is_done_caused_by_capturing(board: np.ndarray) -> tuple[int, WinType]:

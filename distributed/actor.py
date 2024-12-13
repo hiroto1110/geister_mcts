@@ -27,8 +27,8 @@ def start_selfplay_process(
             match: MatchInfo = match_request_queue.get()
             elapsed_t = time.perf_counter() - start_t
 
-            name_p = match.player.get_name()
-            name_o = match.opponent.get_name()
+            name_p = match.player.name
+            name_o = match.opponent.name
             print(f"Assigned: (elapsed={elapsed_t:.3f}s, agent={name_p}, opponent={name_o})")
 
             samples = play_games(match, project_dir, series_length, tokens_length)

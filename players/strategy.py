@@ -1,17 +1,31 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import IntEnum
 
 import numpy as np
 
-from players.base import TokenProducer
+from players.base import TokenProducer, PlayerBase, PlayerConfig, PlayerState
 import env.state as game
 import batch
+
+
+class StrategyToken(IntEnum):
+    DEF = 5
+    ATK = 6
 
 
 @dataclass(frozen=True)
 class Strategy:
     table: np.ndarray
+
+    @property
+    def attack(self) -> np.ndarray:
+        return self.table[0]
+
+    @property
+    def defence(self) -> np.ndarray:
+        return self.table[1]
 
 
 def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
@@ -61,6 +75,7 @@ def is_action_to_enter_deadlock(state: game.State, action: int, player: int) -> 
 
     return True
 
+
 class StrategyTokenProducer(TokenProducer):
     def __init__(self):
         self.tokens: np.ndarray = None
@@ -86,7 +101,7 @@ class StrategyTokenProducer(TokenProducer):
     def add_tokens(self, state: game.State, tokens_in_step: list[list[int]], player_id: int):
         empty_mask = np.all(self.tokens[player_id] == 0, axis=-1)
         idx = np.arange(len(empty_mask))[empty_mask].min()
-        self.tokens[player_id, idx: idx + len(tokens_in_step), :5] = tokens_in_step
+        self.tokens[player_id, idx: idx + len(tokens_in_step), :5] = [tokens[:5] for tokens in tokens_in_step]
 
         if not any([t[game.Token.X] == 6 for t in tokens_in_step]):
             return
@@ -128,7 +143,7 @@ class StrategyTokenProducer(TokenProducer):
 
     @staticmethod
     def create_strategy_table(tokens: np.ndarray) -> np.ndarray:
-        # [cap_r, cap_b, st type, [total cnt, cnt 1, cnt 2]]
+        # [cap_r, cap_b, st type, [cnt 1, cnt 2, total cnt]]
         strategy = np.zeros((4, 4, 2, 3), dtype=np.int8)
 
         captured_count = np.zeros((2, 2), dtype=np.uint8)
@@ -146,6 +161,65 @@ class StrategyTokenProducer(TokenProducer):
             cap_r = captured_count[i, 0]
             cap_b = captured_count[i, 1]
 
-            strategy[cap_r, cap_b, i, 0] += 1
-            strategy[cap_r, cap_b, i, 1] += (st - 1) % 2
-            strategy[cap_r, cap_b, i, 2] += (st - 1) // 2
+            strategy[cap_r, cap_b, i, 0] += (st - 1) % 2
+            strategy[cap_r, cap_b, i, 1] += (st - 1) // 2
+            strategy[cap_r, cap_b, i, 2] += 1
+
+
+@dataclass(frozen=True)
+class StateWithStrategy(game.State):
+    strategy: Strategy
+
+    @staticmethod
+    def create_category_id(table: np.ndarray, cap_r: int, cap_b: int) -> int:
+        return 1 + table[cap_r, cap_b, 0] + table[cap_r, cap_b, 1] * 2
+
+    def create_init_tokens(self):
+        tokens = super().create_init_tokens()
+
+        st_token_def = self.create_category_id(self.strategy.defence, 0, 0)
+        st_token_atk = self.create_category_id(self.strategy.attack, 0, 0)
+
+        for i in range(len(tokens)):
+            tokens[i] = tokens[i] + [0, 0]
+            tokens[i][StrategyToken.DEF] = st_token_def
+            tokens[i][StrategyToken.ATK] = st_token_atk
+
+        return tokens
+
+    def _step(self, state: game.State, result: game.StepResult) -> tuple["StateWithStrategy", game.StepResult]:
+        state = StateWithStrategy(state.board, state.n_ply, self.strategy)
+
+        tokens = [token + [0, 0] for token in result.tokens]
+
+        for i in range(len(tokens)):
+            if tokens[i][game.Token.X] == 6:
+                captured_id = tokens[i][game.Token.ID]
+                break
+        else:
+            return state, replace(result, tokens=tokens)
+
+        if captured_id > 8:
+            cap_r = state.get_num_captured(player=1, color=game.RED)
+            cap_b = state.get_num_captured(player=1, color=game.BLUE)
+            st_table = self.strategy.defence
+            idx = StrategyToken.DEF
+        else:
+            cap_r = state.get_num_captured(player=0, color=game.RED)
+            cap_b = state.get_num_captured(player=0, color=game.BLUE)
+            st_table = self.strategy.attack
+            idx = StrategyToken.ATK
+
+        tokens[i][idx] = self.create_category_id(st_table, cap_r, cap_b)
+
+        return state, replace(result, tokens=tokens)
+
+    def step(self, action: int, player: int) -> tuple["StateWithStrategy", game.StepResult]:
+        state, result = super().step(action, player)
+
+        return self._step(state, result)
+
+    def step_afterstate(self, afterstate: game.Afterstate, color: int) -> tuple["StateWithStrategy", game.StepResult]:
+        state, result = super().step_afterstate(afterstate, color)
+
+        return self._step(state, result)
