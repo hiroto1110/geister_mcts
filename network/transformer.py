@@ -27,27 +27,25 @@ class TransformerConfig:
 
     def create_caching_model(self) -> 'TransformerWithCache':
         return TransformerWithCache(self)
+    
+    @property
+    def vocab_sizes(self) -> list[int]:
+        if self.strategy:
+            return [5, 16, 7, 7, self.max_n_ply]
+        else:
+            return [5, 16, 7, 7, self.max_n_ply, 3, 3]
 
 
 class Embeddings(nn.Module):
     embed_dim: int
-    piece_type: int = 5
-    n_pieces: int = 16
-    board_size: int = 7
-    max_n_ply: int = 201
-    strategy_features: int = None
+    vocab_sizes: list[int]
 
     @nn.compact
     def __call__(self, tokens: jnp.ndarray, eval: bool):
-        embeddings = nn.Embed(self.piece_type, self.embed_dim)(tokens[..., 0])
-        embeddings += nn.Embed(self.n_pieces, self.embed_dim)(tokens[..., 1])
-        embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 2])
-        embeddings += nn.Embed(self.board_size, self.embed_dim)(tokens[..., 3])
-        embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
+        embeddings = jnp.zeros((tokens.shape[:-1], self.embed_dim))
 
-        if self.strategy_features is not None:
-            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 5])
-            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 6])
+        for i in range(len(self.vocab_sizes)):
+            embeddings += nn.Embed(self.vocab_sizes[i], self.embed_dim)(tokens[..., i])
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)
@@ -184,11 +182,7 @@ class Transformer(nn.Module):
         return hash(self.config)
 
     def setup(self):
-        self.embeddings = Embeddings(
-            self.config.embed_dim,
-            max_n_ply=self.config.max_n_ply,
-            strategy_features=3 if self.config.strategy else None
-        )
+        self.embeddings = Embeddings(self.config.embed_dim, self.config.vocab_sizes)
 
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
                        for _ in range(self.config.num_hidden_layers)]
@@ -219,11 +213,7 @@ class TransformerWithCache(nn.Module):
         return hash(self.config)
 
     def setup(self):
-        self.embeddings = Embeddings(
-            self.config.embed_dim,
-            max_n_ply=self.config.max_n_ply,
-            strategy_features=3 if self.config.strategy else None
-        )
+        self.embeddings = Embeddings(self.config.embed_dim, self.config.vocab_sizes)
 
         self.layers = [
             TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
