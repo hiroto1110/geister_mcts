@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from players.base import TokenProducer
 import env.state as game
 import batch
+
+
+@dataclass(frozen=True)
+class Strategy:
+    table: np.ndarray
 
 
 def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
@@ -118,3 +125,27 @@ class StrategyTokenProducer(TokenProducer):
             count_b = np.sum((attacked_id[player_id] == 1) * (state.col_p == game.BLUE))
 
             self.tokens[player_id, mask, 6] = 1 + np.clip(count_b, 0, 1) * 2 + np.clip(count_r, 0, 1)
+
+    @staticmethod
+    def create_strategy_table(tokens: np.ndarray) -> np.ndarray:
+        # [cap_r, cap_b, st type, [total cnt, cnt 1, cnt 2]]
+        strategy = np.zeros((4, 4, 2, 3), dtype=np.int8)
+
+        captured_count = np.zeros((2, 2), dtype=np.uint8)
+
+        for id, c, _, _, _, st1, st2 in tokens[tokens[:, game.Token.X] == 6]:
+            if id < 8:
+                i = 0
+                st = st1
+            else:
+                i = 1
+                st = st2
+                c = c - 2
+
+            captured_count[i, c] += 1
+            cap_r = captured_count[i, 0]
+            cap_b = captured_count[i, 1]
+
+            strategy[cap_r, cap_b, i, 0] += 1
+            strategy[cap_r, cap_b, i, 1] += (st - 1) % 2
+            strategy[cap_r, cap_b, i, 2] += (st - 1) // 2

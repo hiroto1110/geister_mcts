@@ -45,7 +45,7 @@ class BatchFormat:
     @property
     def length_const(self) -> int:
         return sum([f.length_const for f in self.features])
-    
+
     @property
     def length_per_token(self) -> int:
         return sum([f.length_per_token for f in self.features])
