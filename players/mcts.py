@@ -59,7 +59,7 @@ class PredictResult:
 
 def predict_with_tokens(pred_state: PredictState, tokens: list, cache: jnp.ndarray) -> PredictResult:
     x = jnp.array(tokens, dtype=jnp.uint8)
-    x = x.reshape(-1, game.TOKEN_SIZE)
+    x = x.reshape(-1, x.shape[-1])
 
     for i in range(x.shape[0]):
         _, p, v, c, cache = predict(pred_state.params, pred_state.model, x[i], cache)
@@ -546,7 +546,7 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         dg.render(output_file)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
     base_name: str
     step: int

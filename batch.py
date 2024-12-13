@@ -26,6 +26,8 @@ class BatchFormat:
     def astuple(self, batch: np.ndarray) -> list[np.ndarray]:
         num_tokens = (batch.shape[-1] - self.length_const) // self.length_per_token
 
+        assert (batch.shape[-1] - self.length_const) % self.length_per_token == 0
+
         results = []
 
         for feature in self.features:

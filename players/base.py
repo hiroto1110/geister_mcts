@@ -145,7 +145,7 @@ class TokenProducer:
             return
 
         idx = np.arange(len(empty_mask))[empty_mask].min()
-        self.tokens[player_id, idx: idx + len(tokens_in_step)] = tokens_in_step
+        self.tokens[player_id, idx: idx + len(tokens_in_step)] = [token[:5] for token in tokens_in_step]
 
 
 def play_game[T: ActionSelectionResult, S: PlayerState](

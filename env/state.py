@@ -18,9 +18,6 @@ ESCAPE_POS_O = 0, 5
 
 CAPTURED = -1
 
-TOKEN_SIZE = 5
-MAX_TOKEN_LENGTH = 200
-
 
 class Token(IntEnum):
     COLOR = 0
@@ -67,7 +64,7 @@ COL_P = 2
 COL_O = 3
 
 
-@dataclass
+@dataclass(frozen=True)
 class State:
     # shape: [4, 8]
     board: np.ndarray

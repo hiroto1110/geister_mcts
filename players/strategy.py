@@ -19,6 +19,10 @@ class StrategyToken(IntEnum):
 class Strategy:
     table: np.ndarray
 
+    @staticmethod
+    def create_empty_table() -> np.ndarray:
+        return np.zeros((2, 4, 4))
+
     @property
     def attack(self) -> np.ndarray:
         return self.table[0]
@@ -138,19 +142,24 @@ class StrategyTokenProducer(TokenProducer):
         else:
             attacked_id = self.attacked_id_history[player_id, last_captured_t:].any(axis=0)
 
-            count_r = np.sum((attacked_id[player_id] == 1) * (state.col_p == game.RED))
-            count_b = np.sum((attacked_id[player_id] == 1) * (state.col_p == game.BLUE))
+            count_r = np.sum(attacked_id * (state.col_p == game.RED))
+            count_b = np.sum(attacked_id * (state.col_p == game.BLUE))
 
-            self.tokens[player_id, mask, 6] = 1 + np.clip(count_b, 0, 1) * 2 + np.clip(count_r, 0, 1)
+            if count_b == count_r:
+                self.tokens[player_id, mask, 6] = 0
+            elif count_r > count_b:
+                self.tokens[player_id, mask, 6] = 1
+            else:
+                self.tokens[player_id, mask, 6] = 2
 
     @staticmethod
     def create_strategy_table(tokens: np.ndarray) -> np.ndarray:
-        # [cap_r, cap_b, st type, [cnt 1, cnt 2, total cnt]]
-        strategy = np.zeros((4, 4, 2, 3), dtype=np.int8)
+        # [cap_r, cap_b, st type, count]
+        strategy = np.zeros((4, 4, 2, 2), dtype=np.uint8)
 
         captured_count = np.zeros((2, 2), dtype=np.uint8)
 
-        for id, c, _, _, _, st1, st2 in tokens[tokens[:, game.Token.X] == 6]:
+        for c, id, _, _, _, st1, st2 in tokens[tokens[:, game.Token.X] == 6]:
             if id < 8:
                 i = 0
                 st = st1
@@ -163,33 +172,26 @@ class StrategyTokenProducer(TokenProducer):
             cap_r = captured_count[i, 0]
             cap_b = captured_count[i, 1]
 
-            strategy[cap_r, cap_b, i, 0] += (st - 1) % 2
-            strategy[cap_r, cap_b, i, 1] += (st - 1) // 2
-            strategy[cap_r, cap_b, i, 2] += 1
+            if st == 1:
+                strategy[cap_r, cap_b, i, 0] += 1
+            if st == 2:
+                strategy[cap_r, cap_b, i, 1] += 1
+
+        return strategy
 
 
 @dataclass(frozen=True)
 class StateWithStrategy(game.State):
     strategy: Strategy
 
-    @staticmethod
-    def create_category_id(table: np.ndarray, cap_r: int, cap_b: int) -> int:
-        cnt_0 = table[cap_r, cap_b, 0]
-        cnt_1 = table[cap_r, cap_b, 1]
-
-        if cnt_0 == -1 and cnt_1 == -1:
-            return 0
-        else:
-            return 1 + cnt_0 + cnt_1 * 2
-
     def create_init_tokens(self):
         tokens = super().create_init_tokens()
 
-        st_token_def = self.create_category_id(self.strategy.defence, 0, 0)
-        st_token_atk = self.create_category_id(self.strategy.attack, 0, 0)
+        st_token_def = self.strategy.defence[0, 0]
+        st_token_atk = self.strategy.attack[0, 0]
 
         for i in range(len(tokens)):
-            tokens[i] = tokens[i] + [0, 0]
+            tokens[i] = list(tokens[i]) + [0, 0]
             tokens[i][StrategyToken.DEF] = st_token_def
             tokens[i][StrategyToken.ATK] = st_token_atk
 
@@ -198,14 +200,18 @@ class StateWithStrategy(game.State):
     def _step(self, state: game.State, result: game.StepResult) -> tuple["StateWithStrategy", game.StepResult]:
         state = StateWithStrategy(state.board, state.n_ply, self.strategy)
 
-        tokens = [token + [0, 0] for token in result.tokens]
+        tokens = [list(token) + [0, 0] for token in result.tokens]
+        result = replace(result, tokens=tokens)
+
+        if result.winner != 0:
+            return state, result
 
         for i in range(len(tokens)):
             if tokens[i][game.Token.X] == 6:
                 captured_id = tokens[i][game.Token.ID]
                 break
         else:
-            return state, replace(result, tokens=tokens)
+            return state, result
 
         if captured_id > 8:
             cap_r = state.get_num_captured(player=1, color=game.RED)
@@ -218,9 +224,9 @@ class StateWithStrategy(game.State):
             st_table = self.strategy.attack
             idx = StrategyToken.ATK
 
-        tokens[i][idx] = self.create_category_id(st_table, cap_r, cap_b)
+        tokens[i][idx] = st_table[cap_r, cap_b]
 
-        return state, replace(result, tokens=tokens)
+        return state, result
 
     def step(self, action: int, player: int) -> tuple["StateWithStrategy", game.StepResult]:
         state, result = super().step(action, player)

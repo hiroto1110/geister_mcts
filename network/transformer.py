@@ -46,8 +46,8 @@ class Embeddings(nn.Module):
         embeddings += nn.Embed(self.max_n_ply, self.embed_dim)(jnp.clip(tokens[..., 4], 0, self.max_n_ply - 1))
 
         if self.strategy_features is not None:
-            embeddings += nn.Embed(3, self.embed_dim)(tokens[..., 5])
-            embeddings += nn.Embed(5, self.embed_dim)(tokens[..., 6])
+            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 5])
+            embeddings += nn.Embed(self.strategy_features, self.embed_dim)(tokens[..., 6])
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)
@@ -187,7 +187,7 @@ class Transformer(nn.Module):
         self.embeddings = Embeddings(
             self.config.embed_dim,
             max_n_ply=self.config.max_n_ply,
-            strategy_features=5 if self.config.strategy else None
+            strategy_features=3 if self.config.strategy else None
         )
 
         self.layers = [TransformerBlock(self.config.num_heads, self.config.embed_dim)
@@ -222,7 +222,7 @@ class TransformerWithCache(nn.Module):
         self.embeddings = Embeddings(
             self.config.embed_dim,
             max_n_ply=self.config.max_n_ply,
-            strategy_features=5 if self.config.strategy else None
+            strategy_features=3 if self.config.strategy else None
         )
 
         self.layers = [
@@ -244,11 +244,8 @@ class TransformerWithCache(nn.Module):
         cache: jnp.ndarray,
         eval=True
     ):
-        if x.shape[0] == 5:
+        if x.shape[0] == 5 or x.shape[0] == 7:
             x = self.embeddings(x, eval)
-
-        elif x is None:
-            x = jnp.zeros(self.config.embed_dim)
 
         for i, layer in enumerate(self.layers):
             x, cache_i = layer(x, cache[i], eval=eval)
