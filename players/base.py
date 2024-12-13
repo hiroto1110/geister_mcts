@@ -85,14 +85,19 @@ class GameResult:
     @classmethod
     def create_sample(
         cls,
-        tokens_list: np.ndarray,
+        tokens: np.ndarray,
         actions: np.ndarray,
         color_o: np.ndarray,
         reward: int,
         token_length: int
     ) -> np.ndarray:
-        tokens = np.zeros((token_length, tokens_list.shape[-1]), dtype=np.uint8)
-        tokens[:min(token_length, len(tokens_list))] = tokens_list[:token_length]
+        if tokens.shape[0] > token_length:
+            tokens = tokens[:token_length]
+
+        if tokens.shape[0] < token_length:
+            tokens_org = tokens
+            tokens = np.zeros((token_length, tokens.shape[-1]), dtype=tokens.dtype)
+            tokens[:tokens_org.shape[0]] = tokens_org
 
         actions = actions[tokens[:, 4]]
         reward = np.array([reward], dtype=np.uint8)
@@ -118,12 +123,17 @@ class GameResult:
             self.tokens2, self.actions, self.color1[::-1], reward, token_length
         )
 
+
 class TokenProducer:
     def __init__(self):
         self.tokens: np.ndarray = None
+    
+    @property
+    def token_dtype(self):
+        return np.uint8
 
     def init_game(self, game_length: int):
-        self.tokens = np.zeros((2, game_length + 40, 5), dtype=np.uint8)
+        self.tokens = np.zeros((2, game_length + 40, 5), dtype=self.token_dtype)
 
     def on_step(self, state: game.State, action: int, player: int):
         pass
