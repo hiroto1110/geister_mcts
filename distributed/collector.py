@@ -48,20 +48,12 @@ class Agent:
         self.add_current_ckpt_to_matching_pool()
 
     @property
-    def name(self) -> str:
-        return self.config.name
-
-    @property
-    def opponent_names(self) -> list[str]:
-        return self.config.opponent_names
-
-    @property
     def agent_dir(self) -> str:
-        return f'{self.run_config.project_dir}/{self.name}'
+        return f'{self.run_config.project_dir}'
 
     @property
     def replay_buffer_path(self) -> str:
-        return f'{self.run_config.project_dir}/{self.name}/replay.npy'
+        return f'{self.run_config.project_dir}/replay.npy'
 
     def add_current_ckpt_to_matching_pool(self):
         config = PlayerMCTSConfig(
@@ -105,8 +97,11 @@ class Agent:
 
         self.lastest_games[match.opponent].append(samples)
 
-        for sample in samples:
-            self.match_maker.apply_match_result(match.opponent, is_won(sample))
+        _, _, reward, _ = FORMAT_X7ARC.astuple(samples)
+        is_won = reward > 3
+
+        for i in range(len(samples)):
+            self.match_maker.apply_match_result(match.opponent, is_won[i])
 
     def next_step(self) -> dict[str, float]:
         win_rates = self.match_maker.get_win_rates()
@@ -131,7 +126,10 @@ class Agent:
             count = len(lastest_games_opponent) / len(lastest_games)
             log[f'game_count/{label}'] = count
 
-            won_in_series = np.mean(is_won(lastest_games_opponent), axis=0)
+            _, _, reward, _ = FORMAT_X7ARC.astuple(lastest_games_opponent)
+            is_won = reward > 3
+
+            won_in_series = np.mean(is_won, axis=0)
 
             lr = LinearRegression()
             lr.fit(np.arange(len(won_in_series)).reshape(-1, 1), won_in_series)
@@ -139,8 +137,10 @@ class Agent:
             log[f'win_rate_coefficient/{label}'] = lr.coef_[0]
             log[f'win_rate_intercept/{label}'] = lr.intercept_
 
+        _, _, reward, _ = FORMAT_X7ARC.astuple(lastest_games)
+
         for i in range(7):
-            log[f'game_result/{i}'] = np.mean(get_reward(lastest_games) == i)
+            log[f'game_result/{i}'] = np.mean(reward == i)
 
         for i in range(len(win_rates)):
             if win_rates[i] == 0:

@@ -77,12 +77,6 @@ class MatchMakingConfig:
 @serde(tagging=InternalTagging(tag='type'))
 @dataclass
 class AgentConfig(SerdeJsonSerializable):
-    name: str
-    opponent_names: list[str] = None
-
-    replay_buffer_sharing: dict[str, float] = None
-    processes_allocation_ratio: float = None
-
     init_params: InitModelConfig = None
     training: TrainingConfig = None
 
