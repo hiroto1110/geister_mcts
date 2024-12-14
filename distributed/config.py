@@ -61,7 +61,6 @@ class ConditionForKeepingSnapshots:
 
 @dataclass
 class TrainingConfig:
-    num_division_of_segment: int
     batch_size: int
     num_batches: int
     learning_rate: float
@@ -77,13 +76,13 @@ class MatchMakingConfig:
 @serde(tagging=InternalTagging(tag='type'))
 @dataclass
 class AgentConfig(SerdeJsonSerializable):
-    init_params: InitModelConfig = None
-    training: TrainingConfig = None
+    init_params: InitModelConfig
+    training: TrainingConfig
 
-    match_making: MatchMakingConfig = None
-    condition_for_keeping_snapshots: ConditionForKeepingSnapshots = None
+    match_making: MatchMakingConfig
+    condition_for_keeping_snapshots: ConditionForKeepingSnapshots
 
-    mcts_params: SearchParametersRange = None
+    mcts_params: SearchParametersRange
 
     def create_match_maker(self):
         return match_makers.MatchMaker(
@@ -109,12 +108,6 @@ class RunConfig(SerdeJsonSerializable):
 
     project_dir: str
     ckpt_options: CheckpointManagerOptions
-
-    def get_checkpoint_dir(self, agent_name: str) -> str:
-        return f'{self.project_dir}/checkpoints/{agent_name}'
-
-    def get_replay_buffer_path(self, agent_name: str) -> str:
-        return f'{self.project_dir}/replay_buffer/{agent_name}'
 
     def create_replay_buffer(self) -> ReplayBuffer:
         buffer = ReplayBuffer(

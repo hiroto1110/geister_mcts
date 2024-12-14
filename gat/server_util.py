@@ -79,7 +79,7 @@ def is_done_message(s: str):
     return False, 0
 
 
-def encode_board_str(state: game.SimulationState):
+def encode_board_str(state: game.State):
     colors = np.concatenate([state.color_p, state.color_o[::-1]])
     pieces = np.concatenate([state.pieces_p, state.pieces_o[::-1]])
     x = pieces % 6

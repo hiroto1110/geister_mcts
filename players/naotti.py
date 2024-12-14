@@ -42,7 +42,7 @@ class PlayerNaotti2020(PlayerBase):
         return action
 
 
-@dataclass
+@dataclass(frozen=True)
 class PlayerNaotti2020Config(PlayerConfig[PlayerNaotti2020]):
     depth_min: int
     depth_max: int

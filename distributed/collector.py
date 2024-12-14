@@ -34,7 +34,7 @@ class Agent:
         self.config = config
         self.run_config = run_config
 
-        self.ckpt_manager = CheckpointManager(self.agent_dir, run_config.ckpt_options)
+        self.ckpt_manager = CheckpointManager(self.ckpt_dir, run_config.ckpt_options)
         self.match_maker: MatchMaker[PlayerConfig] = config.create_match_maker()
         self.replay_buffer = run_config.create_replay_buffer()
 
@@ -46,10 +46,14 @@ class Agent:
         self.lastest_games: dict[PlayerConfig, list[np.ndarray]] = {}
 
         self.add_current_ckpt_to_matching_pool()
+    
+    @property
+    def name(self) -> str:
+        return "main"
 
     @property
-    def agent_dir(self) -> str:
-        return f'{self.run_config.project_dir}'
+    def ckpt_dir(self) -> str:
+        return f'{self.run_config.project_dir}/{self.name}'
 
     @property
     def replay_buffer_path(self) -> str:
@@ -57,7 +61,7 @@ class Agent:
 
     def add_current_ckpt_to_matching_pool(self):
         config = PlayerMCTSConfig(
-            base_name="main",
+            base_name=self.name,
             step=self.current.step,
             mcts_params=self.config.mcts_params,
             strategy_factory=StrategyRandom(p=[0.35, 0.35, 0.3])
@@ -78,7 +82,7 @@ class Agent:
 
     def next_match(self) -> MatchInfo:
         config = PlayerMCTSConfig(
-            base_name="main",
+            base_name=self.name,
             step=self.current.step,
             mcts_params=self.config.mcts_params,
             strategy_factory=StrategyRandom(p=[0.0, 0.0, 1.0])
@@ -112,7 +116,7 @@ class Agent:
         if is_league_member:
             self.add_current_ckpt_to_matching_pool()
 
-        lastest_games = np.stack(sum(self.lastest_games.values(), start=[]), axis=0)
+        lastest_games = np.concatenate(sum(self.lastest_games.values(), start=[]), axis=0)
         lastest_games = lastest_games.astype(np.uint8)
 
         save(self.replay_buffer_path, lastest_games, append=True)
