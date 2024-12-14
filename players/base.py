@@ -148,11 +148,11 @@ class TokenProducer:
         self.tokens[player_id, idx: idx + len(tokens_in_step)] = [token[:5] for token in tokens_in_step]
 
 
-def play_game[T: ActionSelectionResult, S: PlayerState](
-    player1: PlayerBase[T, S],
-    player2: PlayerBase[T, S],
-    player_state1: S = None,
-    player_state2: S = None,
+def play_game(
+    player1: PlayerBase,
+    player2: PlayerBase,
+    player_state1: PlayerState = None,
+    player_state2: PlayerState = None,
     color1: np.ndarray = None,
     color2: np.ndarray = None,
     token_producer: TokenProducer = TokenProducer(),
