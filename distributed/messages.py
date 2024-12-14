@@ -6,72 +6,54 @@ from distributed.config import RunConfig
 from distributed.communication import SerdeJsonSerializable
 
 from network.checkpoints import Checkpoint
-from players.base import PlayerConfig
+from players import Configs
 
 
 @dataclass(frozen=True)
-class SnapshotInfo:
-    name: str
-    step: int
-
-
-@dataclass
 class MatchInfo(SerdeJsonSerializable):
-    player: PlayerConfig
-    opponent: PlayerConfig
+    player: Configs
+    opponent: Configs
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageActorInitClient(SerdeJsonSerializable):
     n_processes: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageActorInitServer(SerdeJsonSerializable):
     config: RunConfig
     snapshots: list[Checkpoint]
     matches: list[MatchInfo]
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageLeanerInitServer(SerdeJsonSerializable):
     config: RunConfig
     ckpt: Checkpoint
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageNextMatch(SerdeJsonSerializable):
     match: MatchInfo
     ckpts: list[Checkpoint]
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageMatchResult(SerdeJsonSerializable):
     match: MatchInfo
     samples: np.ndarray
 
 
-@dataclass
-class LearningJob(SerdeJsonSerializable):
-    agent_name: str
+@dataclass(frozen=True)
+class MessageLearningRequest(SerdeJsonSerializable):
     minibatch: np.ndarray
 
 
-@dataclass
-class MessageLearningRequest(SerdeJsonSerializable):
-    jobs: list[LearningJob]
-
-
-@dataclass
-class LearningJobResult(SerdeJsonSerializable):
-    agent_name: str
+@dataclass(frozen=True)
+class MessageLearningResult(SerdeJsonSerializable):
     ckpt: Checkpoint
     loss: float
     loss_policy: float
     loss_value: float
     loss_color: float
-
-
-@dataclass
-class MessageLearningJobResult(SerdeJsonSerializable):
-    results: list[LearningJobResult]

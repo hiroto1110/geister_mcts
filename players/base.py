@@ -58,6 +58,10 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
 @dataclass(frozen=True)
 class PlayerConfig[T: PlayerBase](SerdeJsonSerializable):
     @property
+    def necessary_checkpoint_step(self) -> int | None:
+        return None
+
+    @property
     def name(self) -> str:
         pass
 

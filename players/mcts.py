@@ -554,6 +554,10 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
     strategy_factory: StrategyFactories
 
     @property
+    def necessary_checkpoint_step(self) -> int | None:
+        return self.step
+
+    @property
     def name(self) -> str:
         return f"{self.base_name}-{self.step}"
 
