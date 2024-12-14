@@ -17,7 +17,7 @@ def start_selfplay_process(
     seed: int
 ):
     jax.config.update('jax_platform_name', 'cpu')
-    jax.config.update("jax_debug_nans", True)
+    # jax.config.update("jax_debug_nans", True)
 
     np.random.seed(seed)
 

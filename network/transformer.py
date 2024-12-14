@@ -42,7 +42,7 @@ class Embeddings(nn.Module):
 
     @nn.compact
     def __call__(self, tokens: jnp.ndarray, eval: bool):
-        embeddings = jnp.zeros((tokens.shape[:-1], self.embed_dim))
+        embeddings = jnp.zeros((*tokens.shape[:-1], self.embed_dim))
 
         for i in range(len(self.vocab_sizes)):
             embeddings += nn.Embed(self.vocab_sizes[i], self.embed_dim)(tokens[..., i])

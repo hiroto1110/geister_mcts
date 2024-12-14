@@ -19,7 +19,7 @@ from network.checkpoints import CheckpointManager
 
 from players.base import PlayerBase, ActionSelectionResult, PlayerConfig
 from players.config import SearchParameters, SearchParametersRange
-from players.strategy import Strategy, StateWithStrategy
+from players.strategy import Strategy, StateWithStrategy, StrategyFactories
 
 
 @dataclass
@@ -551,7 +551,7 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
     base_name: str
     step: int
     mcts_params: SearchParametersRange
-    strategy: Strategy = None
+    strategy_factory: StrategyFactories
 
     @property
     def name(self) -> str:
@@ -564,7 +564,7 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
             params=ckpt.params,
             model=ckpt.model.create_caching_model(),
             mcts_params=self.mcts_params.sample(),
-            strategy=self.strategy
+            strategy=self.strategy_factory.create()
         )
 
     def get_checkpoint(self, project_dir: str):

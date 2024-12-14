@@ -32,6 +32,34 @@ class Strategy:
         return self.table[1]
 
 
+@dataclass(frozen=True)
+class StrategyFactory:
+    def create(self) -> Strategy:
+        pass
+
+
+@dataclass(frozen=True)
+class Const:
+    table_def: list[list[int]]
+    table_atk: list[list[int]]
+
+    def create(self) -> Strategy:
+        return Strategy(np.array([self.table_def, self.table_atk], dtype=np.uint8))
+
+
+@dataclass(frozen=True)
+class Random:
+    p: list[float]
+
+    def create(self) -> Strategy:
+        table = np.random.choice([0, 1, 2], p=self.p, size=(2, 4, 4), replace=True)
+        return Strategy(table)
+
+
+StrategyFactories = Const | Random
+
+
+
 def find_closest_pieses(pieses_pos: np.ndarray, target_pos: int) -> list[int]:
     mask = pieses_pos == game.CAPTURED
 
