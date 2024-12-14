@@ -569,25 +569,3 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
 
     def get_checkpoint(self, project_dir: str):
         return CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
-
-
-def test_play_game():
-    np.random.seed(4)
-
-    mcts_params = SearchParameters(
-        num_simulations=100,
-        time_limit=20
-    )
-    from network.checkpoints import Checkpoint
-    ckpt = Checkpoint.from_json_file("./data/projects/run-7/main/600.json")
-
-    player1 = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
-    player2 = PlayerMCTS(ckpt.params, ckpt.model.create_caching_model(), mcts_params)
-
-    from players.base import play_game
-
-    play_game(player1, player2, print_board=True, visualization_directory="./data/graph")
-
-
-if __name__ == "__main__":
-    test_play_game()

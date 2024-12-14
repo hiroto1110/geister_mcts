@@ -64,9 +64,6 @@ class Agent:
         if self.name in config.opponent_names:
             self.match_maker.add_agent(self.current.info)
 
-        if SNAPSHOT_INFO_NAOTTI.name in config.opponent_names:
-            self.match_maker.add_agent(SNAPSHOT_INFO_NAOTTI)
-
     @property
     def name(self) -> str:
         return self.config.name
@@ -177,47 +174,39 @@ class AgentManager:
     def __init__(self, config: RunConfig):
         self.config = config
 
-        self.agents: dict[str, Agent] = {agent.name: Agent(agent, config) for agent in config.agents}
+        self.agent = Agent(config.agent, config)
 
     def create_init_learner_message(self) -> MessageLeanerInitServer:
-        ckpts = {
-            name: agent.current.ckpt
-            for name, agent in self.agents.items()
-        }
-        return MessageLeanerInitServer(self.config, ckpts)
+        return MessageLeanerInitServer(self.config, self.agent.current.ckpt)
 
     def create_init_actor_message(self, n_processes: int) -> MessageActorInitServer:
-        snapshots = {
-            name: [s.ckpt for s in agent.snapshots] + [agent.current.ckpt]
-            for name, agent in self.agents.items()
-        }
+        snapshots = [s.ckpt for s in self.agent.snapshots] + [self.agent.current.ckpt]
 
         n_matches = n_processes + 10
-
-        allocations_list = [[agent] * int(n_matches * agent.processes_allocation_ratio) for agent in self.config.agents]
-        allocations = sum(allocations_list, start=[])
 
         return MessageActorInitServer(
             self.config,
             snapshots=snapshots,
-            matches=[self.init_match(agent.name) for agent in allocations]
+            matches=[self.init_match() for _ in n_matches]
         )
 
-    def init_match(self, agent_name: str) -> MatchInfo:
-        return self.agents[agent_name].next_match()
+    def init_match(self) -> MatchInfo:
+        return self.agent.next_match()
 
-    def next_match(self, prev_match: MatchInfo) -> MatchInfo:
-        return self.agents[prev_match.player.name].next_match()
+    def next_match(self) -> MatchInfo:
+        return self.agent.next_match()
 
     def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
-        for agent in self.agents.values():
-            agent.apply_match_result(match, samples)
+       self.agent.apply_match_result(match, samples)
 
     def create_learning_jobs(self) -> list[LearningJob]:
-        return [agent.create_learning_job() for agent in self.agents.values() if agent.has_enough_samples()]
+        if not self.agent.has_enough_samples():
+            return []
+        
+        return [self.agent.create_learning_job()]
 
     def apply_learning_job_result(self, result: LearningJobResult) -> dict:
-        self.agents[result.agent_name].apply_learning_job_result(result)
+        self.agent.apply_learning_job_result(result)
 
         return {
             f'{result.agent_name}/loss': result.loss,

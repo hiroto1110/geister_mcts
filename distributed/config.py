@@ -91,24 +91,6 @@ class AgentConfig(SerdeJsonSerializable):
 
     mcts_params: SearchParametersRange = None
 
-    def override(self, other: "AgentConfig") -> "AgentConfig":
-        def _override(_base, _other):
-            return _other if _other is not None else _base
-
-        return AgentConfig(
-            name=other.name,
-            opponent_names=_override(self.opponent_names, other.opponent_names),
-            replay_buffer_sharing=_override(self.replay_buffer_sharing, other.replay_buffer_sharing),
-            processes_allocation_ratio=_override(self.processes_allocation_ratio, other.processes_allocation_ratio),
-            init_params=_override(self.init_params, other.init_params),
-            training=_override(self.training, other.training),
-            match_making=_override(self.match_making, other.match_making),
-            condition_for_keeping_snapshots=_override(
-                self.condition_for_keeping_snapshots, other.condition_for_keeping_snapshots
-            ),
-            mcts_params=_override(self.mcts_params, other.mcts_params),
-        )
-
     def create_match_maker(self):
         return match_makers.MatchMaker(
             method=self.match_making.mathod,
@@ -129,7 +111,7 @@ class RunConfig(SerdeJsonSerializable):
     replay_buffer_size: int
     init_replay_buffer: str
 
-    agents: list[AgentConfig]
+    agent: AgentConfig
 
     project_dir: str
     ckpt_options: CheckpointManagerOptions
@@ -151,27 +133,6 @@ class RunConfig(SerdeJsonSerializable):
             buffer.load(self.init_replay_buffer)
 
         return buffer
-
-    @classmethod
-    def from_json(cls, json_str) -> "RunConfig":
-        config = from_json(cls, json_str)
-        return replace(config, agents=config._get_agent_configs())
-
-    def _get_agent_configs(self, common_setting_name="common_setting") -> list[AgentConfig]:
-        agents_dict = {agent.name: agent for agent in self.agents}
-
-        if common_setting_name not in agents_dict:
-            return list(agents_dict.values())
-
-        for name in agents_dict.keys():
-            if name == common_setting_name:
-                continue
-
-            agents_dict[name] = agents_dict[common_setting_name].override(agents_dict[name])
-
-        del agents_dict[common_setting_name]
-
-        return list(agents_dict.values())
 
 
 def test():

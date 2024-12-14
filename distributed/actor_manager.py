@@ -56,14 +56,10 @@ def start_actor_manager(
     config = init_msg.config
     print(config)
 
-    checkpoint_managers = {
-        name: CheckpointManager(f'{ckpt_dir}/{name}')
-        for name in init_msg.snapshots
-    }
+    checkpoint_manager = CheckpointManager(ckpt_dir)
 
-    for name, snapshots in init_msg.snapshots.items():
-        for ckpt_i in snapshots:
-            checkpoint_managers[name].save(ckpt_i)
+    for ckpt_i in init_msg.snapshots:
+        checkpoint_manager.save(ckpt_i)
 
     ctx = multiprocessing.get_context('spawn')
     match_request_queue = ctx.Queue(100)
@@ -92,9 +88,8 @@ def start_actor_manager(
 
         msg = communicator.recv_json_obj(sock, MessageNextMatch)
 
-        for name, ckpt_list in msg.ckpts.items():
-            for i in range(len(ckpt_list)):
-                checkpoint_managers[name].save(ckpt_list[i])
+        for ckpt in msg.ckpts:
+            checkpoint_manager.save(ckpt)
 
         match_request_queue.put(msg.match)
 

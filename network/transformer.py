@@ -272,7 +272,7 @@ class TrainStateTransformer(TrainStateBase):
 
     def get_head_names(self) -> list[str]:
         return ['P', 'V', 'C']
-
+    
 
 @jax.jit
 def calc_loss(

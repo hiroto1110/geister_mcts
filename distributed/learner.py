@@ -7,9 +7,8 @@ import numpy as np
 import jax
 import optax
 
-from network.train import TrainState, train_step
+from network.transformer import TrainStateTransformer
 from network.checkpoints import Checkpoint
-from batch import FORMAT_XARC
 
 from messages import (
     MessageLeanerInitServer,
@@ -27,13 +26,12 @@ class Agent:
 
         model = self.model.create_model()
 
-        self.state = TrainState.create(
+        self.state = TrainStateTransformer.create(
             apply_fn=model.apply,
             params=init_ckpt.params,
             tx=optax.adam(learning_rate=config.training.learning_rate),
             dropout_rng=jax.random.PRNGKey(0),
-            epoch=0,
-            init_memory=TrainState.create_init_memory(model)
+            epoch=0
         )
 
     def train(self, job: LearningJob):
@@ -44,11 +42,8 @@ class Agent:
         losses = []
 
         for i in tqdm(range(num_batches), desc=f' Training {self.config.name} '):
-            self.state, loss_i, losses_i = train_step(
-                self.state,
-                *FORMAT_XARC.astuple(train_batches[i]),
-                num_division_of_segment=self.config.training.num_division_of_segment,
-                eval=False
+            self.state, loss_i, losses_i = self.state.train_step(
+                train_batches[i], eval=False
             )
             loss += loss_i
             losses.append(losses_i)
@@ -84,14 +79,12 @@ def main(host: str, port: int, password: str):
     config = init_msg.config
     print(config)
 
-    agents: dict[str, Agent] = {
-        agent.name: Agent(agent, init_msg.ckpts[agent.name]) for agent in config.agents
-    }
+    agent = Agent(config.agent, init_msg.ckpt)
 
     while True:
         request = communicator.recv_json_obj(sock, MessageLearningRequest)
 
-        results = [agents[job.agent_name].train(job) for job in request.jobs]
+        results = [agent.train(job) for job in request.jobs]
 
         communicator.send_json_obj(sock, MessageLearningJobResult(results))
 

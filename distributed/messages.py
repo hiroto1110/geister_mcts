@@ -29,20 +29,20 @@ class MessageActorInitClient(SerdeJsonSerializable):
 @dataclass
 class MessageActorInitServer(SerdeJsonSerializable):
     config: RunConfig
-    snapshots: dict[str, list[Checkpoint]]
+    snapshots: list[Checkpoint]
     matches: list[MatchInfo]
 
 
 @dataclass
 class MessageLeanerInitServer(SerdeJsonSerializable):
     config: RunConfig
-    ckpts: dict[str, Checkpoint]
+    ckpt: Checkpoint
 
 
 @dataclass
 class MessageNextMatch(SerdeJsonSerializable):
     match: MatchInfo
-    ckpts: dict[str, list[Checkpoint]]
+    ckpts: list[Checkpoint]
 
 
 @dataclass
