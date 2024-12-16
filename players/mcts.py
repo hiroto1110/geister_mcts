@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 from dataclasses import dataclass
 import time
 
@@ -17,9 +17,11 @@ import game_analytics
 from network.transformer import TransformerWithCache
 from network.checkpoints import CheckpointManager
 
-from players.base import PlayerBase, ActionSelectionResult, PlayerConfig
+from players.base import PlayerBase, ActionSelectionResult, PlayerConfig, GameResult
 from players.config import SearchParameters, SearchParametersRange
-from players.strategy import Strategy, StateWithStrategy, StrategyFactories
+from players.strategy import Strategy, StateWithStrategy, StrategyFactories, StrategyTokenProducer
+
+import batch
 
 
 @dataclass
@@ -57,13 +59,19 @@ class PredictResult:
         return jnp.sum(self.values * weight)
 
 
-def predict_with_tokens(pred_state: PredictState, tokens: list, cache: jnp.ndarray) -> PredictResult:
+def predict_with_strategy(pred_state: PredictState, strategy: jnp.ndarray, cache: jnp.ndarray) -> PredictResult:
+    _, p, v, c, cache = predict(pred_state.params, pred_state.model, strategy, cache)
+
+    return PredictResult(p, v, c, cache)
+
+
+def predict_with_tokens(pred_state: PredictState, tokens: list[list[int]], cache: jnp.ndarray) -> PredictResult:
     x = jnp.array(tokens, dtype=jnp.uint8)
     x = x.reshape(-1, x.shape[-1])
 
     for i in range(x.shape[0]):
         _, p, v, c, cache = predict(pred_state.params, pred_state.model, x[i], cache)
-    
+
     return PredictResult(p, v, c, cache)
 
 
@@ -451,24 +459,25 @@ def select_action_with_mcts(
 
 def create_root_node(
     tokens: list[list[int]],
+    past_strategy_table: jnp.ndarray,
     pred_state: PredictState,
     cache_length: int = 220,
-    prev_node: Node = None,
 ) -> tuple[PredictResult, np.ndarray]:
     model = pred_state.model
 
     cache = model.create_cache(cache_length)
 
-    result = predict_with_tokens(pred_state, tokens, cache)
+    result = predict_with_strategy(pred_state, past_strategy_table, cache)
+    result = predict_with_tokens(pred_state, tokens, result.cache)
 
-    return result, None
+    return result
 
 
 @dataclass(frozen=True)
 class PlayerStateMCTS:
     node: Node
-    memory: jnp.ndarray
     pieces_history: list[np.ndarray]
+    past_strategy_tables: list[np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -480,16 +489,27 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
     def get_pred_state(self) -> PredictState:
         return PredictState(self.model, self.params)
-
+    
     def init_state(self, state: game.State, prev_state: PlayerStateMCTS = None) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
         if self.strategy is not None:
             state = StateWithStrategy(state.board, state.n_ply, self.strategy)
 
+        if prev_state is not None:
+            past_strategy_tables = prev_state.past_strategy_tables
+            st = np.sum(past_strategy_tables, axis=0)
+        else:
+            past_strategy_tables = []
+            st = np.zeros((4, 4, 2, 2), dtype=np.uint8)
+
         tokens = state.create_init_tokens()
+        result = create_root_node(tokens, st, self.get_pred_state())
 
-        result, memory = create_root_node(tokens, self.get_pred_state(), prev_node=prev_state)
-
-        return state, PlayerStateMCTS(Node(state, result), memory, []), tokens
+        next_state = PlayerStateMCTS(
+            Node(state, result),
+            pieces_history=[],
+            past_strategy_tables=past_strategy_tables
+        )
+        return state, next_state, tokens
 
     def select_next_action(
         self,
@@ -502,7 +522,6 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
             pieces_history=np.array(player_state.pieces_history, dtype=np.int16),
             actions=actions
         )
-
         return result
 
     def apply_action(
@@ -531,9 +550,29 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         node, _ = expand(node, result.tokens, [], state, pred_state, self.mcts_params)
 
         pieces_history = player_state.pieces_history + [state.board[:2].reshape(-1)]
-        next_player_state = PlayerStateMCTS(node, player_state.memory, pieces_history)
+        next_player_state = PlayerStateMCTS(node, pieces_history, player_state.past_strategy_tables)
 
         return next_player_state, state, tokens, result
+
+    def apply_game_result(self, player_state: PlayerStateMCTS, result: GameResult, player_id: int) -> PlayerStateMCTS:
+        opponent_id = 1 - player_id
+        st = StrategyTokenProducer.create_strategy_table(result.tokens[opponent_id])
+
+        tables = player_state.past_strategy_tables + [st]
+
+        return PlayerStateMCTS(
+            player_state.node,
+            pieces_history=[],
+            past_strategy_tables=tables
+        )
+
+    def _create_sample(
+        self,
+        x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray, player_state: PlayerStateMCTS
+    ) -> np.ndarray:
+        st = player_state.past_strategy_tables[-1]
+
+        return batch.FORMAT_X7_ST_PVC.from_tuple(x, st, p, v, c)
 
     def visualize_state(self, player_state: PlayerStateMCTS, output_file: str):
         if all([c is None for c in player_state.node.children]):

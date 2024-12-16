@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Literal
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,6 +55,53 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
 
         return player_state, state, tokens, result
 
+    def apply_game_result(self, player_state: S, result: GameResult, player_id: int) -> S:
+        pass
+
+    def create_sample_p(self, player_state: S, result: GameResult, token_length: int) -> np.ndarray:
+        return self.create_sample(
+            player_state, result, player_id=0, token_length=token_length
+        )
+
+    def create_sample_o(self, player_state: S, result: GameResult, token_length: int) -> np.ndarray:
+        return self.create_sample(
+            player_state, result, player_id=1, token_length=token_length
+        )
+
+    def create_sample(
+        self,
+        player_state: S,
+        result: GameResult,
+        player_id: Literal[0, 1],
+        token_length: int
+    ) -> np.ndarray:
+        opponent_id = 1 - player_id
+
+        tokens = GameResult.adjust_tokens_length(
+            result.tokens[player_id],
+            token_length
+        )
+        actions = result.actions[tokens[:, 4]]
+        color_o = result.states[opponent_id].col_p[::-1]
+
+        reward_int = 3 + int(result.winner[player_id] * result.win_type.value)
+        reward = np.array([reward_int], dtype=np.uint8)
+
+        return self._create_sample(
+            tokens.astype(np.uint8),
+            actions.astype(np.uint8),
+            reward.astype(np.uint8),
+            color_o.astype(np.uint8),
+            state=player_state
+        )
+
+    def _create_sample(
+        self,
+        x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray,
+        state: S
+    ) -> np.ndarray:
+        return batch.FORMAT_XARC.from_tuple(x, p, v, c)
+
     def visualize_state(self, player_state: S, output_path: str):
         pass
 
@@ -75,56 +126,34 @@ class PlayerConfig[T: PlayerBase](SerdeJsonSerializable):
 @dataclass(frozen=True)
 class GameResult:
     actions: np.ndarray
-    winner: int
     win_type: WinType
-    color1: np.ndarray
-    color2: np.ndarray
-    tokens1: np.ndarray
-    tokens2: np.ndarray
+    winner: tuple[int, int]
+    states: tuple[game.State, game.State]
+    tokens: tuple[np.ndarray, np.ndarray]
+    player_states: tuple[PlayerState, PlayerState]
 
-    @classmethod
-    def get_batch_format(cls) -> batch.BatchFormat:
-        return batch.FORMAT_XARC
+    @staticmethod
+    def adjust_tokens_length(tokens: np.ndarray, length: int) -> np.ndarray:
+        if tokens.shape[0] == length:
+            return tokens
 
-    @classmethod
-    def create_sample(
-        cls,
-        tokens: np.ndarray,
-        actions: np.ndarray,
-        color_o: np.ndarray,
-        reward: int,
-        token_length: int
-    ) -> np.ndarray:
-        if tokens.shape[0] > token_length:
-            tokens = tokens[:token_length]
+        if tokens.shape[0] > length:
+            return tokens[:length]
 
-        if tokens.shape[0] < token_length:
-            tokens_org = tokens
-            tokens = np.zeros((token_length, tokens.shape[-1]), dtype=tokens.dtype)
-            tokens[:tokens_org.shape[0]] = tokens_org
+        if tokens.shape[0] < length:
+            tokens_new = np.zeros((length, tokens.shape[-1]), dtype=tokens.dtype)
+            tokens_new[:tokens.shape[0]] = tokens
 
-        actions = actions[tokens[:, 4]]
-        reward = np.array([reward], dtype=np.uint8)
+            return tokens_new
 
-        return cls.get_batch_format().from_tuple(
-            tokens.astype(np.uint8),
-            actions.astype(np.uint8),
-            reward.astype(np.uint8),
-            color_o.astype(np.uint8)
-        )
-
-    def create_sample_p(self, token_length: int) -> np.ndarray:
-        reward = 3 + int(self.winner * self.win_type.value)
-
-        return GameResult.create_sample(
-            self.tokens1, self.actions, self.color2[::-1], reward, token_length
-        )
-
-    def create_sample_o(self, token_length: int) -> np.ndarray:
-        reward = 3 + -1 * int(self.winner * self.win_type.value)
-
-        return GameResult.create_sample(
-            self.tokens2, self.actions, self.color1[::-1], reward, token_length
+    def invert(self) -> "GameResult":
+        return GameResult(
+            actions=self.actions,
+            win_type=self.win_type,
+            winner=self.winner[::-1],
+            states=self.states[::-1],
+            tokens=self.tokens[::-1],
+            player_states=self.player_states[::-1],
         )
 
 
@@ -152,19 +181,19 @@ class TokenProducer:
         self.tokens[player_id, idx: idx + len(tokens_in_step)] = [token[:5] for token in tokens_in_step]
 
 
-def play_game(
-    player1: PlayerBase,
-    player2: PlayerBase,
-    player_state1: PlayerState = None,
-    player_state2: PlayerState = None,
+def play_game[T: ActionSelectionResult, S: PlayerState](
+    player1: PlayerBase[T, S],
+    player2: PlayerBase[T, S],
+    player_state1: S = None,
+    player_state2: S = None,
     color1: np.ndarray = None,
     color2: np.ndarray = None,
     token_producer: TokenProducer = TokenProducer(),
     visualization_directory: str = None,
-    game_length=200,
+    num_turns=200,
     print_board=False
 ) -> GameResult:
-    action_history = np.zeros(game_length + 20, dtype=np.int16)
+    action_history = np.zeros(num_turns + 20, dtype=np.int16)
 
     players = player1, player2
     player_states = [player_state1, player_state2]
@@ -172,7 +201,7 @@ def play_game(
     states = get_initial_state_pair(color1, color2)
     states = list(states)
 
-    token_producer.init_game(game_length)
+    token_producer.init_game(num_turns)
 
     for i in range(2):
         states[i], player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
@@ -180,7 +209,7 @@ def play_game(
 
     turn_player = 1
 
-    for i in range(game_length):
+    for i in range(num_turns):
         p = 0 if turn_player == 1 else 1
 
         action = players[p].select_next_action(states[p], player_states[p]).action
@@ -231,10 +260,49 @@ def play_game(
 
     return GameResult(
         actions=action_history,
-        winner=winner,
         win_type=win_type,
-        color1=states[0].col_p,
-        color2=states[1].col_p,
-        tokens1=token_producer.tokens[0],
-        tokens2=token_producer.tokens[1]
+        winner=(winner, 1 - winner),
+        states=tuple(states),
+        tokens=(token_producer.tokens[0], token_producer.tokens[1]),
+        player_states=tuple(player_states),
     )
+
+
+def play_games[T: ActionSelectionResult, S: PlayerState](
+    player1: PlayerBase[T, S],
+    player2: PlayerBase[T, S],
+    num_games: int,
+    token_producer: TokenProducer = TokenProducer(),
+    num_turns: int = 200,
+    tokens_length: int = 240,
+) -> GameResult:
+    samples = []
+
+    state1 = None
+    state2 = None
+
+    for i in range(num_games):
+        if np.random.random() > 0.5:
+            result = play_game(
+                player1, player2,
+                player_state1=state1, player_state2=state2,
+                token_producer=token_producer,
+                num_turns=num_turns
+            )
+        else:
+            result = play_game(
+                player2, player1,
+                player_state1=state2, player_state2=state1,
+                token_producer=token_producer,
+                num_turns=num_turns
+            )
+            result = result.invert()
+
+        state1 = player1.apply_game_result(result, player=0)
+        state2 = player2.apply_game_result(result, player=1)
+
+        sample = player1.create_sample_p(state1, result, tokens_length)
+
+        samples.append(sample)
+    
+    return samples

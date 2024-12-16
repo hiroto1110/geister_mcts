@@ -5,7 +5,7 @@ import numpy as np
 import jax
 
 from messages import MatchInfo, MessageMatchResult
-from players.base import play_game
+from players.base import play_games
 
 
 def start_selfplay_process(
@@ -31,29 +31,14 @@ def start_selfplay_process(
             name_o = match.opponent.name
             print(f"Assigned: (elapsed={elapsed_t:.3f}s, agent={name_p}, opponent={name_o})")
 
-            samples = play_games(match, project_dir, series_length, tokens_length)
+            player1 = match.player.create_player(project_dir)
+            player2 = match.opponent.create_player(project_dir)
+
+            samples_list = play_games(
+                player1, player2,
+                num_games=series_length,
+                tokens_length=tokens_length
+            )
+            samples = np.stack(samples_list, dtype=np.uint8)
+
             match_result_queue.put(MessageMatchResult(match, samples))
-
-
-def play_games(
-    match: MatchInfo,
-    project_dir: str,
-    series_length: int,
-    tokens_length: int,
-):
-    player1 = match.player.create_player(project_dir)
-    player2 = match.opponent.create_player(project_dir)
-
-    samples = []
-
-    for i in range(series_length):
-        if np.random.random() > 0.5:
-            result = play_game(player1, player2)
-            sample = result.create_sample_p(tokens_length)
-        else:
-            result = play_game(player2, player1)
-            sample = result.create_sample_o(tokens_length)
-
-        samples.append(sample)
-
-    return np.stack(samples, dtype=np.uint8)
