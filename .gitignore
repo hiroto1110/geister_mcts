@@ -3,11 +3,8 @@ __pycache__/
 .vscode/
 build/
 wandb/
-data/
 *.npy
 *.png
 *.so
 *.lprof
-*.json
 *.log
-!data/run_config.json

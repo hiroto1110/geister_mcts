@@ -1,0 +1,50 @@
+{
+    "project_name": "geister-rmt",
+    "project_dir": "./data/projects/run-test-1",
+    "wandb_log": false,
+
+    "series_length": 4,
+    "tokens_length": 220,
+    "update_period": 16,
+    "replay_buffer_size": 40000,
+
+    "init_replay_buffer": "./data/replay_buffer/run-4-st.npy",
+
+    "ckpt_options": {
+        "max_to_keep": 50,
+        "keep_period": 50
+    },
+
+    "agent": {
+        "init_params": {
+            "type": "FromCheckpoint",
+            "dir_name": "./data/checkpoints/tr-st",
+            "step": 4
+        },
+        "training": {
+            "batch_size": 32,
+            "num_batches": 16,
+            "learning_rate": 0.005
+        },
+        "match_making": {
+            "mathod": {
+                "type": "PFSP",
+                "p": 4.0
+            },
+            "buffer_size": 2048
+        },
+        "condition_for_keeping_snapshots": {
+            "win_rate_threshold": null,
+            "step_period": 50
+        },
+        "mcts_params": {
+            "num_simulations": { "min": 10, "max": 40 },
+            "dirichlet_alpha": { "min": 0.1, "max": 0.4 },
+            "n_ply_to_apply_noise": { "min": 10, "max": 20 },
+            "max_duplicates": { "min": 1, "max": 8 },
+            "c_base": { "min": 10, "max": 50 },
+            "depth_search_checkmate_root": { "min": 6, "max": 8 },
+            "depth_search_checkmate_leaf": { "min": 3, "max": 5 }
+        }
+    }
+}
