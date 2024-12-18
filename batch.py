@@ -1,18 +1,21 @@
 import os
 import dataclasses
+import enum
 import numpy as np
 
 
 @dataclasses.dataclass
 class Feature:
+    name: str
     length_const: int
     length_per_token: int
     shape: list[int] = (-1,)
 
 
 @dataclasses.dataclass
-class BatchFormat:
+class BatchFormat[T: enum.IntEnum]:
     features: list[Feature]
+    indices: type[T]
     dtype = np.uint8
 
     def from_tuple(self, *a: np.ndarray) -> np.ndarray:
@@ -23,19 +26,41 @@ class BatchFormat:
 
         return np.concatenate(reshaped_a, axis=-1, dtype=self.dtype)
     
-    def astuple(self, batch: np.ndarray) -> list[np.ndarray]:
+    def get_feature(self, batch: np.ndarray, index: int) -> np.ndarray:
         num_tokens = (batch.shape[-1] - self.length_const) // self.length_per_token
-
         assert (batch.shape[-1] - self.length_const) % self.length_per_token == 0
+
+        total_length = 0
+
+        for i, feature in enumerate(self.features):
+            length = feature.length_const + num_tokens * feature.length_per_token
+
+            if i == index:
+                feature_batch = batch[..., total_length:total_length + length]
+                feature_batch = feature_batch.reshape((*feature_batch.shape[:-1], *feature.shape))
+
+                return feature_batch
+
+            total_length += length
+        
+        raise ValueError(f'Feature {index} not found')
+
+    def get_features(self, batch: np.ndarray, indices: list[int] | None = None) -> list[np.ndarray]:
+        num_tokens = (batch.shape[-1] - self.length_const) // self.length_per_token
+        assert (batch.shape[-1] - self.length_const) % self.length_per_token == 0
+
+        if indices is None:
+            indices = list(range(len(self.features)))
 
         results = []
 
-        for feature in self.features:
+        for i, feature in enumerate(self.features):
             length = feature.length_const + num_tokens * feature.length_per_token
 
-            feature_batch = batch[..., :length]
-            feature_batch = feature_batch.reshape((*feature_batch.shape[:-1], *feature.shape))
-            results.append(feature_batch)
+            if i in indices:
+                feature_batch = batch[..., :length]
+                feature_batch = feature_batch.reshape((*feature_batch.shape[:-1], *feature.shape))
+                results.append(feature_batch)
 
             batch = batch[..., length:]
 
@@ -53,27 +78,40 @@ class BatchFormat:
         return sum([f.length_per_token for f in self.features])
 
 
-FORMAT_XARC = BatchFormat([
-    Feature(length_const=0, length_per_token=5, shape=(-1, 5)),
-    Feature(length_const=0, length_per_token=1),
-    Feature(length_const=1, length_per_token=0),
-    Feature(length_const=8, length_per_token=0),
-])
+class Features_X5_PVC(enum.IntEnum):
+    X = 0
+    P = 1
+    V = 2
+    C = 3
 
-FORMAT_X7ARC = BatchFormat([
-    Feature(length_const=0, length_per_token=7, shape=(-1, 7)),
-    Feature(length_const=0, length_per_token=1),
-    Feature(length_const=1, length_per_token=0),
-    Feature(length_const=8, length_per_token=0),
-])
+FORMAT_XARC = BatchFormat(
+    features=[
+        Feature(length_const=0, length_per_token=5, shape=(-1, 5)),
+        Feature(length_const=0, length_per_token=1),
+        Feature(length_const=1, length_per_token=0),
+        Feature(length_const=8, length_per_token=0),
+    ],
+    indices=Features_X5_PVC
+)
 
-FORMAT_X7_ST_PVC = BatchFormat([
-    Feature(length_const=0, length_per_token=7, shape=(-1, 7)),
-    Feature(length_const=64, length_per_token=0, shape=(4, 4, 2, 2)),
-    Feature(length_const=0, length_per_token=1),
-    Feature(length_const=1, length_per_token=0),
-    Feature(length_const=8, length_per_token=0),
-])
+
+class Features_X7_ST_PVC(enum.IntEnum):
+    X = 0
+    ST = 1
+    P = 2
+    V = 3
+    C = 4
+
+FORMAT_X7_ST_PVC = BatchFormat[Features_X7_ST_PVC](
+    features=[
+        Feature(length_const=0, length_per_token=7, shape=(-1, 7)),
+        Feature(length_const=64, length_per_token=0, shape=(4, 4, 2, 2)),
+        Feature(length_const=0, length_per_token=1),
+        Feature(length_const=1, length_per_token=0),
+        Feature(length_const=8, length_per_token=0),
+    ],
+    indices=Features_X7_ST_PVC
+)
 
 
 def load(path: str) -> np.ndarray:

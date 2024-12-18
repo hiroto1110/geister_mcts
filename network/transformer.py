@@ -266,7 +266,7 @@ class TrainStateTransformer(TrainStateBase):
     def train_step(
         self, x: jnp.ndarray, eval: bool
     ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
-        x, st, p_true, v_true, c_true = FORMAT_X7_ST_PVC.astuple(x)
+        x, st, p_true, v_true, c_true = FORMAT_X7_ST_PVC.get_features(x)
 
         if not eval:
             (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(

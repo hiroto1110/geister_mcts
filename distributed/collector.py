@@ -25,18 +25,28 @@ from players import PlayerMCTSConfig
 from players.base import PlayerConfig
 from players.strategy import Random as StrategyRandom
 from match_makers import MatchMaker
-from batch import save, FORMAT_X7ARC
+from batch import ReplayBuffer, save, FORMAT_X7_ST_PVC
 from network.checkpoints import Checkpoint, CheckpointManager
 
 
-class Agent:
-    def __init__(self, config: AgentConfig, run_config: RunConfig) -> None:
-        self.config = config
-        self.run_config = run_config
+def batch_to_reward(batch: np.ndarray) -> np.ndarray:
+    return FORMAT_X7_ST_PVC.get_feature(batch, FORMAT_X7_ST_PVC.indices.V)
 
-        self.ckpt_manager = CheckpointManager(self.ckpt_dir, run_config.ckpt_options)
+
+class Agent:
+    def __init__(
+        self,
+        config: AgentConfig,
+        ckpt_manager: CheckpointManager,
+        replay_buffer: ReplayBuffer,
+        replay_buffer_path: str,
+    ) -> None:
+        self.config = config
+        self.ckpt_manager = ckpt_manager
+        self.replay_buffer = replay_buffer
+        self.replay_buffer_path = replay_buffer_path
+
         self.match_maker: MatchMaker[PlayerConfig] = config.create_match_maker()
-        self.replay_buffer = run_config.create_replay_buffer()
 
         model, params = config.init_params.create_model_and_params()
 
@@ -51,21 +61,17 @@ class Agent:
     def name(self) -> str:
         return "main"
 
-    @property
-    def ckpt_dir(self) -> str:
-        return f'{self.run_config.project_dir}/{self.name}'
-
-    @property
-    def replay_buffer_path(self) -> str:
-        return f'{self.run_config.project_dir}/replay.npy'
-
-    def add_current_ckpt_to_matching_pool(self):
-        config = PlayerMCTSConfig(
+    def create_current_player_config(self, strategy_p: list[float]) -> PlayerMCTSConfig:
+        return PlayerMCTSConfig(
             base_name=self.name,
             step=self.current.step,
             mcts_params=self.config.mcts_params,
-            strategy_factory=StrategyRandom(p=[0.35, 0.35, 0.3])
+            strategy_factory=StrategyRandom(p=strategy_p)
         )
+
+    def add_current_ckpt_to_matching_pool(self):
+        config = self.create_current_player_config(strategy_p=[0.35, 0.35, 0.3])
+
         self.match_maker.add_agent(config)
 
     def create_init_learner_message(self) -> MessageLeanerInitServer:
@@ -81,12 +87,7 @@ class Agent:
         )
 
     def next_match(self) -> MatchInfo:
-        config = PlayerMCTSConfig(
-            base_name=self.name,
-            step=self.current.step,
-            mcts_params=self.config.mcts_params,
-            strategy_factory=StrategyRandom(p=[0.0, 0.0, 1.0])
-        )
+        config = self.create_current_player_config(strategy_p=[0.0, 0.0, 1.0])
 
         return MatchInfo(
             player=config,
@@ -101,7 +102,7 @@ class Agent:
 
         self.lastest_games[match.opponent].append(samples)
 
-        _, _, reward, _ = FORMAT_X7ARC.astuple(samples)
+        reward = batch_to_reward(samples)
         is_won = reward > 3
 
         for i in range(len(samples)):
@@ -130,7 +131,7 @@ class Agent:
             count = len(lastest_games_opponent) / len(lastest_games)
             log[f'game_count/{label}'] = count
 
-            _, _, reward, _ = FORMAT_X7ARC.astuple(lastest_games_opponent)
+            reward = batch_to_reward(lastest_games_opponent)
             is_won = reward > 3
 
             won_in_series = np.mean(is_won, axis=0)
@@ -141,7 +142,7 @@ class Agent:
             log[f'win_rate_coefficient/{label}'] = lr.coef_[0]
             log[f'win_rate_intercept/{label}'] = lr.intercept_
 
-        _, _, reward, _ = FORMAT_X7ARC.astuple(lastest_games)
+        reward = batch_to_reward(lastest_games)
 
         for i in range(7):
             log[f'game_result/{i}'] = np.mean(reward == i)
@@ -260,7 +261,11 @@ def start(
     print(f"Learner client from {address}")
 
     print("Initializing agents")
-    agent = Agent(config.agent, config)
+    agent = Agent(
+        config.agent,
+        ckpt_manager=CheckpointManager(config.project_dir, config.ckpt_options),
+        replay_buffer=config.create_replay_buffer(),
+    )
 
     print("Sending a init message to a learner client")
     communicator.send_json_obj(learner, agent.create_init_learner_message())
