@@ -6,16 +6,14 @@ import tempfile
 import numpy as np
 import jax
 
+import distributed.actor as actor
 from distributed.communication import EncryptedCommunicator
-
-from network.checkpoints import CheckpointManager
-
-import actor
-from messages import (
+from distributed.messages import (
     MessageActorInitClient, MessageActorInitServer,
     MessageMatchResult, MessageNextMatch
 )
 
+from network.checkpoints import CheckpointManager
 
 @click.command()
 @click.argument('ip', type=str)
@@ -53,9 +51,6 @@ def start_actor_manager(
 
     init_msg = communicator.recv_json_obj(sock, MessageActorInitServer)
 
-    config = init_msg.config
-    print(config)
-
     checkpoint_manager = CheckpointManager(ckpt_dir)
 
     for ckpt_i in init_msg.snapshots:
@@ -74,8 +69,8 @@ def start_actor_manager(
             match_request_queue,
             match_result_queue,
             ckpt_dir,
-            config.series_length,
-            config.tokens_length,
+            init_msg.series_length,
+            init_msg.tokens_length,
             seed,
         )
 

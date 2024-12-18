@@ -8,7 +8,7 @@
     "update_period": 16,
     "replay_buffer_size": 40000,
 
-    "init_replay_buffer": "./data/replay_buffer/run-4-st.npy",
+    "init_replay_buffer": null,
 
     "ckpt_options": {
         "max_to_keep": 50,

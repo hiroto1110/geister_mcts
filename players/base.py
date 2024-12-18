@@ -298,8 +298,8 @@ def play_games[T: ActionSelectionResult, S: PlayerState](
             )
             result = result.invert()
 
-        state1 = player1.apply_game_result(result, player=0)
-        state2 = player2.apply_game_result(result, player=1)
+        state1 = player1.apply_game_result(result, player_id=0)
+        state2 = player2.apply_game_result(result, player_id=1)
 
         sample = player1.create_sample_p(state1, result, tokens_length)
 

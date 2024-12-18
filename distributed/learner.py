@@ -10,12 +10,12 @@ import optax
 from network.transformer import TrainStateTransformer, Transformer
 from network.checkpoints import Checkpoint
 
-from messages import (
+from distributed.messages import (
     MessageLeanerInitServer,
     MessageLearningRequest, MessageLearningResult
 )
 from distributed.communication import EncryptedCommunicator
-from config import TrainingConfig
+from distributed.config import TrainingConfig
 
 
 def train(
@@ -60,6 +60,9 @@ def train(
 @click.argument('port', type=int)
 @click.argument('password', type=str)
 def main(host: str, port: int, password: str):
+    start_learner(host, port, password)
+
+def start_learner(host: str, port: int, password: str):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host, port))
 

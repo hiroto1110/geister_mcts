@@ -86,7 +86,7 @@ def deserialize_params(d):
 class Checkpoint(SerdeJsonSerializable):
     step: int
     model: NetworkConfig
-    params: FrozenDict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
+    params: FrozenDict | dict = serde.field(serializer=pre_converting_to_json, deserializer=deserialize_params)
 
     def __post_init__(self):
         self.step = int(self.step)
@@ -128,6 +128,7 @@ class CheckpointManager:
         return max(self.get_steps())
 
     def save(self, ckpt: Checkpoint):
+        print("save", self.get_path(ckpt.step))
         with open(self.get_path(ckpt.step), mode='w') as f:
             f.write(ckpt.to_json())
 

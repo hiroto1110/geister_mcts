@@ -4,8 +4,9 @@ import multiprocessing
 import numpy as np
 import jax
 
-from messages import MatchInfo, MessageMatchResult
+from distributed.messages import MatchInfo, MessageMatchResult
 from players.base import play_games
+from players.strategy import StrategyTokenProducer
 
 
 def start_selfplay_process(
@@ -37,7 +38,8 @@ def start_selfplay_process(
             samples_list = play_games(
                 player1, player2,
                 num_games=series_length,
-                tokens_length=tokens_length
+                tokens_length=tokens_length,
+                token_producer=StrategyTokenProducer()
             )
             samples = np.stack(samples_list, dtype=np.uint8)
 

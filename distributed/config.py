@@ -10,7 +10,7 @@ import jax.numpy as jnp
 
 import match_makers
 from players.config import SearchParametersRange
-from batch import ReplayBuffer
+from batch import ReplayBuffer, FORMAT_X7_ST_PVC
 
 from distributed.communication import SerdeJsonSerializable
 from network.transformer import TransformerConfig
@@ -46,8 +46,8 @@ InitModelConfig = Random | FromCheckpoint
 
 @dataclass
 class ConditionForKeepingSnapshots:
-    win_rate_threshold: float = None
-    step_period: int = None
+    win_rate_threshold: float | None = None
+    step_period: int | None = None
 
     def is_league_member(self, win_rates: np.ndarray, step: int):
         if (self.win_rate_threshold is not None) and np.all(win_rates > self.win_rate_threshold):
@@ -102,7 +102,7 @@ class RunConfig(SerdeJsonSerializable):
     update_period: int
 
     replay_buffer_size: int
-    init_replay_buffer: str
+    init_replay_buffer: str | None
 
     agent: AgentConfig
 
@@ -111,6 +111,7 @@ class RunConfig(SerdeJsonSerializable):
 
     def create_replay_buffer(self) -> ReplayBuffer:
         buffer = ReplayBuffer(
+            format=FORMAT_X7_ST_PVC,
             buffer_size=self.replay_buffer_size,
             sample_shape=(self.series_length,),
             seq_length=self.tokens_length
@@ -127,7 +128,8 @@ def test():
     s = c1.to_json()
     c2 = RunConfig.from_json(s)
 
-    print(c1 == c2)
+    print(c2)
+    
 
 
 if __name__ == '__main__':

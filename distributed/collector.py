@@ -13,9 +13,9 @@ from sklearn.linear_model import LinearRegression
 
 import wandb
 
-from config import RunConfig, AgentConfig
-from communication import EncryptedCommunicator
-from messages import (
+from distributed.config import RunConfig, AgentConfig
+from distributed.communication import EncryptedCommunicator
+from distributed.messages import (
     MessageActorInitClient, MessageActorInitServer,
     MessageLeanerInitServer, MessageLearningRequest, MessageLearningResult,
     MessageMatchResult, MessageNextMatch, MatchInfo
@@ -74,16 +74,13 @@ class Agent:
 
         self.match_maker.add_agent(config)
 
-    def create_init_learner_message(self) -> MessageLeanerInitServer:
-        return MessageLeanerInitServer(self.config, self.current)
-
     def create_init_actor_message(self, n_processes: int) -> MessageActorInitServer:
         snapshots = self.snapshots + [self.current]
 
         return MessageActorInitServer(
             self.config,
             snapshots=snapshots,
-            matches=[self.next_match() for _ in n_processes + 10]
+            matches=[self.next_match() for _ in range(n_processes + 10)]
         )
 
     def next_match(self) -> MatchInfo:
@@ -186,9 +183,10 @@ def handle_client_actor(
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
     agent: Agent,
+    config: RunConfig,
 ):
     try:
-        _handle_client_actor(sock, communicator, match_result_queue, agent)
+        _handle_client_actor(sock, communicator, match_result_queue, agent, config)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -202,10 +200,17 @@ def _handle_client_actor(
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
     agent: Agent,
+    config: RunConfig,
 ):
     init_msg_client = communicator.recv_json_obj(sock, MessageActorInitClient)
 
-    init_msg_server = agent.create_init_actor_message(init_msg_client.n_processes)
+    init_msg_server = MessageActorInitServer(
+        series_length=config.series_length,
+        tokens_length=config.tokens_length,
+        snapshots=agent.snapshots + [agent.current],
+        matches=[agent.next_match() for _ in range(init_msg_client.n_processes + 10)]
+    )
+
     communicator.send_json_obj(sock, init_msg_server)
 
     sent_steps = []
@@ -235,7 +240,8 @@ def wait_accept(
     server: socket.socket,
     communicator: EncryptedCommunicator,
     match_result_queue: queue.Queue,
-    agent: Agent
+    agent: Agent,
+    config: RunConfig,
 ):
     print("Waiting actor client...")
 
@@ -243,7 +249,7 @@ def wait_accept(
         client_sock, address = server.accept()
         print(f"Actor client from {address}")
 
-        args = client_sock, communicator, match_result_queue, agent
+        args = client_sock, communicator, match_result_queue, agent, config
         thread = threading.Thread(target=handle_client_actor, args=args)
         thread.start()
 
@@ -265,15 +271,16 @@ def start(
         config.agent,
         ckpt_manager=CheckpointManager(config.project_dir, config.ckpt_options),
         replay_buffer=config.create_replay_buffer(),
+        replay_buffer_path=f"{config.project_dir}/replay_buffer.npy",
     )
 
     print("Sending a init message to a learner client")
-    communicator.send_json_obj(learner, agent.create_init_learner_message())
+    communicator.send_json_obj(learner, MessageLeanerInitServer(config, agent.current))
 
     match_result_queue = queue.Queue()
 
     print("Initilizing actor client hub")
-    args = server, communicator, match_result_queue, agent
+    args = server, communicator, match_result_queue, agent, config
     thread = threading.Thread(target=wait_accept, args=args)
     thread.start()
 

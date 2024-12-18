@@ -246,7 +246,7 @@ class TransformerWithCache(nn.Module):
             x = self.embeddings(x, eval)
 
         if x.ndim == 4 and x.shape == (4, 4, 2, 2):
-            x = self.st_dence(x / 128)
+            x = self.st_dence(x.reshape(64) / 128.0)
 
         for i, layer in enumerate(self.layers):
             x, cache_i = layer(x, cache[i], eval=eval)

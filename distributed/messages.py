@@ -22,7 +22,8 @@ class MessageActorInitClient(SerdeJsonSerializable):
 
 @dataclass(frozen=True)
 class MessageActorInitServer(SerdeJsonSerializable):
-    config: RunConfig
+    series_length: int
+    tokens_length: int
     snapshots: list[Checkpoint]
     matches: list[MatchInfo]
 

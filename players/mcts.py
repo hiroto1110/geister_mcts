@@ -554,23 +554,23 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
         return next_player_state, state, tokens, result
 
-    def apply_game_result(self, player_state: PlayerStateMCTS, result: GameResult, player_id: int) -> PlayerStateMCTS:
+    def apply_game_result(self, result: GameResult, player_id: int) -> PlayerStateMCTS:
         opponent_id = 1 - player_id
         st = StrategyTokenProducer.create_strategy_table(result.tokens[opponent_id])
 
-        tables = player_state.past_strategy_tables + [st]
+        tables = result.player_states[player_id].past_strategy_tables + [st]
 
         return PlayerStateMCTS(
-            player_state.node,
+            result.player_states[player_id].node,
             pieces_history=[],
             past_strategy_tables=tables
         )
 
     def _create_sample(
         self,
-        x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray, player_state: PlayerStateMCTS
+        x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray, state: PlayerStateMCTS
     ) -> np.ndarray:
-        st = player_state.past_strategy_tables[-1]
+        st = state.past_strategy_tables[-1]
 
         return batch.FORMAT_X7_ST_PVC.from_tuple(x, st, p, v, c)
 
@@ -601,7 +601,7 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
         return f"{self.base_name}-{self.step}"
 
     def create_player(self, project_dir: str) -> PlayerMCTS:
-        ckpt = CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
+        ckpt = CheckpointManager(project_dir).load(self.step)
 
         return PlayerMCTS(
             params=ckpt.params,
@@ -611,4 +611,4 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
         )
 
     def get_checkpoint(self, project_dir: str):
-        return CheckpointManager(f"{project_dir}/{self.base_name}").load(self.step)
+        return CheckpointManager(project_dir).load(self.step)

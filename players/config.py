@@ -25,8 +25,8 @@ class SearchParameters:
 
 @dataclass(frozen=True)
 class FloatRange:
-    min: int
-    max: int
+    min: float
+    max: float
 
     def sample(self):
         p = np.random.random()

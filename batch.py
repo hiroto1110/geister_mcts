@@ -6,7 +6,6 @@ import numpy as np
 
 @dataclasses.dataclass
 class Feature:
-    name: str
     length_const: int
     length_per_token: int
     shape: list[int] = (-1,)
