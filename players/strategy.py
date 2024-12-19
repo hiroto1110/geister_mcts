@@ -49,7 +49,10 @@ class Const:
 
 @dataclass(frozen=True)
 class Random:
-    p: list[float]
+    p: tuple[float, float, float]
+
+    def __post_init__(self):
+        object.__setattr__(self, "p", tuple([float(i) for i in self.p]))
 
     def create(self) -> Strategy:
         table = np.random.choice([0, 1, 2], p=self.p, size=(2, 4, 4), replace=True)
