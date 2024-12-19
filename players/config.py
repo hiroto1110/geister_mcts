@@ -14,7 +14,6 @@ class SearchParameters:
     c_base: int = 25
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
-    value_weight: np.ndarray = field(default_factory=lambda: np.array([-1, -1, -1, 0, 1, 1, 1]))
     time_limit: float = 10
     test_c: bool = False
     visibilize_node_graph: bool = False
@@ -44,16 +43,6 @@ class IntRange:
 
 
 @dataclass(frozen=True)
-class VectorRange:
-    min: np.ndarray
-    max: np.ndarray
-
-    def sample(self):
-        p = np.random.random(size=self.min.shape)
-        return self.min + (self.max - self.min) * p
-
-
-@dataclass(frozen=True)
 class SearchParametersRange:
     num_simulations: IntRange
     dirichlet_alpha: FloatRange = FloatRange(0.3, 0.3)
@@ -64,7 +53,6 @@ class SearchParametersRange:
     c_base: IntRange = IntRange(25, 25)
     depth_search_checkmate_root: IntRange = IntRange(7, 7)
     depth_search_checkmate_leaf: IntRange = IntRange(4, 4)
-    value_weight: VectorRange = VectorRange(np.array([-1, -1, -1, 0, 1, 1, 1]), np.array([-1, -1, -1, 0, 1, 1, 1]))
     test_c: bool = False
     visibilize_node_graph: bool = False
 
@@ -82,7 +70,6 @@ class SearchParametersRange:
             c_base=self.c_base.sample(),
             depth_search_checkmate_root=self.depth_search_checkmate_root.sample(),
             depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.sample(),
-            value_weight=self.value_weight.sample(),
             test_c=self.test_c,
             visibilize_node_graph=self.visibilize_node_graph
         )

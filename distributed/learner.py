@@ -46,7 +46,7 @@ def train(
     state = state.replace(epoch=state.epoch + 1)
 
     result = MessageLearningResult(
-        ckpt=Checkpoint(int(state.epoch), model, state.params),
+        ckpt=Checkpoint(int(state.epoch), model.config, state.params),
         loss=float(loss),
         loss_policy=float(losses[0]),
         loss_value=float(losses[1]),

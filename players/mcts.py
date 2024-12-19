@@ -42,7 +42,7 @@ def predict(
         x, cache, eval=True
     )
 
-    v = nn.softmax(v)
+    v = jnp.sum(nn.softmax(v) * jnp.array([-1, -1, -1, 0, 1, 1, 1]))
     c = nn.sigmoid(c)
 
     return x, p, v, c, cache
@@ -51,12 +51,9 @@ def predict(
 @dataclass
 class PredictResult:
     action: jnp.ndarray
-    values: jnp.ndarray
+    value: jnp.ndarray
     color: jnp.ndarray
     cache: jnp.ndarray
-
-    def get_value(self, weight: jnp.ndarray) -> float:
-        return jnp.sum(self.values * weight)
 
 
 def predict_with_strategy(pred_state: PredictState, strategy: jnp.ndarray, cache: jnp.ndarray) -> PredictResult:
@@ -66,8 +63,11 @@ def predict_with_strategy(pred_state: PredictState, strategy: jnp.ndarray, cache
 
 
 def predict_with_tokens(pred_state: PredictState, tokens: list[list[int]], cache: jnp.ndarray) -> PredictResult:
-    x = jnp.array(tokens, dtype=jnp.uint8)
+    x = jnp.array(tokens, dtype=jnp.int16)
     x = x.reshape(-1, x.shape[-1])
+
+    if jnp.any(x < 0):
+        print(x)
 
     for i in range(x.shape[0]):
         _, p, v, c, cache = predict(pred_state.params, pred_state.model, x[i], cache)
@@ -266,7 +266,7 @@ class AfterStateNode(NodeBase):
         return v
 
     def get_node_str(self) -> str:
-        return sim_state_to_str(self.state, self.predic_result.values, self.predic_result.color)
+        return sim_state_to_str(self.state, self.predic_result.value, self.predic_result.color)
 
     def visualize_graph(self, g: Digraph):
         for i in range(len(self.children)):
@@ -318,7 +318,7 @@ def expand(
     else:
         next_node = Node(state, result)
 
-    return next_node, result.get_value(params.value_weight)
+    return next_node, result.value
 
 
 def try_expand_checkmate(

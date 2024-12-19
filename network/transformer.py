@@ -45,7 +45,8 @@ class Embeddings(nn.Module):
         embeddings = jnp.zeros((*tokens.shape[:-1], self.embed_dim))
 
         for i in range(len(self.vocab_sizes)):
-            embeddings += nn.Embed(self.vocab_sizes[i], self.embed_dim)(tokens[..., i])
+            tokens_i = jnp.clip(tokens[..., i], 0, self.vocab_sizes[i] - 1)
+            embeddings += nn.Embed(self.vocab_sizes[i], self.embed_dim)(tokens_i)
 
         embeddings = nn.LayerNorm(epsilon=1e-12)(embeddings)
         embeddings = nn.Dropout(0.5, deterministic=eval)(embeddings)

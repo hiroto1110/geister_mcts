@@ -15,23 +15,6 @@ from distributed.messages import (
 
 from network.checkpoints import CheckpointManager
 
-@click.command()
-@click.argument('ip', type=str)
-@click.argument('port', type=int)
-@click.argument("password", type=str)
-@click.argument("n_clients", type=int)
-def main(
-    ip: str,
-    port: int,
-    password: str,
-    n_clients: int,
-):
-    jax.config.update('jax_platform_name', 'cpu')
-
-    with jax.default_device(jax.devices("cpu")[0]):
-        with tempfile.TemporaryDirectory() as ckpt_dir:
-            start_actor_manager(ip, port, n_clients, str(ckpt_dir), password)
-
 
 def start_actor_manager(
     ip: str,
@@ -89,5 +72,25 @@ def start_actor_manager(
         match_request_queue.put(msg.match)
 
 
+@click.command()
+@click.argument('ip', type=str)
+@click.argument('port', type=int)
+@click.argument("password", type=str)
+@click.argument("n_clients", type=int)
+def main(
+    ip: str,
+    port: int,
+    password: str,
+    n_clients: int,
+):
+    jax.config.update('jax_platform_name', 'cpu')
+
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        start_actor_manager(ip, port, n_clients, str(ckpt_dir), password)
+
+
 if __name__ == '__main__':
+    import os
+    os.environ['JAX_PLATFORMS'] = 'cpu'
+
     main()

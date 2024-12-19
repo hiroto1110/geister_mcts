@@ -1,14 +1,14 @@
 {
     "project_name": "geister-rmt",
-    "project_dir": "./data/projects/run-test-1",
-    "wandb_log": false,
+    "project_dir": "./data/projects/run-8",
+    "wandb_log": true,
 
-    "series_length": 4,
+    "series_length": 64,
     "tokens_length": 220,
     "update_period": 16,
-    "replay_buffer_size": 40000,
+    "replay_buffer_size": 400000,
 
-    "init_replay_buffer": null,
+    "init_replay_buffer": "./data/replay_buffer/run-4-st.npy",
 
     "ckpt_options": {
         "max_to_keep": 50,
@@ -22,8 +22,8 @@
             "step": 4
         },
         "training": {
-            "batch_size": 32,
-            "num_batches": 16,
+            "batch_size": 1024,
+            "num_batches": 2,
             "learning_rate": 0.005
         },
         "match_making": {

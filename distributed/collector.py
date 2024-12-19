@@ -53,6 +53,8 @@ class Agent:
         self.current = Checkpoint(0, model, params)
         self.snapshots: list[Checkpoint] = [self.current]
 
+        self.ckpt_manager.save(self.current)
+
         self.lastest_games: dict[PlayerConfig, list[np.ndarray]] = {}
 
         self.add_current_ckpt_to_matching_pool()
@@ -61,7 +63,13 @@ class Agent:
     def name(self) -> str:
         return "main"
 
-    def create_current_player_config(self, strategy_p: list[float]) -> PlayerMCTSConfig:
+    def create_current_player_config(
+        self,
+        strategy_p: tuple[float, float, float]
+    ) -> PlayerMCTSConfig:
+        
+        strategy_p = tuple([float(i) for i in strategy_p])
+
         return PlayerMCTSConfig(
             base_name=self.name,
             step=self.current.step,
@@ -92,7 +100,8 @@ class Agent:
         )
 
     def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
-        self.replay_buffer.add_sample(samples)
+        for i in range(len(samples)):
+            self.replay_buffer.add_sample(samples[i])
 
         if match.opponent not in self.lastest_games:
             self.lastest_games[match.opponent] = []
@@ -116,6 +125,7 @@ class Agent:
 
         lastest_games = np.concatenate(sum(self.lastest_games.values(), start=[]), axis=0)
         lastest_games = lastest_games.astype(np.uint8)
+        lastest_games = lastest_games.reshape(-1, lastest_games.shape[-1])
 
         save(self.replay_buffer_path, lastest_games, append=True)
 
@@ -311,9 +321,7 @@ def start(
 
         # send_training_minibatch
         if agent.has_enough_samples():
-            learning_request_msg = agent.create_learning_request()
-
-            communicator.send_json_obj(learner, MessageLearningRequest(learning_request_msg))
+            communicator.send_json_obj(learner, agent.create_learning_request())
             is_waiting_parameter_update = True
 
 
@@ -330,8 +338,7 @@ def main(host: str, port: int, config_path: str, password: str):
         server.listen()
 
         jax.config.update('jax_platform_name', 'cpu')
-        with jax.default_device(jax.devices("cpu")[0]):
-            start(server, config_path, password)
+        start(server, config_path, password)
 
     except Exception as e:
         server.close()
@@ -339,4 +346,7 @@ def main(host: str, port: int, config_path: str, password: str):
 
 
 if __name__ == "__main__":
+    import os
+    os.environ['JAX_PLATFORMS'] = 'cpu'
+
     main()

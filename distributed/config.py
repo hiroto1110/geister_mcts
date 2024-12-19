@@ -113,7 +113,7 @@ class RunConfig(SerdeJsonSerializable):
         buffer = ReplayBuffer(
             format=FORMAT_X7_ST_PVC,
             buffer_size=self.replay_buffer_size,
-            sample_shape=(self.series_length,),
+            sample_shape=[],
             seq_length=self.tokens_length
         )
 
