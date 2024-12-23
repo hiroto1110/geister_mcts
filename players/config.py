@@ -14,8 +14,8 @@ class SearchParameters:
     c_base: int = 25
     depth_search_checkmate_root: int = 7
     depth_search_checkmate_leaf: int = 4
+    num_of_strategy_to_memorize: int = 64
     time_limit: float = 10
-    test_c: bool = False
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -53,7 +53,7 @@ class SearchParametersRange:
     c_base: IntRange = IntRange(25, 25)
     depth_search_checkmate_root: IntRange = IntRange(7, 7)
     depth_search_checkmate_leaf: IntRange = IntRange(4, 4)
-    test_c: bool = False
+    max_num_of_matches_to_memorize_strategy: IntRange = IntRange(64, 64)
     visibilize_node_graph: bool = False
 
     def replace(self, **args):
@@ -70,6 +70,6 @@ class SearchParametersRange:
             c_base=self.c_base.sample(),
             depth_search_checkmate_root=self.depth_search_checkmate_root.sample(),
             depth_search_checkmate_leaf=self.depth_search_checkmate_leaf.sample(),
-            test_c=self.test_c,
+            num_of_strategy_to_memorize=self.max_num_of_matches_to_memorize_strategy.sample(),
             visibilize_node_graph=self.visibilize_node_graph
         )

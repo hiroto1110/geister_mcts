@@ -306,10 +306,6 @@ def expand(
 
     if len(tokens) > 0:
         result = predict_with_tokens(pred_state, tokens, node.predic_result.cache)
-
-        if params.test_c:
-            result.color = node.predic_result.color
-
     else:
         result = node.predic_result
 
@@ -489,13 +485,21 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
     def get_pred_state(self) -> PredictState:
         return PredictState(self.model, self.params)
-    
-    def init_state(self, state: game.State, prev_state: PlayerStateMCTS = None) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
+
+    def init_state(
+        self,
+        state: game.State,
+        prev_state: PlayerStateMCTS | None = None
+    ) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
+
         if self.strategy is not None:
             state = StateWithStrategy(state.board, state.n_ply, self.strategy)
 
         if prev_state is not None:
             past_strategy_tables = prev_state.past_strategy_tables
+
+            if len(past_strategy_tables) > self.mcts_params.num_of_strategy_to_memorize:
+                past_strategy_tables = past_strategy_tables[-self.mcts_params.num_of_strategy_to_memorize:]
             st = np.sum(past_strategy_tables, axis=0)
         else:
             past_strategy_tables = []

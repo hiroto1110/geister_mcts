@@ -32,15 +32,23 @@ def start_selfplay_process(
             name_o = match.opponent.name
             print(f"Assigned: (elapsed={elapsed_t:.3f}s, agent={name_p}, opponent={name_o})")
 
-            player1 = match.player.create_player(project_dir)
-            player2 = match.opponent.create_player(project_dir)
+            while True:
+                try:
+                    player1 = match.player.create_player(project_dir)
+                    player2 = match.opponent.create_player(project_dir)
 
-            samples_list = play_games(
-                player1, player2,
-                num_games=series_length,
-                tokens_length=tokens_length,
-                token_producer=StrategyTokenProducer()
-            )
+                    samples_list = play_games(
+                        player1, player2,
+                        num_games=series_length,
+                        tokens_length=tokens_length,
+                        token_producer=StrategyTokenProducer()
+                    )
+                    break
+
+                except Exception as e:
+                    print(f"Error playing games: {e}")
+                    continue
+
             samples = np.stack(samples_list, dtype=np.uint8)
 
             match_result_queue.put(MessageMatchResult(match, samples))

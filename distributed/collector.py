@@ -111,7 +111,7 @@ class Agent:
         reward = batch_to_reward(samples)
         is_won = reward > 3
 
-        for i in range(len(samples)):
+        for i in range(len(is_won)):
             self.match_maker.apply_match_result(match.opponent, is_won[i])
 
     def next_step(self) -> dict[str, float]:
