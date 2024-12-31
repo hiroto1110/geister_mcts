@@ -29,8 +29,8 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
     def select_first_action(self, state: State) -> int:
         return np.random.choice(get_valid_actions(state, player=1))
 
-    def init_state(self, state: game.State, prev_state: S = None) -> tuple[game.State, S, list[list[int]]]:
-        return state, PlayerState(), state.create_init_tokens()
+    def init_state(self, state: game.State, prev_state: S = None) -> tuple[S, list[list[int]]]:
+        return PlayerState(), state.create_init_tokens()
 
     def select_next_action(self, state: State, player_state: S) -> T:
         pass
@@ -55,12 +55,8 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
 
         return player_state, state, tokens, result
 
-    def apply_game_result(self, player_state: S, result_p: GameResult, result_o: GameResult) -> S:
-        pass
-
     def create_sample(
         self,
-        player_state: S,
         result_p: GameResult,
         result_o: GameResult,
         token_length: int
@@ -80,15 +76,13 @@ class PlayerBase[T: ActionSelectionResult, S: PlayerState]:
             actions.astype(np.uint8),
             reward.astype(np.uint8),
             color_o.astype(np.uint8),
-            state=player_state
         )
 
     def _create_sample(
         self,
         x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray,
-        state: S
     ) -> np.ndarray:
-        return batch.FORMAT_XARC.from_tuple(x, p, v, c)
+        return batch.FORMAT_X5_PVC.from_tuple(x, p, v, c)
 
     def visualize_state(self, player_state: S, output_path: str):
         pass
@@ -182,7 +176,7 @@ def play_game[T: ActionSelectionResult, S: PlayerState](
     token_producer.init_game(num_turns)
 
     for i in range(2):
-        states[i], player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
+        player_states[i], init_tokens = players[i].init_state(states[i], player_states[i])
         token_producer.add_tokens(states[i], init_tokens, player_id=i)
 
     turn_player = 1

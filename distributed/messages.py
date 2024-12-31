@@ -22,7 +22,6 @@ class MessageActorInitClient(SerdeJsonSerializable):
 
 @dataclass(frozen=True)
 class MessageActorInitServer(SerdeJsonSerializable):
-    series_length: int
     tokens_length: int
     snapshots: list[Checkpoint]
     matches: list[MatchInfo]
@@ -43,7 +42,8 @@ class MessageNextMatch(SerdeJsonSerializable):
 @dataclass(frozen=True)
 class MessageMatchResult(SerdeJsonSerializable):
     match: MatchInfo
-    samples: np.ndarray
+    sample_p: np.ndarray
+    sample_o: np.ndarray
 
 
 @dataclass(frozen=True)

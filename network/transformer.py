@@ -10,7 +10,7 @@ from jax import random, numpy as jnp
 from flax import linen as nn
 
 from network.train_state import TrainStateBase
-from batch import FORMAT_X7_ST_PVC
+from batch import FORMAT_X5_PVC
 
 
 @serde.serde
@@ -20,20 +20,16 @@ class TransformerConfig:
     embed_dim: int
     num_hidden_layers: int
     max_n_ply: int = 201
-    strategy: bool = False
 
     def create_model(self) -> 'Transformer':
         return Transformer(self)
 
     def create_caching_model(self) -> 'TransformerWithCache':
         return TransformerWithCache(self)
-    
+
     @property
     def vocab_sizes(self) -> list[int]:
-        if self.strategy:
-            return [5, 16, 7, 7, self.max_n_ply]
-        else:
-            return [5, 16, 7, 7, self.max_n_ply, 3, 3]
+        return [5, 16, 7, 7, self.max_n_ply]
 
 
 class Embeddings(nn.Module):
@@ -184,7 +180,6 @@ class Transformer(nn.Module):
 
     def setup(self):
         self.embeddings = Embeddings(self.config.embed_dim, self.config.vocab_sizes)
-        self.st_dence = nn.Dense(features=self.config.embed_dim)
 
         self.layers = [
             TransformerBlock(self.config.num_heads, self.config.embed_dim)
@@ -192,11 +187,8 @@ class Transformer(nn.Module):
         ]
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, st: jnp.ndarray, eval=True):
+    def __call__(self, x: jnp.ndarray, eval=True):
         x = self.embeddings(x, eval)
-
-        st_x = self.st_dence(st.reshape((st.shape[0], 1, 64)) / 128.0)
-        x = jnp.concatenate([st_x, x], axis=1)
 
         # [Batch, 1, SeqLen, SeqLen]
         mask = nn.make_causal_mask(jnp.zeros((x.shape[0], x.shape[1])), dtype=bool)
@@ -222,7 +214,6 @@ class TransformerWithCache(nn.Module):
 
     def setup(self):
         self.embeddings = Embeddings(self.config.embed_dim, self.config.vocab_sizes)
-        self.st_dence = nn.Dense(features=self.config.embed_dim)
 
         self.layers = [
             TransformerBlockWithCache(self.config.num_heads, self.config.embed_dim)
@@ -246,9 +237,6 @@ class TransformerWithCache(nn.Module):
         if x.shape[0] == 5 or x.shape[0] == 7:
             x = self.embeddings(x, eval)
 
-        if x.ndim == 4 and x.shape == (4, 4, 2, 2):
-            x = self.st_dence(x.reshape(64) / 128.0)
-
         for i, layer in enumerate(self.layers):
             x, cache_i = layer(x, cache[i], eval=eval)
             cache = cache.at[i].set(cache_i)
@@ -267,16 +255,16 @@ class TrainStateTransformer(TrainStateBase):
     def train_step(
         self, x: jnp.ndarray, eval: bool
     ) -> tuple[TrainStateTransformer, jnp.ndarray, jnp.ndarray]:
-        x, st, p_true, v_true, c_true = FORMAT_X7_ST_PVC.get_features(x)
+        x, p_true, v_true, c_true = FORMAT_X5_PVC.get_features(x)
 
         if not eval:
             (loss, losses), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-                self.params, self, x, st, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self.apply_gradients(grads=grads, dropout_rng=random.PRNGKey(self.epoch))
         else:
             loss, losses = loss_fn(
-                self.params, self, x, st, p_true, v_true, c_true, self.dropout_rng, eval=eval
+                self.params, self, x, p_true, v_true, c_true, self.dropout_rng, eval=eval
             )
             state = self
 
@@ -324,7 +312,7 @@ def calc_loss(
 def loss_fn(
     params,
     state: TrainStateTransformer,
-    x: jnp.ndarray, st: jnp.ndarray,
+    x: jnp.ndarray,
     p_true: jnp.ndarray,
     v_true: jnp.ndarray,
     c_true: jnp.ndarray,
@@ -332,7 +320,7 @@ def loss_fn(
     eval: bool
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
     # p, v, c = state.apply_fn({'params': params}, tokens, eval=eval, rngs={'dropout': dropout_rng})
-    p, v, c = state.apply_fn({'params': params}, x, st, eval=eval, rngs={'dropout': dropout_rng})
+    p, v, c = state.apply_fn({'params': params}, x, eval=eval, rngs={'dropout': dropout_rng})
     loss, losses = calc_loss(x, p, v, c, p_true, v_true, c_true)
 
     return loss, losses

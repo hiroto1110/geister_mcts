@@ -52,7 +52,6 @@ def start_actor_manager(
             match_request_queue,
             match_result_queue,
             ckpt_dir,
-            init_msg.series_length,
             init_msg.tokens_length,
             seed,
         )

@@ -25,12 +25,12 @@ from players import PlayerMCTSConfig
 from players.base import PlayerConfig
 from players.strategy import Random as StrategyRandom
 from match_makers import MatchMaker
-from batch import ReplayBuffer, save, FORMAT_X7_ST_PVC
+from batch import ReplayBuffer, save, FORMAT_X5_PVC
 from network.checkpoints import Checkpoint, CheckpointManager
 
 
 def batch_to_reward(batch: np.ndarray) -> np.ndarray:
-    return FORMAT_X7_ST_PVC.get_feature(batch, FORMAT_X7_ST_PVC.indices.V)
+    return FORMAT_X5_PVC.get_feature(batch, FORMAT_X5_PVC.indices.V)
 
 
 class Agent:
@@ -63,56 +63,38 @@ class Agent:
     def name(self) -> str:
         return "main"
 
-    def create_current_player_config(
-        self,
-        strategy_p: tuple[float, float, float]
-    ) -> PlayerMCTSConfig:
-        
-        strategy_p = tuple([float(i) for i in strategy_p])
-
+    def create_current_player_config(self) -> PlayerMCTSConfig:
         return PlayerMCTSConfig(
             base_name=self.name,
             step=self.current.step,
             mcts_params=self.config.mcts_params,
-            strategy_factory=StrategyRandom(p=strategy_p)
         )
 
     def add_current_ckpt_to_matching_pool(self):
-        config = self.create_current_player_config(strategy_p=[0.35, 0.35, 0.3])
-
+        config = self.create_current_player_config()
         self.match_maker.add_agent(config)
 
-    def create_init_actor_message(self, n_processes: int) -> MessageActorInitServer:
-        snapshots = self.snapshots + [self.current]
-
-        return MessageActorInitServer(
-            self.config,
-            snapshots=snapshots,
-            matches=[self.next_match() for _ in range(n_processes + 10)]
-        )
-
     def next_match(self) -> MatchInfo:
-        config = self.create_current_player_config(strategy_p=[0.0, 0.0, 1.0])
+        config = self.create_current_player_config()
 
         return MatchInfo(
             player=config,
             opponent=self.match_maker.next_match()
         )
 
-    def apply_match_result(self, match: MatchInfo, samples: np.ndarray):
-        for i in range(len(samples)):
-            self.replay_buffer.add_sample(samples[i])
+    def apply_match_result(self, match: MatchInfo, result: MessageMatchResult):
+        self.replay_buffer.add_sample(result.sample_p)
+        self.replay_buffer.add_sample(result.sample_o)
 
         if match.opponent not in self.lastest_games:
             self.lastest_games[match.opponent] = []
 
-        self.lastest_games[match.opponent].append(samples)
+        self.lastest_games[match.opponent].append(result.sample_p)
 
-        reward = batch_to_reward(samples)
+        reward = batch_to_reward(result)
         is_won = reward > 3
 
-        for i in range(len(is_won)):
-            self.match_maker.apply_match_result(match.opponent, is_won[i])
+        self.match_maker.apply_match_result(match.opponent, is_won)
 
     def next_step(self) -> dict[str, float]:
         win_rates = self.match_maker.get_win_rates()
@@ -131,24 +113,6 @@ class Agent:
 
         log = {}
 
-        for opponent in self.lastest_games:
-            label = opponent.name
-            lastest_games_opponent = np.stack(self.lastest_games[opponent]).astype(np.uint8)
-
-            count = len(lastest_games_opponent) / len(lastest_games)
-            log[f'game_count/{label}'] = count
-
-            reward = batch_to_reward(lastest_games_opponent)
-            is_won = reward > 3
-
-            won_in_series = np.mean(is_won, axis=0)
-
-            lr = LinearRegression()
-            lr.fit(np.arange(len(won_in_series)).reshape(-1, 1), won_in_series)
-
-            log[f'win_rate_coefficient/{label}'] = lr.coef_[0]
-            log[f'win_rate_intercept/{label}'] = lr.intercept_
-
         reward = batch_to_reward(lastest_games)
 
         for i in range(7):
@@ -160,7 +124,14 @@ class Agent:
 
             opponent = self.match_maker.agents[i]
             label = opponent.name
+
             log[f'win_rate/{label}'] = win_rates[i]
+
+            if opponent not in self.lastest_games:
+                log[f'game_count/{label}'] = 0
+            else:
+                lastest_games_opponent = np.stack(self.lastest_games[opponent]).astype(np.uint8)
+                log[f'game_count/{label}'] = len(lastest_games_opponent) / len(lastest_games)  
 
         self.lastest_games.clear()
 
@@ -215,7 +186,6 @@ def _handle_client_actor(
     init_msg_client = communicator.recv_json_obj(sock, MessageActorInitClient)
 
     init_msg_server = MessageActorInitServer(
-        series_length=config.series_length,
         tokens_length=config.tokens_length,
         snapshots=agent.snapshots + [agent.current],
         matches=[agent.next_match() for _ in range(init_msg_client.n_processes + 10)]

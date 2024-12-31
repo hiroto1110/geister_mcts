@@ -83,7 +83,7 @@ class Features_X5_PVC(enum.IntEnum):
     V = 2
     C = 3
 
-FORMAT_XARC = BatchFormat(
+FORMAT_X5_PVC = BatchFormat(
     features=[
         Feature(length_const=0, length_per_token=5, shape=(-1, 5)),
         Feature(length_const=0, length_per_token=1),

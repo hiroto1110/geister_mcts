@@ -491,29 +491,14 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         state: game.State,
         prev_state: PlayerStateMCTS | None = None
     ) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
-
-        if self.strategy is not None:
-            state = StateWithStrategy(state.board, state.n_ply, self.strategy)
-
-        if prev_state is not None:
-            past_strategy_tables = prev_state.past_strategy_tables
-
-            if len(past_strategy_tables) > self.mcts_params.num_of_strategy_to_memorize:
-                past_strategy_tables = past_strategy_tables[-self.mcts_params.num_of_strategy_to_memorize:]
-            st = np.sum(past_strategy_tables, axis=0)
-        else:
-            past_strategy_tables = []
-            st = np.zeros((4, 4, 2, 2), dtype=np.uint8)
-
         tokens = state.create_init_tokens()
-        result = create_root_node(tokens, st, self.get_pred_state())
+        result = create_root_node(tokens, self.get_pred_state())
 
         next_state = PlayerStateMCTS(
             Node(state, result),
             pieces_history=[],
-            past_strategy_tables=past_strategy_tables
         )
-        return state, next_state, tokens
+        return next_state, tokens
 
     def select_next_action(
         self,
@@ -558,26 +543,6 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
         return next_player_state, state, tokens, result
 
-    def apply_game_result(self, result: GameResult, player_id: int) -> PlayerStateMCTS:
-        opponent_id = 1 - player_id
-        st = StrategyTokenProducer.create_strategy_table(result.tokens[opponent_id])
-
-        tables = result.player_states[player_id].past_strategy_tables + [st]
-
-        return PlayerStateMCTS(
-            result.player_states[player_id].node,
-            pieces_history=[],
-            past_strategy_tables=tables
-        )
-
-    def _create_sample(
-        self,
-        x: np.ndarray, p: np.ndarray, v: np.ndarray, c: np.ndarray, state: PlayerStateMCTS
-    ) -> np.ndarray:
-        st = state.past_strategy_tables[-1]
-
-        return batch.FORMAT_X7_ST_PVC.from_tuple(x, st, p, v, c)
-
     def visualize_state(self, player_state: PlayerStateMCTS, output_file: str):
         if all([c is None for c in player_state.node.children]):
             return
@@ -591,10 +556,8 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
 
 @dataclass(frozen=True)
 class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
-    base_name: str
     step: int
     mcts_params: SearchParametersRange
-    strategy_factory: StrategyFactories
 
     @property
     def necessary_checkpoint_step(self) -> int | None:
@@ -602,7 +565,7 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
 
     @property
     def name(self) -> str:
-        return f"{self.base_name}-{self.step}"
+        return f"mcts-{self.step}"
 
     def create_player(self, project_dir: str) -> PlayerMCTS:
         ckpt = CheckpointManager(project_dir).load(self.step)
@@ -611,7 +574,6 @@ class PlayerMCTSConfig(PlayerConfig[PlayerMCTS]):
             params=ckpt.params,
             model=ckpt.model.create_caching_model(),
             mcts_params=self.mcts_params.sample(),
-            strategy=self.strategy_factory.create()
         )
 
     def get_checkpoint(self, project_dir: str):
