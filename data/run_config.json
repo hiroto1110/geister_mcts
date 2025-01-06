@@ -22,8 +22,8 @@
         },
         "training": {
             "batch_size": 256,
-            "num_batches": 4,
-            "learning_rate": 0.002
+            "num_batches": 8,
+            "learning_rate": 0.001
         },
         "match_making": {
             "mathod": {
@@ -37,13 +37,14 @@
             "step_period": null
         },
         "mcts_params": {
-            "num_simulations": { "min": 10, "max": 40 },
+            "num_simulations": { "min": 10, "max": 30 },
             "dirichlet_alpha": { "min": 0.1, "max": 0.4 },
             "n_ply_to_apply_noise": { "min": 10, "max": 20 },
             "max_duplicates": { "min": 1, "max": 8 },
             "c_base": { "min": 10, "max": 50 },
             "depth_search_checkmate_root": { "min": 6, "max": 8 },
             "depth_search_checkmate_leaf": { "min": 3, "max": 5 }
-        }
+        },
+        "num_test_processes": 4
     }
 }

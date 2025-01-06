@@ -14,26 +14,25 @@ class PlayerNaotti2020(PlayerBase):
         self.depth_max = depth_max
         self.num_random_ply = num_random_ply
         self.print_log = print_log
-
+    
     def init_state(
         self,
         state: State,
         prev_state: PlayerState | None = None
     ) -> tuple[State, PlayerState, list[list[int]]]:
 
-        self.state = state
         self.turn_count = 0
 
         depth = np.random.randint(self.depth_min, self.depth_max + 1)
         naotti2020.initGame(depth, self.print_log)
 
-        return state, None, state.create_init_tokens()
+        return None, state.create_init_tokens()
 
-    def select_next_action(self) -> ActionSelectionResult:
-        board_msg = gat.server_util.encode_board_str(self.state)
+    def select_next_action(self, state: State, player_state: PlayerState) -> ActionSelectionResult:
+        board_msg = gat.server_util.encode_board_str(state)
         naotti2020.recvBoard(board_msg)
 
-        action_msg = naotti2020.solve(self.turn_count, self.state.n_ply <= self.num_random_ply)
+        action_msg = naotti2020.solve(self.turn_count, state.n_ply <= self.num_random_ply)
         action = gat.server_util.decode_action_message(action_msg)
 
         p_id = action // 4
@@ -52,6 +51,10 @@ class PlayerNaotti2020Config(PlayerConfig[PlayerNaotti2020]):
     depth_max: int
     num_random_ply: int
     print_log: bool = False
+
+    @property
+    def name(self) -> str:
+        return "naotti"
 
     def create_player(self, project_dir: str) -> PlayerNaotti2020:
         return PlayerNaotti2020(

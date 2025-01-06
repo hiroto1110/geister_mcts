@@ -77,7 +77,8 @@ class TestProcess:
                 self.test_match_result_queue,
                 self.config.project_dir,
                 self.config.tokens_length,
-                0
+                0,
+                False
             )
         )
         process.start()
@@ -151,7 +152,7 @@ class Agent:
 
         self.lastest_games[match.opponent].append(result.sample_p)
 
-        reward = batch_to_reward(result)
+        reward = batch_to_reward(result.sample_p)
         is_won = reward > 3
 
         self.match_maker.apply_match_result(match.opponent, is_won)
@@ -165,9 +166,7 @@ class Agent:
         if is_league_member:
             self.add_current_ckpt_to_matching_pool()
 
-        lastest_games = np.concatenate(sum(self.lastest_games.values(), start=[]), axis=0)
-        lastest_games = lastest_games.astype(np.uint8)
-        lastest_games = lastest_games.reshape(-1, lastest_games.shape[-1])
+        lastest_games = np.stack(sum(self.lastest_games.values(), start=[]), axis=0).astype(np.uint8)
 
         save(self.replay_buffer_path, lastest_games, append=True)
 

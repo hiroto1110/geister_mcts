@@ -27,7 +27,7 @@ class PredictState:
     params: dict[str, Any]
 
 
-@partial(jax.jit, device=jax.devices("cpu")[0], static_argnames=["model"])
+@partial(jax.jit, static_argnames=["model"])
 def predict(
     params: dict[str, Any],
     model: TransformerWithCache,

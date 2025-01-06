@@ -27,7 +27,7 @@ class BatchFormat[T: enum.IntEnum]:
     
     def get_feature(self, batch: np.ndarray, index: int) -> np.ndarray:
         num_tokens = (batch.shape[-1] - self.length_const) // self.length_per_token
-        assert (batch.shape[-1] - self.length_const) % self.length_per_token == 0
+        assert (batch.shape[-1] - self.length_const) % self.length_per_token == 0, batch.shape
 
         total_length = 0
 
@@ -123,7 +123,7 @@ def load(path: str) -> np.ndarray:
 def save(path: str, batch: np.ndarray, append: bool):
     if append and os.path.exists(path):
         old_batch = load(path)
-        batch = np.concatenate([old_batch, batch])
+        batch = np.concatenate([old_batch, batch]).astype(np.uint8)
 
     np.save(path, batch)
 

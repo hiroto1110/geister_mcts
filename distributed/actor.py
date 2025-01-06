@@ -1,6 +1,10 @@
 import time
 import multiprocessing
 
+import traceback
+import re
+import sys
+
 import numpy as np
 import jax
 
@@ -13,7 +17,8 @@ def start_selfplay_process(
     match_result_queue: multiprocessing.Queue,
     project_dir: str,
     tokens_length: int,
-    seed: int
+    seed: int,
+    print_info: bool = True
 ):
     jax.config.update('jax_platform_name', 'cpu')
     # jax.config.update("jax_debug_nans", True)
@@ -31,25 +36,36 @@ def start_selfplay_process(
             time_taken_to_play_game = start_t - prev_start_t
             prev_start_t = start_t
 
-            msg_dict = {
-                "get": f"{time_taken_to_get_match:.4f}",
-                "prev": f"{time_taken_to_play_game:.4f}",
-                "agent": match.player.name,
-                "opponent": match.opponent.name,
-            }
-            print(f"Assigned: ({[key + msg_dict for key in msg_dict]})")
+            if print_info:
+                msg_dict = {
+                    "get": f"{time_taken_to_get_match:.4f}",
+                    "prev": f"{time_taken_to_play_game:.4f}",
+                    "agent": match.player.name,
+                    "opponent": match.opponent.name,
+                }
+                msg = [f"{key}={msg_dict[key]}" for key in msg_dict]
+                print(f"Assigned: ({" ".join(msg)})")
 
             while True:
                 try:
-                    result_msg = play_game(
-                        match,
-                        project_dir=project_dir,
-                        tokens_length=tokens_length,
-                    )
+                    result_msg = play_games(match, project_dir, tokens_length=tokens_length)
                     break
 
                 except Exception as e:
-                    print(f"Error playing games: {e}")
+                    error_class = type(e)
+                    error_description = str(e)
+                    err_msg = '%s: %s' % (error_class, error_description)
+                    print(err_msg)
+                    tb = traceback.extract_tb(sys.exc_info()[2])
+                    trace = traceback.format_list(tb)
+                    print('---- traceback ----')
+                    for line in trace:
+                        if '~^~' in line:
+                            print(line.rstrip())
+                        else:
+                            text = re.sub(r'\n\s*', ' ', line.rstrip())
+                            print(text)
+                    print('-------------------')
                     continue
 
             match_result_queue.put(result_msg)
