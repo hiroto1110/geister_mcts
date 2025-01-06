@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import asdict
 import time
 import socket
 import threading
+import multiprocessing
 import queue
 
 from tqdm import tqdm
@@ -9,7 +12,6 @@ import click
 
 import numpy as np
 import jax
-from sklearn.linear_model import LinearRegression
 
 import wandb
 
@@ -20,28 +22,79 @@ from distributed.messages import (
     MessageLeanerInitServer, MessageLearningRequest, MessageLearningResult,
     MessageMatchResult, MessageNextMatch, MatchInfo
 )
+from distributed.actor import start_selfplay_process
 
 from players import PlayerMCTSConfig
 from players.base import PlayerConfig
-from players.strategy import Random as StrategyRandom
+from players.naotti import PlayerNaotti2020Config
 from match_makers import MatchMaker
 from batch import ReplayBuffer, save, FORMAT_X5_PVC
 from network.checkpoints import Checkpoint, CheckpointManager
+
+ctx = multiprocessing.get_context('spawn')
 
 
 def batch_to_reward(batch: np.ndarray) -> np.ndarray:
     return FORMAT_X5_PVC.get_feature(batch, FORMAT_X5_PVC.indices.V)
 
 
+class TestProcess:
+    def __init__(self, config: RunConfig, num_init_matches: int = 100):
+        self.config = config
+        self.num_init_matches = num_init_matches
+
+        self.test_match_request_queue = ctx.Queue()
+        self.test_match_result_queue = ctx.Queue()
+
+        self.current_player: PlayerMCTSConfig = None
+    
+    def set_current_player_config(self, player: PlayerMCTSConfig):
+        self.current_player = player
+        self.test_match = MatchInfo(
+            self.current_player,
+            PlayerNaotti2020Config(depth_min=4, depth_max=7, num_random_ply=6)
+        )
+
+        while not self.test_match_request_queue.empty():
+            self.test_match_request_queue.get()
+
+        for i in range(self.num_init_matches):
+            self.test_match_request_queue.put(self.test_match)
+
+    def get_game_results(self) -> list[MessageMatchResult]:
+        results = []
+
+        while not self.test_match_result_queue.empty():
+            results.append(self.test_match_result_queue.get())
+
+        return results
+
+    def start(self):
+        process = ctx.Process(
+            target=start_selfplay_process,
+            args=(
+                self.test_match_request_queue,
+                self.test_match_result_queue,
+                self.config.project_dir,
+                self.config.tokens_length,
+                0
+            )
+        )
+        process.start()
+
+
 class Agent:
     def __init__(
         self,
         config: AgentConfig,
+        test_process: TestProcess,
         ckpt_manager: CheckpointManager,
         replay_buffer: ReplayBuffer,
         replay_buffer_path: str,
     ) -> None:
+
         self.config = config
+        self.test_process = test_process
         self.ckpt_manager = ckpt_manager
         self.replay_buffer = replay_buffer
         self.replay_buffer_path = replay_buffer_path
@@ -58,7 +111,12 @@ class Agent:
         self.lastest_games: dict[PlayerConfig, list[np.ndarray]] = {}
 
         self.add_current_ckpt_to_matching_pool()
-    
+
+        self.test_process.set_current_player_config(
+            self.create_current_player_config()
+        )
+        self.test_process.start()
+
     @property
     def name(self) -> str:
         return "main"
@@ -82,7 +140,9 @@ class Agent:
             opponent=self.match_maker.next_match()
         )
 
-    def apply_match_result(self, match: MatchInfo, result: MessageMatchResult):
+    def apply_match_result(self, result: MessageMatchResult):
+        match = result.match
+
         self.replay_buffer.add_sample(result.sample_p)
         self.replay_buffer.add_sample(result.sample_o)
 
@@ -116,8 +176,8 @@ class Agent:
         reward = batch_to_reward(lastest_games)
 
         for i in range(7):
-            log[f'game_result/{i}'] = np.mean(reward == i)
-
+            log[f'game_result/train_{i}'] = np.mean(reward == i)
+        
         for i in range(len(win_rates)):
             if win_rates[i] == 0:
                 continue
@@ -134,6 +194,19 @@ class Agent:
                 log[f'game_count/{label}'] = len(lastest_games_opponent) / len(lastest_games)  
 
         self.lastest_games.clear()
+
+        self.test_process.set_current_player_config(self.create_current_player_config())
+
+        test_results = self.test_process.get_game_results()
+        test_games = np.stack([result.sample_p for result in test_results]).astype(np.uint8)
+
+        reward = batch_to_reward(test_games)
+
+        for i in range(7):
+            log[f'game_result/test_{i}'] = np.mean(reward == i)
+
+        log[f'win_rate/test'] = np.mean(reward > 3)
+        log[f'game_count/test'] = len(test_games)
 
         return log
 
@@ -249,6 +322,7 @@ def start(
     print("Initializing agents")
     agent = Agent(
         config.agent,
+        test_process=TestProcess(config),
         ckpt_manager=CheckpointManager(config.project_dir, config.ckpt_options),
         replay_buffer=config.create_replay_buffer(),
         replay_buffer_path=f"{config.project_dir}/replay_buffer.npy",
@@ -276,7 +350,7 @@ def start(
                 time.sleep(0.1)
 
             result: MessageMatchResult = match_result_queue.get()
-            agent.apply_match_result(result.match, result.samples)
+            agent.apply_match_result(result)
 
         log = agent.next_step()
 

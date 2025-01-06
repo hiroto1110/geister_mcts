@@ -10,7 +10,7 @@ import jax.numpy as jnp
 
 import match_makers
 from players.config import SearchParametersRange
-from batch import ReplayBuffer, FORMAT_X7_ST_PVC
+from batch import ReplayBuffer, FORMAT_X5_PVC
 
 from distributed.communication import SerdeJsonSerializable
 from network.transformer import TransformerConfig
@@ -111,7 +111,7 @@ class RunConfig(SerdeJsonSerializable):
 
     def create_replay_buffer(self) -> ReplayBuffer:
         buffer = ReplayBuffer(
-            format=FORMAT_X7_ST_PVC,
+            format=FORMAT_X5_PVC,
             buffer_size=self.replay_buffer_size,
             sample_shape=[],
             seq_length=self.tokens_length

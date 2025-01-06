@@ -21,14 +21,23 @@ def start_selfplay_process(
     np.random.seed(seed)
 
     with jax.default_device(jax.devices("cpu")[0]):
+        prev_start_t = time.perf_counter()
+
         while True:
             start_t = time.perf_counter()
             match: MatchInfo = match_request_queue.get()
-            elapsed_t = time.perf_counter() - start_t
+            time_taken_to_get_match = time.perf_counter() - start_t
 
-            name_p = match.player.name
-            name_o = match.opponent.name
-            print(f"Assigned: (elapsed={elapsed_t:.3f}s, agent={name_p}, opponent={name_o})")
+            time_taken_to_play_game = start_t - prev_start_t
+            prev_start_t = start_t
+
+            msg_dict = {
+                "get": f"{time_taken_to_get_match:.4f}",
+                "prev": f"{time_taken_to_play_game:.4f}",
+                "agent": match.player.name,
+                "opponent": match.opponent.name,
+            }
+            print(f"Assigned: ({[key + msg_dict for key in msg_dict]})")
 
             while True:
                 try:
