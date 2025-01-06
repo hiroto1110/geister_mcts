@@ -197,7 +197,6 @@ class Transformer(nn.Module):
             x = self.layers[i](x, mask, eval=eval)
 
         x = nn.Dropout(0.1, deterministic=eval)(x)
-        x = x[:, 1:]
 
         p = nn.Dense(features=32, name="head_p")(x)
         v = nn.Dense(features=7, name="head_v")(x)

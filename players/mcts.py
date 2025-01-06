@@ -460,7 +460,6 @@ def create_root_node(
 class PlayerStateMCTS:
     node: Node
     pieces_history: list[np.ndarray]
-    past_strategy_tables: list[np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -526,7 +525,7 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         node, _ = expand(node, result.tokens, [], state, pred_state, self.mcts_params)
 
         pieces_history = player_state.pieces_history + [state.board[:2].reshape(-1)]
-        next_player_state = PlayerStateMCTS(node, pieces_history, player_state.past_strategy_tables)
+        next_player_state = PlayerStateMCTS(node, pieces_history)
 
         return next_player_state, state, tokens, result
 

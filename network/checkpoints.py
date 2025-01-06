@@ -128,7 +128,6 @@ class CheckpointManager:
         return max(self.get_steps())
 
     def save(self, ckpt: Checkpoint):
-        print("save", self.get_path(ckpt.step))
         with open(self.get_path(ckpt.step), mode='w') as f:
             f.write(ckpt.to_json())
 
