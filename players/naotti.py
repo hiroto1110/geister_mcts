@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from players.base import PlayerBase, PlayerConfig
+from players.base import PlayerBase, PlayerState, ActionSelectionResult, PlayerConfig
 from env.state import State
 import env.lib.naotti2020 as naotti2020
 import gat.server_util
@@ -15,31 +15,35 @@ class PlayerNaotti2020(PlayerBase):
         self.num_random_ply = num_random_ply
         self.print_log = print_log
 
-    def init_state(self, state: State):
+    def init_state(
+        self,
+        state: State,
+        prev_state: PlayerState | None = None
+    ) -> tuple[State, PlayerState, list[list[int]]]:
+
         self.state = state
         self.turn_count = 0
 
         depth = np.random.randint(self.depth_min, self.depth_max + 1)
         naotti2020.initGame(depth, self.print_log)
 
-        return state.create_init_tokens()
+        return state, None, state.create_init_tokens()
 
-    def select_next_action(self) -> int:
+    def select_next_action(self) -> ActionSelectionResult:
         board_msg = gat.server_util.encode_board_str(self.state)
         naotti2020.recvBoard(board_msg)
 
         action_msg = naotti2020.solve(self.turn_count, self.state.n_ply <= self.num_random_ply)
         action = gat.server_util.decode_action_message(action_msg)
 
-        if self.state.root_player == 1:
-            p_id = action // 4
-            d_id = action % 4
+        p_id = action // 4
+        d_id = action % 4
 
-            action = p_id * 4 + (3 - d_id)
+        action = p_id * 4 + (3 - d_id)
 
         self.turn_count += 2
 
-        return action
+        return ActionSelectionResult(action)
 
 
 @dataclass(frozen=True)

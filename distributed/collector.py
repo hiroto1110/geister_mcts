@@ -123,7 +123,6 @@ class Agent:
 
     def create_current_player_config(self) -> PlayerMCTSConfig:
         return PlayerMCTSConfig(
-            base_name=self.name,
             step=self.current.step,
             mcts_params=self.config.mcts_params,
         )

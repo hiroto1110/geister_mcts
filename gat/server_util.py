@@ -80,14 +80,13 @@ def is_done_message(s: str):
 
 
 def encode_board_str(state: game.State):
-    colors = np.concatenate([state.color_p, state.color_o[::-1]])
-    pieces = np.concatenate([state.pieces_p, state.pieces_o[::-1]])
+    colors = np.concatenate([state.col_p, state.col_o[::-1]])
+    pieces = np.concatenate([state.pos_p, state.pos_o[::-1]])
     x = pieces % 6
     y = pieces // 6
 
-    if state.root_player == 1:
-        x[pieces >= 0] = 5 - x[pieces >= 0]
-        y[pieces >= 0] = 5 - y[pieces >= 0]
+    x[pieces >= 0] = 5 - x[pieces >= 0]
+    y[pieces >= 0] = 5 - y[pieces >= 0]
 
     x[pieces == game.CAPTURED] = 9
     y[pieces == game.CAPTURED] = 9

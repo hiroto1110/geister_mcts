@@ -19,9 +19,6 @@ from network.checkpoints import CheckpointManager
 
 from players.base import PlayerBase, ActionSelectionResult, PlayerConfig, GameResult
 from players.config import SearchParameters, SearchParametersRange
-from players.strategy import Strategy, StateWithStrategy, StrategyFactories, StrategyTokenProducer
-
-import batch
 
 
 @dataclass
@@ -54,12 +51,6 @@ class PredictResult:
     value: jnp.ndarray
     color: jnp.ndarray
     cache: jnp.ndarray
-
-
-def predict_with_strategy(pred_state: PredictState, strategy: jnp.ndarray, cache: jnp.ndarray) -> PredictResult:
-    _, p, v, c, cache = predict(pred_state.params, pred_state.model, strategy, cache)
-
-    return PredictResult(p, v, c, cache)
 
 
 def predict_with_tokens(pred_state: PredictState, tokens: list[list[int]], cache: jnp.ndarray) -> PredictResult:
@@ -455,16 +446,12 @@ def select_action_with_mcts(
 
 def create_root_node(
     tokens: list[list[int]],
-    past_strategy_table: jnp.ndarray,
     pred_state: PredictState,
     cache_length: int = 220,
 ) -> tuple[PredictResult, np.ndarray]:
-    model = pred_state.model
 
-    cache = model.create_cache(cache_length)
-
-    result = predict_with_strategy(pred_state, past_strategy_table, cache)
-    result = predict_with_tokens(pred_state, tokens, result.cache)
+    cache = pred_state.model.create_cache(cache_length)
+    result = predict_with_tokens(pred_state, tokens, cache)
 
     return result
 
@@ -481,7 +468,6 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
     params: dict
     model: TransformerWithCache
     mcts_params: SearchParameters
-    strategy: Strategy = None
 
     def get_pred_state(self) -> PredictState:
         return PredictState(self.model, self.params)
@@ -491,6 +477,7 @@ class PlayerMCTS(PlayerBase[PlayerStateMCTS, ActionSelectionResultMCTS]):
         state: game.State,
         prev_state: PlayerStateMCTS | None = None
     ) -> tuple[game.State, PlayerStateMCTS, list[list[int]]]:
+
         tokens = state.create_init_tokens()
         result = create_root_node(tokens, self.get_pred_state())
 

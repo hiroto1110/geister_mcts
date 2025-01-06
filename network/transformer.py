@@ -220,7 +220,7 @@ class TransformerWithCache(nn.Module):
             for _ in range(self.config.num_hidden_layers)
         ]
 
-    def create_cache(self, seq_len):
+    def create_cache(self, seq_len: int) -> jnp.ndarray:
         head_dim = self.config.embed_dim // self.config.num_heads
 
         # [2, Layer, SeqLen, Head, HeadDim]
