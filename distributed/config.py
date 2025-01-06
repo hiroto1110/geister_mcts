@@ -84,6 +84,8 @@ class AgentConfig(SerdeJsonSerializable):
 
     mcts_params: SearchParametersRange
 
+    num_test_processes: int
+
     def create_match_maker(self):
         return match_makers.MatchMaker(
             method=self.match_making.mathod,
@@ -97,7 +99,6 @@ class RunConfig(SerdeJsonSerializable):
     project_name: str
     wandb_log: bool
 
-    series_length: int
     tokens_length: int
     update_period: int
 

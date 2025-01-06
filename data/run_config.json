@@ -3,12 +3,11 @@
     "project_dir": "./data/projects/run-8",
     "wandb_log": true,
 
-    "series_length": 64,
     "tokens_length": 220,
-    "update_period": 16,
+    "update_period": 500,
     "replay_buffer_size": 400000,
 
-    "init_replay_buffer": "./data/replay_buffer/run-4-st.npy",
+    "init_replay_buffer": null,
 
     "ckpt_options": {
         "max_to_keep": 50,
@@ -18,13 +17,13 @@
     "agent": {
         "init_params": {
             "type": "FromCheckpoint",
-            "dir_name": "./data/checkpoints/tr-st",
-            "step": 4
+            "dir_name": "./data/checkpoints/tr_h4_d256_n4",
+            "step": 0
         },
         "training": {
-            "batch_size": 1024,
-            "num_batches": 2,
-            "learning_rate": 0.005
+            "batch_size": 256,
+            "num_batches": 4,
+            "learning_rate": 0.002
         },
         "match_making": {
             "mathod": {
@@ -34,8 +33,8 @@
             "buffer_size": 2048
         },
         "condition_for_keeping_snapshots": {
-            "win_rate_threshold": null,
-            "step_period": 50
+            "win_rate_threshold": 0.65,
+            "step_period": null
         },
         "mcts_params": {
             "num_simulations": { "min": 10, "max": 40 },

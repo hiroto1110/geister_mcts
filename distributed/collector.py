@@ -115,7 +115,8 @@ class Agent:
         self.test_process.set_current_player_config(
             self.create_current_player_config()
         )
-        self.test_process.start()
+        for _ in range(self.config.num_test_processes):
+            self.test_process.start()
 
     @property
     def name(self) -> str:
