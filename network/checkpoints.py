@@ -110,7 +110,7 @@ class CheckpointManager:
             self.options = options
         else:
             self.options = CheckpointManagerOptions(
-                max_to_keep=2**30,
+                max_to_keep=2**10,
                 keep_period=1,
             )
 

@@ -282,8 +282,7 @@ def _handle_client_actor(
             sent_steps.append(step)
 
             ckpt = agent.ckpt_manager.load(step)
-            if ckpt is not None:
-                updated.append(ckpt)
+            updated.append(ckpt)
 
         communicator.send_json_obj(sock, MessageNextMatch(next_match, updated))
 
